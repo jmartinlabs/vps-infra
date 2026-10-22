@@ -19,7 +19,7 @@ Leer `AGENTS.md`, `README.md`, `docs/arquitectura.md`, `docs/estado-actual.md`, 
 4. Determinar si existen trabajos independientes. Usar el menor grupo que aporte valor; perfiles en `.agents/roles/`. Pasar a cada delegado un contrato acotado: objetivo, autorización, entorno, límites de lectura/escritura, rutas, propietario, aislamiento, evidencias, prohibiciones, condiciones de salida y reporte. Si no existen subagentes reales, ejecutar secuencialmente sin fingir delegación.
 5. Leer en paralelo solo cuando sea seguro; escrituras simultáneas necesitan archivos disjuntos y aislamiento real. Si no puede verificarse, serializar. La creación de un subagente **no amplía** la autorización de acceso al VPS ni a repositorios ajenos.
 6. Tras cada trabajo, comprobar salidas, pruebas y diff reales. Separar PASS/FAIL/BLOCKED/NO EJECUTADO. Actualizar documentación canónica cuando corresponda y preparar PR revisable.
-7. Antes de merge, acceso remoto, cambios operativos y despliegues, aplicar las barreras de `AGENTS.md`. **Un PR aprobada y fusionada no autoriza un despliegue.** Ninguna tarea prosigue entre sesiones por el hecho de existir una skill.
+7. Antes de merge, acceso remoto, cambios operativos y despliegues, aplicar las barreras de `AGENTS.md`. **Una PR aprobada y fusionada no autoriza un despliegue.** Ninguna tarea prosigue entre sesiones por el hecho de existir una skill.
 
 ## Resultado
 

@@ -2,7 +2,7 @@
 
 ## Estado
 
-Adopción documental propuesta para **vps-infra**. La fuente reutilizable es [agent-project-template](https://github.com/josemartin2000/agent-project-template), cuya primera iteración ejecutable multicliente se revisa en su [PR #9](https://github.com/josemartin2000/agent-project-template/pull/9). **No propagar ni fusionar automáticamente una funcionalidad no integrada o no probada en el proyecto origen.**
+Adaptación **exclusiva de `vps-infra`** para trabajar desde Codex y Claude Code. Aprovecha las skills ya integradas en este repositorio, cuya metodología se inspiró previamente en `agent-project-template`. **No modifica ese repositorio ni depende de ninguna PR suya.**
 
 `AGENTS.md` y `docs/metodologia-agentes.md` siguen siendo la política del proyecto. `.agents/skills/` conserva la lógica de flujo original. `CLAUDE.md` y los tres adaptadores en `.claude/skills/` proporcionan descubrimiento opcional a Claude Code sin duplicar las instrucciones.
 
@@ -29,6 +29,6 @@ No se instala un scheduler, runtime residente, agentes permanentes ni un mecanis
 
 Registrar trazas y resultados reales antes de calificar la compatibilidad como verificada.
 
-## Actualización del origen
+## Evolución local
 
-Tras integrar y validar la versión estable del harness central, preparar una PR de **adopción selectiva** aquí, comparando archivos y pruebas con el origen. No duplicar innecesariamente scripts, mantener versionado de procedencia y no modificar el VPS durante la adopción.
+Los próximos controles automáticos, evaluaciones de comportamiento y pruebas de cliente se diseñarán y revisarán **en `vps-infra`** según las necesidades reales de infraestructura. No existe dependencia de otra PR ni autorización para cambiar repositorios ajenos. Evitar duplicaciones de instrucciones y registrar la evidencia de cada control. Ninguna adopción de hooks autoriza acceso ni cambios en el VPS.

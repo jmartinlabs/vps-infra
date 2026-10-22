@@ -19,6 +19,7 @@ Administrar y evolucionar el VPS de Aruba Cloud para alojar **MyFinanzas** y fut
 | [docs/estado-actual.md](docs/estado-actual.md) | Inventario conocido, evidencias y cuestiones no verificadas |
 | [docs/roadmap.md](docs/roadmap.md) | Prioridades, dependencias y condiciones de aceptación |
 | [docs/operaciones.md](docs/operaciones.md) | Guías de actuación **pendientes de validar**, recuperación y cambios |
+| [docs/metodologia-agentes.md](docs/metodologia-agentes.md) | Adopción ligera de skills Codex, roles y niveles de trabajo |
 
 ## Responsabilidades
 
@@ -34,7 +35,7 @@ Según el punto de continuidad del usuario (22-10-2026): VPS Aruba Cloud, Debian
 
 1. Leer `AGENTS.md`, inventario, arquitectura y roadmap; verificar el estado Git y el alcance autorizado.
 2. Distinguir **propuesta → desarrollo → pruebas → PR → integración → despliegue**. Ninguna etapa autoriza automáticamente la siguiente.
-3. Trabajar en una rama por cambio, conservar trabajo ajeno, probar y revisar el historial y el diff antes de publicar.
+3. Para tareas con Codex, consultar [metodología adaptada](docs/metodologia-agentes.md) y clasificar Quick / Standard / Full. Trabajar en una rama por cambio, conservar trabajo ajeno, probar y revisar el historial y el diff antes de publicar.
 4. Presentar PR; **no hacer merge ni tocar el servidor** sin aprobación aplicable.
 5. Si el trabajo afecta a otra aplicación, coordinar interfaces y dependencias sin apropiarse de su desarrollo.
 

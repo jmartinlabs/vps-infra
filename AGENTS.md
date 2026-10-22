@@ -37,7 +37,7 @@ Estas instrucciones aplican a todo el repositorio `vps-infra` y a cualquier agen
 
 ## Coordinación, skills y subagentes
 
-- Reutilizar las instrucciones y skills **realmente presentes** en el contexto de ejecución; no asumir que `$orchestrate` o capacidades multiagente estén instaladas en este repositorio.
+- Leer [metodología adaptada](docs/metodologia-agentes.md) y las skills locales [\`$orchestrate\`](.agents/skills/orchestrate/SKILL.md), [\`$task\`](.agents/skills/task/SKILL.md), [\`$tweak\`](.agents/skills/tweak/SKILL.md). Están versionadas en este repositorio, pero **su descubrimiento/invocación en Codex no está verificado**. Si el cliente no reconoce una skill, leer su archivo expresamente; no suponer que hay subagentes activos.
 - Un coordinador puede descomponer y delegar tareas **ya autorizadas**; cada paquete define objetivo, propiedad de archivos, dependencias, alcance de escritura, criterios de salida y límites.
 - Usar el menor número de especialistas útil. Las revisiones de seguridad y QA pueden ser independientes, pero **un perfil documental no equivale a un agente activo**.
 - Lecturas paralelas pueden compartir checkout. Para escrituras paralelas exigir propiedad disjunta **y aislamiento efectivo** (worktrees/checkouts separados) dentro del alcance ya autorizado; comprobar estado y cambios preexistentes. Si no es seguro, serializar.

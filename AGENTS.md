@@ -24,7 +24,8 @@ Estas instrucciones aplican a todo el repositorio `vps-infra` y a cualquier agen
 - No crear ni utilizar secretos reales, claves privadas, credenciales o datos personales/financieros en el repositorio, PR, logs o chat; utilizar nombres ficticios, valores redactados y referencias externas seguras.
 - Nunca eliminar recursos ni sobrescribir datos sin inventario de impacto y plan de recuperación comprobable. Priorizar ensayos aislados y reversibles.
 - Respetar disponibilidad y datos de **todas** las aplicaciones existentes. No dar por supuesto que el VPS está dedicado a MyFinanzas.
-- La autorización de una tarea **no** habilita automáticamente otras, aunque compartan tecnología o los tests pasen.
+- La autorización de una tarea **no** habilita automáticamente otras, aunque compartan tecnología o los tests pasen. «ok», «dale», «continúa» o una aprobación genérica **no autorizan** merge, despliegue, acceso remoto ni operaciones protegidas; exigir aprobación explícita del objetivo concreto.
+- Para Claude Code, seguir [CLAUDE.md](CLAUDE.md) y la [adaptación del harness](docs/harness.md); son compatibles con estas restricciones, nunca sustitutos.
 
 ## Git y pull requests
 

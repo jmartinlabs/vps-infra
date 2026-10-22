@@ -1,6 +1,6 @@
 # Metodología de agentes para infraestructura
 
-> **Propuesta de adopción documental en PR #2**. No desplegada ni probada en un cliente Codex real. Ningún permiso nuevo para operar el VPS.
+> **Adopción documental:** skills y perfiles versionados, pero aún no probados en un cliente Codex real. Ningún permiso nuevo para operar el VPS.
 
 ## Origen y adaptación
 

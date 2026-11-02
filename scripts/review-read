@@ -1,0 +1,774 @@
+#!/usr/bin/env python3
+"""Read-only evidence interface for the OpenCode review subagent.
+
+The review agent has no general shell access. It may call this command with the
+operations declared in POLICY below. The wrapper validates every operation and
+argument, then runs a fixed argv without a shell. It never exposes an option
+that writes, executes an external program through Git, or prints a protected
+file. Protected names feed both local checks and Git exclusions, and PR diffs
+are filtered per file before output. The template validator checks this policy,
+the plugin and the tool permission.
+"""
+from pathlib import Path
+import fnmatch
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+POLICY = {
+    "version": 1,
+    "max_output_bytes": 120000,
+    "git": {
+        "operations": {
+            "status": {"options": {}},
+            "branches": {"options": {}},
+            "log": {"options": {"max": "int", "path": "path", "rev": "rev"}},
+            "show": {"options": {"rev": "rev", "path": "path", "stat": "flag"},
+                     "required": ["rev"]},
+            "diff": {"options": {"base": "rev", "head": "rev", "path": "path",
+                                 "stat": "flag"}},
+            "file-history": {"options": {"max": "int", "path": "path"},
+                             "required": ["path"]},
+            "changed-files": {"options": {"base": "rev", "head": "rev"},
+                              "required": ["base", "head"]},
+            "search": {"options": {"pattern": "text", "path": "path"},
+                       "required": ["pattern"]},
+        }
+    },
+    "github": {
+        "operations": {
+            "pr": {"options": {"number": "int"}, "required": ["number"]},
+            "pr-diff": {"options": {"number": "int", "name-only": "flag",
+                                    "patch": "flag"},
+                        "required": ["number"]},
+            "pr-checks": {"options": {"number": "int"}, "required": ["number"]},
+            "pr-list": {"options": {"limit": "int"}},
+            "run": {"options": {"run-id": "run_id"}, "required": ["run-id"]},
+            "run-list": {"options": {"limit": "int", "branch": "ref"}},
+        }
+    },
+    "file": {
+        "operations": {
+            "read": {"options": {"path": "path"}, "required": ["path"]},
+        }
+    },
+}
+
+ROOT = Path(__file__).resolve().parents[1]
+GIT = ["git", "--no-pager", "--no-optional-locks",
+       "-c", "core.pager=cat", "-c", "core.fsmonitor=false",
+       "-c", "core.hooksPath=/dev/null", "-c", "diff.external=",
+       "-c", "core.quotePath=false"]
+GIT_ENV_REDIRECTS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS", "GIT_ATTR_NOSYSTEM",
+    "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_PROXY_COMMAND",
+)
+# One protected-name list feeds local path checks and Git pathspec exclusions.
+# The exact basename `.env.example` is the only read exception; every generic
+# `*.env.example` variant remains protected. Directories are protected
+# regardless of the file name inside them.
+PROTECTED_FILES = (
+    ".env", ".env.*", "*.env.example", ".envrc", ".envrc.*",
+    "*.pem", "*.key", "*.p12", "*.pfx", "*.kdbx", "*.jks", "*.keystore",
+    "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
+    ".git-credentials", ".netrc", ".npmrc", ".pypirc",
+    "*credentials.json", "*secrets.json",
+    "*.credentials", "*.secret", "*.secrets",
+    "secret", "secrets", "credential", "credentials",
+    "*secret*", "*credential*",
+)
+PROTECTED_DIRS = (".git", ".ssh", ".aws", ".gnupg", "secrets", "credentials")
+
+
+def build_excludes():
+    result = []
+    for pattern in PROTECTED_FILES:
+        result.append(f":(exclude,icase,glob){pattern}")
+        result.append(f":(exclude,icase,glob)**/{pattern}")
+    for directory in PROTECTED_DIRS:
+        result.append(f":(exclude,icase,glob){directory}/**")
+        result.append(f":(exclude,icase,glob)**/{directory}/**")
+    return result
+
+
+EXCLUDES = build_excludes()
+# Pathspecs exclude protected files from diffs, history and search. Both the
+# bare and nested forms are needed because `*` crosses path separators only in
+# permission rules, not in Git's glob magic.
+
+class Invalid(Exception):
+    pass
+
+
+class BackendFailure(Exception):
+    pass
+
+
+def usage():
+    return (
+        "usage: python3 scripts/review-read <group> <operation> [--option value]\n"
+        "groups: git, github, file, describe\n"
+        "run `python3 scripts/review-read describe` for the exact policy"
+    )
+
+
+def fail(kind, message):
+    print(f"{kind}: {message}", file=sys.stderr)
+    return 2 if kind == "INVALID" else 3
+
+
+def is_protected(path):
+    """Return True for local paths the review agent must not read or print."""
+    normalized = path.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts:
+        return True
+    if any(part.lower() in PROTECTED_DIRS for part in parts):
+        return True
+    original_name = parts[-1]
+    if original_name == ".env.example":
+        return False
+    name = original_name.lower()
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in PROTECTED_FILES)
+
+
+def check_path(value):
+    if not value or len(value) > 500:
+        raise Invalid("path must be between 1 and 500 characters")
+    if value.startswith(("/", "~")) or "\\" in value or "\x00" in value or "\n" in value or "\r" in value:
+        raise Invalid("path must be a normalized repository-relative path")
+    if any(char in value for char in "*?[]:"):
+        raise Invalid("path must not use glob or pathspec magic")
+    parts = [part for part in value.replace("\\", "/").split("/") if part]
+    if not parts or any(part in (".", "..") for part in parts):
+        raise Invalid("path must not contain . or .. components")
+    if is_protected("/".join(parts)):
+        raise Invalid("path targets a protected file or directory")
+    return "/".join(parts)
+
+
+def check_rev(value):
+    if not value or len(value) > 200:
+        raise Invalid("revision must be between 1 and 200 characters")
+    if ":" in value or "\\" in value or any(char.isspace() for char in value):
+        raise Invalid("revision must not contain paths, whitespace or backslashes")
+    if value.startswith("-") or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._/~^@{}-]*",
+                                                value):
+        raise Invalid("revision is not an allowed ref or range")
+    return value
+
+
+def check_int(value):
+    if not re.fullmatch(r"[1-9][0-9]{0,8}", value):
+        raise Invalid("value must be a positive integer")
+    return int(value)
+
+
+def check_run_id(value):
+    # GitHub run IDs are positive decimal identifiers and already exceed nine
+    # digits. Keep them distinct from bounded counters such as --max/--limit.
+    if not re.fullmatch(r"[1-9][0-9]{0,18}", value):
+        raise Invalid("run-id must be a positive decimal identifier")
+    return int(value)
+
+
+def check_ref(value):
+    if not value or len(value) > 200:
+        raise Invalid("branch must be between 1 and 200 characters")
+    if value.startswith("-") or ".." in value or not re.fullmatch(
+            r"[A-Za-z0-9._/-]+", value):
+        raise Invalid("branch is not an allowed ref")
+    return value
+
+
+def check_text(value):
+    if not value or len(value) > 500 or "\x00" in value or "\n" in value:
+        raise Invalid("text must be between 1 and 500 characters on one line")
+    return value
+
+
+CHECKERS = {
+    "int": check_int,
+    "run_id": check_run_id,
+    "path": check_path,
+    "rev": check_rev,
+    "ref": check_ref,
+    "text": check_text,
+}
+
+
+def parse(group, operation, argv):
+    if group not in POLICY:
+        raise Invalid(f"unknown group: {group}")
+    spec = POLICY[group]["operations"].get(operation)
+    if spec is None:
+        raise Invalid(f"unknown operation: {group} {operation}")
+    options = spec["options"]
+    parsed = {}
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if not token.startswith("--") or token == "--":
+            raise Invalid(f"unexpected argument: {token}")
+        name = token[2:]
+        if name not in options:
+            raise Invalid(f"option not allowed for {operation}: --{name}")
+        if name in parsed:
+            raise Invalid(f"duplicate option: --{name}")
+        kind = options[name]
+        if kind == "flag":
+            parsed[name] = True
+            index += 1
+            continue
+        if index + 1 >= len(argv):
+            raise Invalid(f"missing value for --{name}")
+        parsed[name] = CHECKERS[kind](argv[index + 1])
+        index += 2
+    for name in spec.get("required", []):
+        if name not in parsed:
+            raise Invalid(f"missing required option: --{name}")
+    return parsed
+
+
+def query_env():
+    env = dict(os.environ)
+    for name in GIT_ENV_REDIRECTS:
+        env.pop(name, None)
+    for name in list(env):
+        # Trace variables can make Git create files during an otherwise read-only
+        # query. Cover the whole GIT_TRACE* family, including GIT_TRACE2*.
+        if name.startswith("GIT_TRACE"):
+            env.pop(name, None)
+        elif name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            env.pop(name, None)
+    env.update({
+        "GIT_PAGER": "cat", "PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
+        "GH_PAGER": "cat", "GH_PROMPT_DISABLED": "1",
+        "GH_NO_UPDATE_NOTIFIER": "1", "NO_COLOR": "1",
+    })
+    return env
+
+
+def resolve_rev(value, allow_range=False):
+    """Reject paths and other non-commit objects before they reach show/diff/log."""
+    parts = value.split("..")
+    if len(parts) > 2 or (len(parts) == 2 and not allow_range) or any(not part for part in parts):
+        raise Invalid("revision must be a commit or an allowed two-sided range")
+    for part in parts:
+        try:
+            completed = subprocess.run(
+                GIT + ["rev-parse", "--verify", "--quiet", part + "^{commit}"],
+                cwd=str(ROOT), env=query_env(), shell=False, text=True,
+                capture_output=True, timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            raise Invalid("cannot verify the revision with Git")
+        if completed.returncode != 0:
+            raise Invalid(f"revision is not a commit: {part}")
+    return value
+
+
+def run(argv, allowed=(0,), text=True):
+    try:
+        completed = subprocess.run(
+            argv, cwd=str(ROOT), env=query_env(), shell=False, text=text,
+            capture_output=True, timeout=30,
+        )
+    except FileNotFoundError:
+        print(f"UNAVAILABLE: {argv[0]} is not installed", file=sys.stderr)
+        return 3, None
+    except subprocess.TimeoutExpired:
+        print("UNAVAILABLE: read-only query exceeded 30 seconds", file=sys.stderr)
+        return 3, None
+    if completed.returncode not in allowed:
+        detail = completed.stderr or completed.stdout or ""
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", "replace")
+        detail = detail.strip()
+        print(f"ERROR: {argv[0]} exited {completed.returncode}: {detail}",
+              file=sys.stderr)
+        return 4, None
+    return 0, completed
+
+
+def emit_text(text):
+    limit = POLICY["max_output_bytes"]
+    data = text.encode("utf-8", "replace")
+    if len(data) > limit:
+        text = data[:limit].decode("utf-8", "replace")
+        text += f"\n[review-read truncated output at {limit} bytes]\n"
+    sys.stdout.write(text)
+    return 0
+
+
+def emit(completed):
+    return emit_text(completed.stdout or "")
+
+
+def decode_text(raw):
+    return raw.decode("utf-8", "replace")
+
+
+def quote_path(path):
+    """Render control characters unambiguously without changing the path itself."""
+    if any(ord(char) < 32 or ord(char) == 127 or char in '\\"' for char in path):
+        def escaped_char(char):
+            if char == "\\":
+                return "\\\\"
+            if char == '"':
+                return '\\"'
+            if char == "\t":
+                return "\\t"
+            if char == "\n":
+                return "\\n"
+            if char == "\r":
+                return "\\r"
+            if ord(char) < 32 or ord(char) == 127:
+                return f"\\x{ord(char):02x}"
+            return char
+        escaped = "".join(escaped_char(char) for char in path)
+        return f'"{escaped}"'
+    return path
+
+
+def parse_name_status_z(data):
+    """Parse NUL-delimited `git diff --name-status -z` records.
+
+    Git paths are never reconstructed from quoted text. Rename and copy records
+    carry two raw paths; all other statuses carry one. Unexpected or truncated
+    metadata fails closed instead of silently dropping an exclusion.
+    """
+    if data is None:
+        raise BackendFailure("missing Git name-status metadata")
+    tokens = data.split(b"\0")
+    if tokens and tokens[-1] == b"":
+        tokens.pop()
+    records = []
+    index = 0
+    while index < len(tokens):
+        try:
+            status = tokens[index].decode("ascii")
+        except UnicodeDecodeError:
+            raise BackendFailure("non-ASCII Git name-status metadata")
+        if not re.fullmatch(r"[A-Z][0-9]{0,3}", status):
+            raise BackendFailure("unexpected Git name-status metadata")
+        index += 1
+        needed = 2 if status[0] in ("R", "C") else 1
+        if index + needed > len(tokens):
+            raise BackendFailure("truncated Git name-status metadata")
+        paths = []
+        for _ in range(needed):
+            raw = tokens[index]
+            if not raw:
+                raise BackendFailure("empty path in Git name-status metadata")
+            paths.append(os.fsdecode(raw))
+            index += 1
+        records.append((status, paths[0], paths[1] if needed == 2 else None))
+    return records
+
+
+def rename_excludes_from(data):
+    """Exclude the allowed side of any rename/copy paired with a protected path."""
+    extras = []
+    seen = set()
+    for _, old, new in parse_name_status_z(data):
+        if new is None:
+            continue
+        if is_protected(old) or is_protected(new):
+            for path in (old, new):
+                if path and not is_protected(path) and path not in seen:
+                    seen.add(path)
+                    extras.append(f":(exclude,icase,literal){path}")
+    return extras
+
+
+def changed_files_text(data):
+    """Render only name-status records whose old and new paths are allowed."""
+    lines = []
+    for status, old, new in parse_name_status_z(data):
+        if any(is_protected(path) for path in (old, new) if path is not None):
+            continue
+        if new is None:
+            lines.append(f"{status}\t{quote_path(old)}")
+        else:
+            lines.append(f"{status}\t{quote_path(old)}\t{quote_path(new)}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def file_history_text(data):
+    """Render `git log --follow --name-status -z` with protected entries removed.
+
+    Commit headers use a distinct marker so a raw path that happens to look like
+    a SHA cannot be mistaken for the next commit. Filters name-status records
+    only; commit subjects remain outside this filter and are documented.
+    """
+    tokens = data.split(b"\0")
+    if tokens and tokens[-1] == b"":
+        tokens.pop()
+    lines = []
+    index = 0
+    while index < len(tokens) and tokens[index] == b"":
+        index += 1
+    marker = re.compile(rb"\x01[0-9a-f]{40,64}")
+    while index < len(tokens):
+        if not marker.fullmatch(tokens[index]):
+            raise BackendFailure("unexpected Git history metadata")
+        sha = tokens[index][1:].decode("ascii")
+        index += 1
+        if index + 3 > len(tokens):
+            raise BackendFailure("truncated Git history metadata")
+        date, author, subject = (decode_text(tokens[index]),
+                                 decode_text(tokens[index + 1]),
+                                 decode_text(tokens[index + 2]))
+        index += 3
+        lines.append(f"{sha}\t{date}\t{author}\t{subject}")
+        while index < len(tokens) and not marker.fullmatch(tokens[index]):
+            token = tokens[index]
+            if token == b"":
+                index += 1
+                continue
+            try:
+                status = token.lstrip(b"\n").decode("ascii")
+            except UnicodeDecodeError:
+                raise BackendFailure("non-ASCII Git history metadata")
+            if not re.fullmatch(r"[A-Z][0-9]{0,3}", status):
+                raise BackendFailure("unexpected Git history metadata")
+            index += 1
+            needed = 2 if status[0] in ("R", "C") else 1
+            if index + needed > len(tokens):
+                raise BackendFailure("truncated Git history metadata")
+            paths = []
+            for _ in range(needed):
+                raw = tokens[index]
+                if not raw:
+                    raise BackendFailure("empty path in Git history metadata")
+                paths.append(os.fsdecode(raw))
+                index += 1
+            if any(is_protected(path) for path in paths):
+                continue
+            if needed == 2:
+                lines.append(f"{status}\t{quote_path(paths[0])}\t"
+                             f"{quote_path(paths[1])}")
+            else:
+                lines.append(f"{status}\t{quote_path(paths[0])}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def git_operation(operation, options):
+    if "rev" in options:
+        resolve_rev(options["rev"], allow_range=operation == "log")
+    for name in ("base", "head"):
+        if name in options:
+            resolve_rev(options[name])
+
+    def pathspec(extra=()):
+        result = ["--"]
+        if "path" in options:
+            result.append(options["path"])
+        result.extend(EXCLUDES)
+        result.extend(extra)
+        return result
+
+    if operation == "status":
+        return GIT + ["status", "--short", "--branch", "--untracked-files=normal",
+                      "-z"]
+    if operation == "branches":
+        return GIT + ["branch", "--all", "--list", "--no-color",
+                      "--format=%(HEAD)%09%(refname:short)%09%(upstream:short)"
+                      "%09%(objectname:short)"]
+    if operation == "log":
+        count = options.get("max", 20)
+        if count > 100:
+            raise Invalid("--max must be 100 or less")
+        argv = GIT + ["log", "--no-color", "--no-decorate", "--date=iso-strict",
+                      "--format=%H%x09%ad%x09%an%x09%s", "-n", str(count)]
+        if "rev" in options:
+            argv.append(options["rev"])
+        return argv + pathspec()
+    if operation == "show":
+        status, completed = run(GIT + ["diff-tree", "--no-commit-id",
+                                       "--name-status", "-r", "-M", "-C",
+                                       "--find-copies-harder", "-z",
+                                       options["rev"]], text=False)
+        if completed is None:
+            raise BackendFailure("cannot inspect commit rename metadata")
+        argv = GIT + ["show", "--no-color", "--no-ext-diff", "--no-textconv",
+                      "--format=fuller"]
+        argv.append("--stat" if options.get("stat") else "--patch")
+        argv.append(options["rev"])
+        return argv + pathspec(rename_excludes_from(completed.stdout or b""))
+    if operation == "diff":
+        if "head" in options and "base" not in options:
+            raise Invalid("--head requires --base")
+        diff_args = []
+        if "base" in options:
+            diff_args.append(options["base"])
+        if "head" in options:
+            diff_args.append(options["head"])
+        status, completed = run(GIT + ["diff", "--name-status", "--no-ext-diff",
+                                       "--no-textconv", "-M", "-C",
+                                       "--find-copies-harder", "-z"] + diff_args,
+                                text=False)
+        if completed is None:
+            raise BackendFailure("cannot inspect diff rename metadata")
+        argv = GIT + ["diff", "--no-color", "--no-ext-diff", "--no-textconv"]
+        argv.append("--stat" if options.get("stat") else "--patch")
+        argv.extend(diff_args)
+        return argv + pathspec(rename_excludes_from(completed.stdout or b""))
+    if operation == "search":
+        return GIT + ["grep", "--no-color", "--no-textconv", "-n", "-I",
+                      "--untracked", "-e", options["pattern"]] + pathspec()
+    raise Invalid(f"unhandled git operation: {operation}")
+
+
+def changed_files_operation(options):
+    for name in ("base", "head"):
+        resolve_rev(options[name])
+    status, completed = run(GIT + ["diff", "--name-status", "--no-ext-diff",
+                                   "--no-textconv", "-M", "-C",
+                                   "--find-copies-harder", "-z",
+                                   options["base"], options["head"]],
+                            text=False)
+    if completed is None:
+        raise BackendFailure("cannot inspect changed files")
+    return changed_files_text(completed.stdout or b"")
+
+
+def file_history_operation(options):
+    """Build file-history argv; `--follow` needs one pathspec, so filtering is post-hoc."""
+    count = options.get("max", 20)
+    if count > 100:
+        raise Invalid("--max must be 100 or less")
+    return GIT + ["log", "--follow", "--no-color", "--no-decorate",
+                  "--date=iso-strict",
+                  "--format=%x00%x01%H%x00%ad%x00%an%x00%s%x00",
+                  "--name-status", "-z", "-n", str(count), "--", options["path"]]
+
+
+def filter_status(data):
+    """Render NUL-delimited `git status` records without protected paths.
+
+    `git status` does not accept pathspec exclusions, so filter its structured
+    output. Status shows names only, never content.
+    """
+    if data is None:
+        raise BackendFailure("missing Git status metadata")
+    tokens = data.split(b"\0")
+    if tokens and tokens[-1] == b"":
+        tokens.pop()
+    lines = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token:
+            index += 1
+            continue
+        if token.startswith(b"## "):
+            lines.append(decode_text(token))
+            index += 1
+            continue
+        if len(token) < 4 or token[2:3] != b" ":
+            raise BackendFailure("unexpected Git status metadata")
+        try:
+            status = token[:2].decode("ascii")
+        except UnicodeDecodeError:
+            raise BackendFailure("non-ASCII Git status metadata")
+        if not re.fullmatch(r"[ MADRCUT?!]{2}", status):
+            raise BackendFailure("unexpected Git status metadata")
+        path = os.fsdecode(token[3:])
+        index += 1
+        old = None
+        if any(char in "RC" for char in status):
+            if index >= len(tokens) or not tokens[index]:
+                raise BackendFailure("truncated Git status metadata")
+            old = os.fsdecode(tokens[index])
+            index += 1
+        if is_protected(path) or (old is not None and is_protected(old)):
+            continue
+        if old is None:
+            lines.append(f"{status} {quote_path(path)}")
+        else:
+            lines.append(f"{status} {quote_path(path)} <- {quote_path(old)}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def file_operation(options):
+    """Read one allowed UTF-8 file through the case-insensitive path boundary."""
+    requested = options["path"]
+    try:
+        root = ROOT.resolve()
+        target = (ROOT / requested).resolve()
+        relative = target.relative_to(root)
+    except ValueError:
+        raise Invalid("path escapes the workspace")
+    except (OSError, RuntimeError):
+        raise Invalid("path cannot be resolved safely")
+    if is_protected(str(relative)):
+        raise Invalid("path targets a protected file or directory")
+    if not target.is_file():
+        raise BackendFailure("file is not a readable regular file")
+    try:
+        with target.open("rb") as handle:
+            data = handle.read(POLICY["max_output_bytes"] + 1)
+    except OSError as error:
+        raise BackendFailure(f"cannot read file: {error}")
+    if b"\0" in data:
+        raise BackendFailure("binary file is not available through the text query")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BackendFailure("non-UTF-8 file is not available through the text query")
+    return emit_text(text)
+
+
+def github_operation(operation, options):
+    number = options.get("number")
+    limit = min(options.get("limit", 20), 100)
+    if operation == "pr":
+        return ["gh", "pr", "view", str(number), "--json",
+                "number,title,state,isDraft,headRefName,baseRefName,mergeable,"
+                "mergeStateStatus,url,author,createdAt,updatedAt,reviewDecision,"
+                "statusCheckRollup,commits,body"]
+    if operation == "pr-checks":
+        return ["gh", "pr", "checks", str(number)]
+    if operation == "pr-list":
+        return ["gh", "pr", "list", "--limit", str(limit), "--state", "all",
+                "--json", "number,title,state,headRefName,baseRefName,url,updatedAt"]
+    if operation == "run":
+        return ["gh", "run", "view", str(options["run-id"]), "--json",
+                "databaseId,displayTitle,event,headBranch,headSha,status,"
+                "conclusion,url,createdAt,updatedAt"]
+    if operation == "run-list":
+        argv = ["gh", "run", "list", "--limit", str(limit), "--json",
+                "databaseId,displayTitle,event,headBranch,headSha,status,"
+                "conclusion,url,createdAt,updatedAt"]
+        if "branch" in options:
+            argv.extend(["--branch", options["branch"]])
+        return argv
+    raise Invalid(f"unhandled github operation: {operation}")
+
+
+def github_pr_diff(options):
+    """Filter protected paths from per-file PR data instead of returning a raw patch."""
+    number = options["number"]
+    endpoint = f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100"
+    status, completed = run(
+        ["gh", "api", "--paginate", "--slurp", "-H",
+         "Accept: application/vnd.github+json", endpoint],
+        allowed=(0,),
+    )
+    if completed is None:
+        return status
+    try:
+        payload = json.loads(completed.stdout or "[]")
+    except ValueError:
+        print("ERROR: GitHub returned invalid JSON for PR files", file=sys.stderr)
+        return 4
+    if not isinstance(payload, list):
+        print("ERROR: unexpected GitHub PR files response", file=sys.stderr)
+        return 4
+    files = []
+    for page in payload:
+        if not isinstance(page, list):
+            print("ERROR: unexpected GitHub PR files page", file=sys.stderr)
+            return 4
+        for item in page:
+            if not isinstance(item, dict):
+                print("ERROR: unexpected GitHub PR file entry", file=sys.stderr)
+                return 4
+            filename = item.get("filename")
+            previous = item.get("previous_filename")
+            if not isinstance(filename, str) or not filename:
+                print("ERROR: GitHub PR file entry has no filename", file=sys.stderr)
+                return 4
+            if previous is not None and not isinstance(previous, str):
+                print("ERROR: GitHub PR file entry has invalid previous filename",
+                      file=sys.stderr)
+                return 4
+            files.append((filename, previous or None, item))
+    lines = []
+    redacted = 0
+    for filename, previous, item in files:
+        names = [filename] + ([previous] if previous else [])
+        if any(is_protected(name) for name in names):
+            redacted += 1
+            continue
+        if options.get("name-only"):
+            lines.append(f"{previous} -> {filename}" if previous else filename)
+            continue
+        additions = item.get("additions", 0)
+        deletions = item.get("deletions", 0)
+        header = f"=== {item.get('status', 'modified')} {filename} (+{additions}/-{deletions})"
+        if previous:
+            header += f" (from {previous})"
+        lines.append(header)
+        patch = item.get("patch")
+        lines.append(patch if isinstance(patch, str) and patch
+                     else "(no textual patch; binary or truncated)")
+    if redacted:
+        lines.insert(0, f"[redacted {redacted} protected file(s)]")
+    text = "\n".join(lines)
+    if text:
+        text += "\n"
+    return emit_text(text)
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(usage())
+        return 0
+    if argv[0] == "describe":
+        if len(argv) != 1:
+            raise Invalid("describe takes no arguments")
+        print(json.dumps(POLICY, indent=2, sort_keys=True))
+        return 0
+    if len(argv) < 2:
+        raise Invalid("missing operation")
+    group, operation, rest = argv[0], argv[1], argv[2:]
+    options = parse(group, operation, rest)
+    if group == "git":
+        if operation == "status":
+            status, completed = run(git_operation(operation, options), text=False)
+            if completed is None:
+                return status
+            return emit_text(filter_status(completed.stdout))
+        if operation == "file-history":
+            status, completed = run(file_history_operation(options), text=False)
+            if completed is None:
+                return status
+            return emit_text(file_history_text(completed.stdout or b""))
+        if operation == "changed-files":
+            return emit_text(changed_files_operation(options))
+        allowed = (0, 1) if operation == "search" else (0,)
+        status, completed = run(git_operation(operation, options), allowed=allowed)
+        return status if completed is None else emit(completed)
+    if group == "file":
+        return file_operation(options)
+    if group == "github":
+        if shutil.which("gh") is None:
+            print("UNAVAILABLE: GitHub CLI (gh) is not installed", file=sys.stderr)
+            return 3
+        if operation == "pr-diff":
+            return github_pr_diff(options)
+        allowed = (0, 1) if operation == "pr-checks" else (0,)
+        status, completed = run(github_operation(operation, options), allowed=allowed)
+        return status if completed is None else emit(completed)
+    raise Invalid(f"unknown group: {group}")
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Invalid as error:
+        sys.exit(fail("INVALID", str(error)))
+    except BackendFailure as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(4)

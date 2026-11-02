@@ -459,6 +459,28 @@ class ValidationTests(unittest.TestCase):
   self.change('specs/methodology/approvals.md','A Work Packet assigns responsibilities','A Work Packet grants scope'); self.assertRule('consistency')
  def test_consistency_project_precedence(self):
   self.change('AGENTS.md','Project-specific restrictions','Generic suggestions'); self.assertRule('consistency')
+ def test_lifecycle_contract(self):
+  cases=(
+   ('specs/methodology/approvals.md','## Post-merge local cleanup'),
+   ('specs/methodology/approvals.md','After the user has given explicit, identifiable merge approval'),
+   ('specs/methodology/approvals.md','the PR is `MERGED`'),
+   ('specs/methodology/approvals.md','git worktree remove <task-worktree>'),
+   ('specs/methodology/approvals.md','git branch -d <task-branch>'),
+   ('specs/methodology/approvals.md','Do not require every commit'),
+   ('specs/methodology/approvals.md','when ownership cannot be established, preserve'),
+   ('.agents/skills/handoff/SKILL.md','## Next session and checkpoint retirement'),
+   ('.agents/skills/handoff/SKILL.md','tracked by Git'),
+   ('.agents/skills/handoff/SKILL.md','nothing to retire'),
+   ('specs/README.md','retirar tras una restauración correcta y consolidada'),
+   ('.agents/skills/orchestrate/SKILL.md','post-merge-local-cleanup'),
+  )
+  for name,token in cases:
+   with self.subTest(name=name,token=token):
+    p=self.root/name; original=p.read_text()
+    self.assertIn(token,original)
+    try:
+     p.write_text(original.replace(token,'REMOVED')); self.assertRule('lifecycle')
+    finally: p.write_text(original)
  def test_worktree_policy_conditions(self):
   for token in ('work already authorized by the user', 'provides useful isolation', 'does not affect existing work', 'including uncommitted/untracked changes', 'publication or merges', 'never remove a worktree with pending work without user authorization', 'Stricter derived-project restrictions always take precedence'):
    with self.subTest(token=token):
@@ -649,4 +671,77 @@ class FixtureIsolationTests(unittest.TestCase):
   with contextlib.redirect_stdout(out), self.assertRaises(RuntimeError) as caught: build_fixture(source,self.tmp/'fixture')
   self.assertIn('git ls-files failed',str(caught.exception))
   self.assertNotIn(NO_GIT_NOTICE,out.getvalue()); self.assertFalse((self.tmp/'fixture').exists())
+class LifecycleBehaviorTests(unittest.TestCase):
+ """Reference Git invariants for the documented cleanup sequence.
+
+  These tests exercise isolated fixtures, not the coordinator's live resources.
+  """
+ def setUp(self):
+  temp=tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+  self.tmp=Path(temp.name)
+ def git(self,root,*args,check=True):
+  return subprocess.run(['git','-c','user.name=Test','-c','user.email=test@example.invalid',
+    '-C',str(root),*args],check=check,capture_output=True,text=True)
+ def repository(self):
+  root=self.tmp/'repo'; root.mkdir()
+  self.git(root,'init','-q'); (root/'README.md').write_text('# base\n')
+  self.git(root,'add','-A'); self.git(root,'commit','-qm','base')
+  self.default_branch=self.git(root,'symbolic-ref','--short','HEAD').stdout.strip()
+  return root
+ def add_worktree(self,root,branch,name):
+  path=self.tmp/name
+  self.git(root,'worktree','add','-q','-b',branch,str(path))
+  return path
+ def test_clean_merged_worktree_and_branch_can_be_removed(self):
+  root=self.repository(); worktree=self.add_worktree(root,'feature-merged','wt-merged')
+  (worktree/'feature.txt').write_text('feature\n')
+  self.git(worktree,'add','-A'); self.git(worktree,'commit','-qm','feature')
+  self.git(root,'merge','--no-ff','feature-merged','-qm','merge feature')
+  self.assertEqual(self.git(root,'worktree','remove',str(worktree),check=False).returncode,0)
+  self.assertFalse(worktree.exists())
+  self.assertEqual(self.git(root,'branch','-d','feature-merged',check=False).returncode,0)
+  self.assertNotIn('feature-merged',self.git(root,'branch','--list').stdout)
+ def test_dirty_worktree_is_preserved(self):
+  root=self.repository(); worktree=self.add_worktree(root,'feature-dirty','wt-dirty')
+  (worktree/'pending.txt').write_text('pending\n')
+  self.assertNotEqual(self.git(root,'worktree','remove',str(worktree),check=False).returncode,0)
+  self.assertTrue(worktree.exists())
+ def test_unmerged_branch_is_preserved(self):
+  root=self.repository(); self.git(root,'branch','feature-unmerged')
+  self.git(root,'checkout','-q','feature-unmerged')
+  (root/'later.txt').write_text('later\n')
+  self.git(root,'add','-A'); self.git(root,'commit','-qm','unmerged')
+  self.git(root,'checkout','-q',self.default_branch)
+  self.assertNotEqual(self.git(root,'branch','-d','feature-unmerged',check=False).returncode,0)
+  self.assertIn('feature-unmerged',self.git(root,'branch','--list').stdout)
+ def test_other_worktree_is_preserved(self):
+  root=self.repository(); first=self.add_worktree(root,'feature-one','wt-one')
+  second=self.add_worktree(root,'feature-two','wt-two')
+  self.assertEqual(self.git(root,'worktree','remove',str(first),check=False).returncode,0)
+  self.assertFalse(first.exists()); self.assertTrue(second.exists())
+ def test_untracked_handoff_can_be_removed_after_consolidation(self):
+  root=self.repository(); (root/'specs').mkdir()
+  handoff=root/'specs/session-handoff.md'; handoff.write_text('temporary\n')
+  (root/'specs/progress.md').write_text('durable state\n')
+  handoff.unlink()
+  self.assertFalse(handoff.exists())
+  self.assertTrue((root/'specs/progress.md').exists())
+ def test_incomplete_restoration_preserves_handoff(self):
+  root=self.repository(); (root/'specs').mkdir()
+  handoff=root/'specs/session-handoff.md'; handoff.write_text('temporary\n')
+  self.assertTrue(handoff.exists())
+ def test_no_temporary_handoff_is_normal(self):
+  root=self.repository(); (root/'specs').mkdir()
+  handoff=root/'specs/session-handoff.md'
+  (root/'specs/progress.md').write_text('durable state\n')
+  self.git(root,'add','-A'); self.git(root,'commit','-qm','durable state')
+  if handoff.exists(): handoff.unlink()
+  self.assertFalse(handoff.exists())
+  self.assertEqual(self.git(root,'status','--short').stdout,'')
+ def test_tracked_handoff_removal_is_a_normal_worktree_change(self):
+  root=self.repository(); (root/'specs').mkdir()
+  handoff=root/'specs/session-handoff.md'; handoff.write_text('temporary\n')
+  self.git(root,'add','-A'); self.git(root,'commit','-qm','add handoff')
+  self.git(root,'rm','-q','specs/session-handoff.md')
+  self.assertIn('D  specs/session-handoff.md',self.git(root,'status','--short').stdout)
 if __name__=='__main__': unittest.main(verbosity=2)

@@ -21,7 +21,7 @@ El contrato de verificación y CI es [ci-policy](methodology/ci-policy.md).
 | `specs/guidelines/` | Restricciones de arquitectura, UI, calidad y seguridad | Decisiones aprobadas |
 | `specs/NN-slug-*.md` | Brainstorming, especificación, progreso y testplan de una entrega Full | `$spec` / `$dev` |
 | `specs/epic-board.md` | Cola multiépica; nunca aprobaciones canónicas | Solo el coordinador |
-| `specs/session-handoff.md` | Checkpoint de parada; no autoriza reanudar | `$handoff` |
+| `specs/session-handoff.md` | Checkpoint de parada opcional; retirar tras una restauración correcta y consolidada; si está versionado, eliminarlo en el mismo cambio de la tarea, nunca en un PR independiente; no autoriza reanudar | `$handoff` |
 
 Usa identificadores de dos dígitos y slugs en minúsculas; no sobrescribas documentos de otra
 entrega. Las plantillas están en [`templates/`](../templates). Una recomendación no es una

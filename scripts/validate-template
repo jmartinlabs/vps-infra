@@ -297,6 +297,15 @@ def validate(root):
  }.items():
   for token in tokens:
    if token not in read(name): fail('publication',f'{name}: missing {token}')
+ # Local lifecycle cleanup and handoff retirement are canonical in approvals/handoff.
+ for name,tokens in {
+  'specs/methodology/approvals.md':('## Post-merge local cleanup','ordinary authorized closure','the PR is `MERGED`','git worktree remove <task-worktree>','git branch -d <task-branch>','without `--force`','without `-D`','Do not require every commit','preserve the branch','git reset --hard','git clean -fd','remote branch deletion','other task','After the user has given explicit, identifiable merge approval','when ownership cannot be established, preserve'),
+  '.agents/skills/handoff/SKILL.md':('## Next session and checkpoint retirement','successful restoration','tracked by Git','standalone PR','**preserve**','nothing to retire','never remove permanent'),
+  'specs/README.md':('retirar tras una restauración correcta y consolidada','mismo cambio de la tarea','PR independiente'),
+  '.agents/skills/orchestrate/SKILL.md':('post-merge-local-cleanup','next-session-and-checkpoint-retirement','Preserve dirty, unknown or other-task resources'),
+ }.items():
+  for token in tokens:
+   if token not in read(name): fail('lifecycle',f'{name}: missing {token}')
  # Execution continuity lives in orchestrate; closure wording lives in the communication contract.
  for name,tokens in {
   '.agents/skills/orchestrate/SKILL.md':('## Execution continuity','a partial result','authorized, executable work remains','completed work with its evidence','decision or approval that only the user can provide','user request to stop','blocker that cannot be resolved','corrected inside the authorized scope','rerun the affected verification','next action in the same turn','Reuse a valid authorization'),

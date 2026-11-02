@@ -1,10 +1,10 @@
 ---
 name: tweak
-description: Realiza correcciones locales pequeñas de bajo riesgo y verificaciones proporcionales.
+description: Handle a small low-risk Quick change with minimal overhead.
 ---
 
-# Adaptador Claude Code · tweak
+# /tweak — Claude Code adapter
 
-Leer y aplicar íntegramente la skill canónica `.agents/skills/tweak/SKILL.md`, junto con `AGENTS.md` y `docs/metodologia-agentes.md`. Este adaptador no concede permisos nuevos, no crea subagentes y no habilita operaciones sobre el VPS.
-
-Si la skill canónica no es accesible, detenerse y notificar la incidencia.
+Read and follow the canonical Skill `.agents/skills/tweak/SKILL.md`; this wrapper
+adds no rules. Arguments: `$ARGUMENTS`. Codex `$name` maps to `/name` here; a
+slash command grants no approval, model change or delegation by itself.

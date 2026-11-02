@@ -1,57 +1,52 @@
-# Metodología de agentes para infraestructura
+# Metodología de agentes · adopción completa
 
-> **Adopción documental:** skills y perfiles versionados, pero aún no probados en un cliente Codex real. Ningún permiso nuevo para operar el VPS.
+> **Estado:** harness completo adoptado en la revisión
+> `6725b67` de `agent-project-template` (2026-11-02). Validación estática en CI.
+> Comportamiento real de Codex/Claude Code y cualquier acceso al VPS siguen **no verificados**.
 
-## Origen y adaptación
+## Origen
 
-Fuente: [agent-project-template](https://github.com/josemartin2000/agent-project-template), revisión `c8fd38522b449f7cdc463a9f248a46a125fdd324`, documentada como **v2.3.1**.
+Fuente: [agent-project-template](https://github.com/jmartinlabs/agent-project-template),
+revisión `6725b670f10f7aabfd0c75b2b21d0cfa7896b64b`. La revisión se fija para que una
+actualización sea una decisión explícita, nunca un seguimiento automático de `main`.
 
-Componentes adaptados:
-- Skills `orchestrate`, `task` y `tweak` en `.agents/skills/`.
-- Perfiles `infrastructure` y `qa-review` en `.agents/roles/`.
-- Este contrato ligero; conservamos `AGENTS.md` y los documentos de arquitectura/operaciones existentes.
+## Qué se adopta
 
-No se copiaron `$init-project`, `$bootstrap`, `$roadmap`, `$spec`, `$dev`, `$adopt-project`, los perfiles financieros/funcionales, el tablero de épicas, la CI de plantilla ni dependencias nuevas: **no son necesarios para la auditoría inicial**. El alcance Full se puede gestionar mediante planificación, decisiones, pruebas y PR sin esas skills. Si surge una necesidad real, evaluar después la importación selectiva.
+- Skills `init-project`, `bootstrap`, `roadmap`, `spec`, `dev`, `orchestrate`, `handoff`,
+  `task`, `tweak`, `adopt-project` y `relay` en `.agents/skills/`.
+- Perfiles `functional`, `implementation`, `qa-review` e `infrastructure` en `.agents/roles/`.
+- Envoltorios de Claude Code en `.claude/skills/` y `.claude/agents/`, con `CLAUDE.md`.
+- Metodología portable en `specs/methodology/`: flujos, aprobaciones, selección de modelo,
+  épicas, agentes dinámicos (incluidos los modos directo/foreground/background),
+  comunicación, escenarios de aceptación y política de CI.
+- Plantillas de brainstorming, especificación, roadmap, progreso, testplan, tablero y
+  paquete de trabajo.
+- Evaluaciones deterministas en `evals/` y validadores en `scripts/`.
+- Hooks locales de reporte de uso en `.codex/hooks.json` (advisory; no bloquean ni deciden).
 
-## Uso desde Codex
+## Desviaciones locales
 
-1. Abrir `vps-infra` en Codex con el repositorio sincronizado tras la integración aprobada.
-2. Leer `AGENTS.md` y la documentación de estado. En cliente que reconozca skills locales, solicitar `$orchestrate`. Si no aparece, pedir que lea explícitamente `.agents/skills/orchestrate/SKILL.md`. **El reconocimiento en Codex Desktop/Web todavía no está verificado**.
-3. Antes de ejecutar, clasificar la tarea y confirmar límites, pruebas, permisos y autorizaciones. La primera auditoría prevista requiere **autorización separada para acceso remoto de solo lectura**.
-4. Preparar cambios Git solo dentro del alcance aprobado; PR a revisión, sin merge autónomo.
-5. Si Codex no soporta subagentes en la sesión, seguir las mismas reglas en una única ejecución secuencial.
+- `AGENTS.md` conserva todas las restricciones de acceso al VPS, secretos, operaciones
+  protegidas, merges y despliegues. La metodología no amplía ningún permiso.
+- `specs/guidelines/` está adaptado a infraestructura; UI se declara **no aplicable** y las
+  decisiones de arquitectura siguen en `docs/arquitectura.md`.
+- No se copian `NEW_PROJECT_PROMPT.md` ni `ADOPT_EXISTING_PROJECT_PROMPT.md`: este proyecto
+  no se reinicializa y no crea aplicaciones.
+- La CI sigue siendo `.github/workflows/check-harness.yml` (job `validate`), ampliada con los
+  validadores adoptados. No se sustituye por el workflow del template.
+- `docs/`, `README.md` y los procedimientos operativos propios se mantienen como fuente local.
 
-## Niveles de trabajo
+## Verificación
 
-| Nivel | Ejemplo | Pruebas y autorización |
-| --- | --- | --- |
-| Quick → `$tweak` | Corregir un enlace o documento del repositorio | Verificar alcance, diff y política de PR |
-| Standard → `$task` | Preparar checklist, informe o automatización local aislada | Plan breve, criterios y comprobaciones |
-| Full → `$orchestrate` + plan específico | Seguridad, cambio de Caddy/UFW, despliegue, backup/restore | Decisiones aprobadas, plan de recuperación, pruebas, PR y permiso operativo separado |
+`python3 scripts/check_harness.py`, `./scripts/validate-template`, `./scripts/test-validator`,
+`python3 scripts/eval-agent-behavior --self-test`, los tests de usage y el test de relay se
+ejecutan en CI. Son comprobaciones estructurales y deterministas: no demuestran delegación
+real, aislamiento ni ahorro de tokens.
 
-**El riesgo manda, no las líneas cambiadas.** Una sola instrucción de firewall puede ser Full. Las skills no constituyen permiso de SSH ni activan subagentes o despliegues automáticamente.
+Pendiente: probar descubrimiento e invocación de cada Skill en Codex y Claude Code, observar
+una delegación real si el cliente la soporta y auditar el VPS con autorización de solo lectura.
 
-## Delegación
+## Actualizaciones futuras
 
-Los perfiles son descripciones de funciones, no agentes residentes. El coordinador puede usar el perfil de Infraestructura para inventario/implementación y QA para inspeccionar evidencias de forma independiente **solo si el cliente soporta delegación real y el trabajo lo justifica**.
-
-Cada encargo incluye:
-- Identificador, objetivo y resultado verificable.
-- Fuente de aprobación y dependencias.
-- Entorno/repo/rama, **lecturas permitidas** y **escrituras permitidas**.
-- Aislamiento/ownership y prohibiciones (SSH, secretos, producción, merge, etc.).
-- Comprobaciones y formato de retorno (PASS/FAIL/BLOCKED/NO EJECUTADO, commit y observaciones).
-
-Coordinar siempre antes de escribir en paralelo; sin aislamiento efectivo, serializar. No confundir otro chat con un agente gestionado por Codex.
-
-## Controles que prevalecen
-
-`AGENTS.md` es la política local: el usuario conserva control explícito de accesos, cambios en la infraestructura, decisiones materiales, merges y despliegues. Aprobar especificación, implementación o PR no implica autorización de la etapa siguiente. Nada se ejecuta remotamente durante la adopción de metodología.
-
-## Validaciones pendientes
-
-- Probar descubrimiento/invocación de cada skill en un cliente Codex **después de integrar** el PR.
-- Si se pretende delegar, verificar que el cliente realmente inicia agentes y aísla escrituras.
-- Validar flujo simulado Quick/Standard/Full con datos ficticios antes de tareas operativas reales.
-
-Este documento no reemplaza `docs/operaciones.md` ni declara el VPS auditado.
+Comparar contra una revisión fijada y revisar el diff antes de aplicar. Las decisiones locales
+y los gates de `AGENTS.md` prevalecen. Registrar aquí la nueva revisión y sus desviaciones.

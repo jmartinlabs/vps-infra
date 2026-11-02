@@ -5,7 +5,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILLS = ("orchestrate", "task", "tweak")
+SKILLS = ("init-project", "bootstrap", "roadmap", "spec", "dev", "orchestrate", "handoff", "relay", "task", "tweak", "adopt-project")
 
 def validate(root):
     errors = []
@@ -40,7 +40,7 @@ def main():
         print(error, file=sys.stderr)
     if errors:
         return 1
-    print("vps-infra Claude adapter checks passed: 3 skills and authorization links")
+    print(f"vps-infra Claude adapter checks passed: {len(SKILLS)} skills and authorization links")
     return 0
 
 if __name__ == "__main__":

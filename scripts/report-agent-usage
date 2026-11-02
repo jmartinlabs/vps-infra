@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Read-only, best-effort Codex rollout accounting. No model or network calls."""
+import argparse
+import csv
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import tempfile
+
+
+class ReportError(ValueError):
+    pass
+
+
+def safe(value):
+    """Single-line labels safe for Markdown and spreadsheet CSV cells."""
+    value = str(value).replace('|', '/').replace('\n', ' ').replace('\r', ' ')
+    return "'" + value if value.lstrip().startswith(('=', '+', '-', '@')) else value
+
+
+def collect(directory, session, turn=None):
+    records = {}
+    identities = {}
+    models = {}
+    warnings = set()
+    files = sorted(Path(directory).rglob('*.jsonl'))
+    if not files:
+        raise ReportError('No JSONL rollout files found.')
+    for path in files:
+        try:
+            with path.open(encoding='utf-8') as source:
+                for line in source:
+                    try:
+                        event = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        warnings.add('Malformed JSON lines were ignored; coverage may be incomplete.')
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    payload = event.get('payload')
+                    if not isinstance(payload, dict):
+                        continue
+                    kind = event.get('type')
+                    if kind == 'session_meta':
+                        ident = payload.get('id')
+                        # Forked rollouts can contain inherited parent metadata.
+                        if isinstance(ident, str):
+                            identities.setdefault(ident, payload)
+                    elif kind == 'turn_context':
+                        ident = payload.get('turn_id')
+                        if isinstance(ident, str) and isinstance(payload.get('model'), str):
+                            models[ident] = payload['model']
+                    elif kind == 'token_usage_record' and payload.get('session_id') == session:
+                        if turn and payload.get('root_turn_id') != turn:
+                            continue
+                        thread = payload.get('thread_id')
+                        response = payload.get('response_id')
+                        root_turn = payload.get('root_turn_id')
+                        own_turn = payload.get('turn_id')
+                        if not all(isinstance(v, str) and v for v in (thread, response, root_turn, own_turn)):
+                            warnings.add('Usage records without attribution IDs were ignored.')
+                            continue
+                        # usage is per response; never sum turn/thread cumulative counters.
+                        usage = payload.get('usage')
+                        if not isinstance(usage, dict):
+                            warnings.add('Usage records without per-response usage were ignored.')
+                            continue
+                        values = {}
+                        invalid = False
+                        for key in ('input_tokens', 'cached_input_tokens', 'output_tokens'):
+                            value = usage.get(key)
+                            if value is not None and (type(value) is not int or value < 0):
+                                invalid = True
+                            values[key] = value
+                        if invalid or (values['cached_input_tokens'] is not None
+                                       and values['input_tokens'] is not None
+                                       and values['cached_input_tokens'] > values['input_tokens']):
+                            raise ReportError('Invalid token counters in selected session.')
+                        normalized = (root_turn, own_turn, values)
+                        key = (thread, response)
+                        if key in records and records[key] != normalized:
+                            raise ReportError('Conflicting duplicate usage records; refusing ambiguous totals.')
+                        records[key] = normalized
+        except (OSError, UnicodeError):
+            raise ReportError('A rollout file could not be read; refusing incomplete totals.') from None
+    if not records:
+        raise ReportError('No supported per-response token_usage_record data for this session/turn. '
+                          'Legacy cumulative counters are not silently substituted.')
+    groups = {}
+    for (thread, _response), (root_turn, own_turn, values) in records.items():
+        meta = identities.get(thread, {})
+        agent = '/root' if thread == session else meta.get('agent_path', 'unknown-subagent')
+        model = models.get(own_turn, 'unavailable')
+        key = (root_turn, thread, str(agent), model)
+        row = groups.setdefault(key, {'root_turn': root_turn, 'thread_id': thread,
+                                      'agent': str(agent), 'model': model, 'requests': 0,
+                                      'input_tokens': 0, 'cached_input_tokens': 0, 'output_tokens': 0})
+        row['requests'] += 1
+        for field, value in values.items():
+            if value is None:
+                row[field] = None
+                warnings.add('Missing token categories are unavailable, not zero.')
+            elif row[field] is not None:
+                row[field] += value
+    warnings.add('Snapshot of recorded usage only; running sessions and missing records may be incomplete.')
+    return sorted(groups.values(), key=lambda r: (r['root_turn'], r['thread_id'], r['model'])), sorted(warnings)
+
+
+def write_report(rows, warnings, output, session, task):
+    output = Path(output).expanduser()
+    output.mkdir(parents=True, exist_ok=True)
+    # Unique directories avoid overwriting reports or colliding between agents.
+    folder = Path(tempfile.mkdtemp(prefix=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-'), dir=output))
+    columns = ('root_turn', 'thread_id', 'agent', 'model', 'requests',
+               'input_tokens', 'cached_input_tokens', 'output_tokens')
+    with (folder / 'usage.csv').open('x', encoding='utf-8', newline='') as stream:
+        os.chmod(stream.name, 0o600)
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows({k: 'NA' if r[k] is None else safe(r[k]) for k in columns} for r in rows)
+    totals = {field: None if any(r[field] is None for r in rows) else sum(r[field] for r in rows)
+              for field in ('input_tokens', 'cached_input_tokens', 'output_tokens')}
+    show = lambda value: 'NA' if value is None else f'{value:,}'
+    lines = ['# Codex agent usage', '', f'Task label: {safe(task)}', f'Session: {safe(session)}',
+             f'Generated (UTC): {datetime.now(timezone.utc).isoformat()}', '',
+             'Rows are grouped by root turn (task boundary), agent thread and recorded model.',
+             'Task labels are supplied by the caller; prompts and conversations are not copied.', '',
+             '| Root turn | Agent | Model | Requests | Input | Cached (included in input) | Output |',
+             '| --- | --- | --- | ---: | ---: | ---: | ---: |']
+    for r in rows:
+        lines.append('| ' + ' | '.join(safe(r[k]) if k in ('root_turn', 'agent', 'model') else show(r[k])
+                                      for k in ('root_turn', 'agent', 'model', 'requests', 'input_tokens',
+                                                'cached_input_tokens', 'output_tokens')) + ' |')
+    lines += ['', f"Recorded input: {show(totals['input_tokens'])}; included cache: "
+              f"{show(totals['cached_input_tokens'])}; output: {show(totals['output_tokens'])}.", '',
+              'Input includes repeated context across requests. Cache is not added again.',
+              'These are token counts, not money, subscription quota or context-window size.',
+              'Internal rollout format support is best-effort and version-dependent.', '', 'Limitations:', '']
+    lines += ['- ' + warning for warning in warnings]
+    with (folder / 'usage.md').open('x', encoding='utf-8') as stream:
+        os.chmod(stream.name, 0o600)
+        stream.write('\n'.join(lines) + '\n')
+    return folder
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--session', required=True, help='Root session UUID, not a child agent UUID')
+    parser.add_argument('--turn', help='Optional root_turn_id to select one task')
+    parser.add_argument('--task', default='Selected session', help='Human label; no prompt extraction')
+    home = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')).expanduser()
+    parser.add_argument('--sessions-dir', type=Path, default=home / 'sessions')
+    parser.add_argument('--output-dir', type=Path, help='Default: CODEX_HOME/usage-reports/<current-folder>')
+    args = parser.parse_args()
+    uuid = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
+    if not re.fullmatch(uuid, args.session) or (args.turn and not re.fullmatch(uuid, args.turn)):
+        parser.error('Session and turn must be UUIDs.')
+    project = re.sub(r'[^a-zA-Z0-9_.-]', '-', Path.cwd().name) or 'project'
+    output = args.output_dir or home / 'usage-reports' / project
+    try:
+        rows, warnings = collect(args.sessions_dir, args.session, args.turn)
+        folder = write_report(rows, warnings, output, args.session, args.task)
+    except (ReportError, OSError) as error:
+        parser.exit(1, f'Report failed: {error}\n')
+    print(f'Markdown: {folder / "usage.md"}\nCSV: {folder / "usage.csv"}')
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,588 @@
+#!/usr/bin/env python3
+"""Positive and negative protocol tests for Agent Relay v1. No network or GitHub."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import io
+import os
+import re
+import runpy
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "agent-relay"
+
+
+class RelayTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="agent-relay-tests-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.origin = self.root / "origin.git"
+        self.git(self.root, "init", "--bare", str(self.origin))
+        self.a = self.clone("a")
+        self.b = self.clone("b")
+        self.api = runpy.run_path(str(SCRIPT))
+
+    def git(self, cwd, *args, check=True):
+        proc = subprocess.run(
+            ["git", *args], cwd=str(cwd), capture_output=True, text=True,
+            encoding="utf-8",
+        )
+        if check and proc.returncode:
+            self.fail(f"git {' '.join(args)} failed: {proc.stderr or proc.stdout}")
+        return proc
+
+    def clone(self, name):
+        target = self.root / name
+        self.git(self.root, "clone", "-q", str(self.origin), str(target))
+        self.git(target, "config", "user.name", f"Test {name}")
+        self.git(target, "config", "user.email", f"{name}@example.invalid")
+        return target
+
+    def relay(self, repo, agent, *args, check=True):
+        env = os.environ.copy()
+        env["RELAY_AGENT"] = agent
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), *args], cwd=str(repo), env=env,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if check and proc.returncode:
+            self.fail(f"relay {' '.join(args)} failed: {proc.stderr or proc.stdout}")
+        return proc
+
+    def body(self, name, text):
+        path = self.root / name
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def init(self, agent="A", description="Test conversation"):
+        proc = self.relay(self.a, agent, "init", description)
+        match = re.search(r"^Conversación creada: ([a-z0-9-]+)$", proc.stdout, re.M)
+        self.assertIsNotNone(match, proc.stdout)
+        return match.group(1)
+
+    def join(self, conversation, agent="B"):
+        return self.relay(self.b, agent, "join", conversation)
+
+    def send(self, repo, agent, conversation, text, reply="true", in_reply_to=None):
+        args = ["send", conversation, "--body-file", self.body(f"{agent}-{len(text)}.md", text),
+                "--reply-expected", reply]
+        if in_reply_to is not None:
+            args += ["--in-reply-to", str(in_reply_to)]
+        return self.relay(repo, agent, *args)
+
+    def read(self, repo, agent, conversation, *args, check=True):
+        return self.relay(repo, agent, "read", conversation, *args, check=check)
+
+    def message_id(self, output):
+        match = re.search(r"^message_id: ([0-9a-f-]+)$", output, re.M)
+        self.assertIsNotNone(match, output)
+        return match.group(1)
+
+    def last_line(self, output):
+        return output.strip().splitlines()[-1]
+
+    def head(self, conversation):
+        proc = self.git(self.origin, "rev-parse", f"relay/{conversation}")
+        return proc.stdout.strip()
+
+    def count(self, conversation):
+        proc = self.git(self.origin, "rev-list", "--count", f"relay/{conversation}")
+        return int(proc.stdout.strip())
+
+    def doc(self, conversation, revision="HEAD"):
+        return self.git(self.origin, "show", f"{revision}:relay.md" if revision != "HEAD" else f"relay/{conversation}:relay.md").stdout
+
+    def test_init_join_send_read_ack_sequence_and_receipts(self):
+        conversation = self.init()
+        self.assertRegex(conversation, r"^r-[a-z0-9]{8}$")
+        self.assertIn("relay", self.git(self.origin, "for-each-ref", "--format=%(refname:short)", "refs/heads").stdout)
+        tree = self.git(self.origin, "ls-tree", "-r", "--name-only", f"relay/{conversation}").stdout
+        self.assertEqual(tree.strip(), "relay.md")
+        self.join(conversation)
+        sent = self.send(self.a, "A", conversation, "Hola B")
+        self.assertIn("Relay: commit", sent.stdout)
+        self.assertEqual(self.last_line(sent.stdout), "Listo - 0001")
+        count_after_send = self.count(conversation)
+        read = self.read(self.b, "B", conversation)
+        self.assertIn("Hola B", read.stdout)
+        self.assertIn("reply_expected=true", read.stdout)
+        message_id = self.message_id(read.stdout)
+        self.assertEqual(self.count(conversation), count_after_send)
+        acked = self.relay(self.b, "B", "read", conversation, "--ack", "--message-id", message_id)
+        self.assertIn("Relay: commit", acked.stdout)
+        self.assertEqual(self.last_line(acked.stdout), "Leído y registrado - 0001")
+        self.assertGreater(self.count(conversation), count_after_send)
+        self.assertIn("read_by: B", self.doc(conversation, "HEAD"))
+        self.assertIn("sequence: 1", self.doc(conversation, "HEAD"))
+        count_after_ack = self.count(conversation)
+        already = self.read(self.b, "B", conversation)
+        self.assertIn("Relay: commit", already.stdout)
+        self.assertEqual(self.last_line(already.stdout), "Leído y registrado - 0001")
+        self.assertEqual(self.count(conversation), count_after_ack)
+        response = self.send(self.b, "B", conversation, "Respuesta A", "false", in_reply_to=1)
+        self.assertIn("Relay: commit", response.stdout)
+        self.assertEqual(self.last_line(response.stdout), "Listo - 0002")
+        response_doc = self.doc(conversation)
+        self.assertIn("in_reply_to: 1", response_doc)
+        self.assertIn("read_by: none", response_doc)
+        self.assertIn("sequence: 2", response_doc)
+        self.assertIn("Respuesta A", self.read(self.a, "A", conversation).stdout)
+
+    def test_ack_preserves_exact_wire_body_bytes(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "\nPrimera\n\nUltima\n", reply="false")
+        original = self.doc(conversation)
+        received = self.read(self.b, "B", conversation)
+        self.relay(self.b, "B", "read", conversation, "--ack", "--message-id", self.message_id(received.stdout))
+        acknowledged = self.doc(conversation)
+        self.assertEqual(acknowledged, original.replace("read_by: none", "read_by: B", 1))
+        self.assertEqual(self.api["render_document"](*self.api["parse_document"](acknowledged)), acknowledged)
+
+    def test_response_is_implicit_ack_without_extra_commit(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Pregunta")
+        self.read(self.b, "B", conversation)
+        before = self.count(conversation)
+        self.send(self.b, "B", conversation, "Respuesta", "false", in_reply_to=1)
+        self.assertEqual(self.count(conversation), before + 1)
+        subjects = self.git(self.origin, "log", "--format=%s", f"relay/{conversation}").stdout
+        self.assertNotIn("ack 0001", subjects)
+        self.assertIn("in_reply_to: 1", self.doc(conversation))
+
+    def test_wrong_recipient_is_not_processed_or_marked(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Solo para B")
+        read = self.read(self.a, "A", conversation)
+        self.assertIn("No corresponde - 0001", read.stdout)
+        self.assertNotIn("Solo para B", read.stdout)
+        before = self.count(conversation)
+        ack = self.relay(
+            self.a, "A", "read", conversation, "--ack",
+            "--message-id", "00000000-0000-0000-0000-000000000000", check=False,
+        )
+        self.assertNotEqual(ack.returncode, 0)
+        self.assertEqual(self.count(conversation), before)
+
+    def test_superseded_ack_does_not_mark_new_message(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Primero")
+        first = self.read(self.b, "B", conversation)
+        first_id = self.message_id(first.stdout)
+        self.send(self.a, "A", conversation, "Segundo")
+        before = self.count(conversation)
+        stale = self.relay(
+            self.b, "B", "read", conversation, "--ack", "--message-id", first_id, check=False,
+        )
+        self.assertEqual(stale.returncode, 2)
+        self.assertIn("no longer matches", stale.stderr)
+        self.assertEqual(self.count(conversation), before)
+        second = self.read(self.b, "B", conversation)
+        self.assertIn("Segundo", second.stdout)
+        second_id = self.message_id(second.stdout)
+        self.relay(self.b, "B", "read", conversation, "--ack", "--message-id", second_id)
+        self.assertIn("read_by: B", self.doc(conversation))
+
+    def test_historical_reads_do_not_acknowledge_or_write(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Uno")
+        self.send(self.a, "A", conversation, "Dos")
+        before = self.count(conversation)
+        seq = self.read(self.b, "B", conversation, "--seq", "1")
+        self.assertIn("Uno", seq.stdout)
+        self.assertNotIn("Dos", seq.stdout)
+        last = self.read(self.b, "B", conversation, "--last", "2")
+        self.assertIn("Uno", last.stdout)
+        self.assertIn("Dos", last.stdout)
+        after = self.read(self.b, "B", conversation, "--after", "0")
+        self.assertIn("Uno", after.stdout)
+        self.assertIn("Dos", after.stdout)
+        self.assertEqual(self.count(conversation), before)
+        self.assertEqual(self.git(self.a, "status", "--porcelain").stdout, "")
+
+    def test_status_is_metadata_only(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "CUERPO-SECRETO-DE-PRUEBA")
+        status = self.relay(self.a, "A", "status", conversation)
+        self.assertIn("Conversación:", status.stdout)
+        self.assertIn("Secuencia: 0001", status.stdout)
+        self.assertNotIn("CUERPO-SECRETO-DE-PRUEBA", status.stdout)
+        self.assertIn("message_id:", status.stdout)
+
+    def test_join_rejects_third_participant_and_closed_conversation(self):
+        conversation = self.init()
+        self.join(conversation)
+        before = self.count(conversation)
+        again = self.join(conversation)
+        self.assertIn("Conectado a la conversación", again.stdout)
+        self.assertEqual(self.count(conversation), before)
+        c = self.clone("c")
+        third = self.relay(c, "C", "join", conversation, check=False)
+        self.assertNotEqual(third.returncode, 0)
+        self.relay(self.a, "A", "close", conversation)
+        joined_closed = self.relay(c, "C", "join", conversation, check=False)
+        self.assertNotEqual(joined_closed.returncode, 0)
+
+    def test_ack_remains_visible_in_history_after_new_message(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Primero")
+        first = self.read(self.b, "B", conversation)
+        first_id = self.message_id(first.stdout)
+        self.relay(self.b, "B", "read", conversation, "--ack", "--message-id", first_id)
+        before = self.count(conversation)
+        self.send(self.a, "A", conversation, "Segundo")
+        historical = self.read(self.b, "B", conversation, "--seq", "1")
+        self.assertIn("read_by=B", historical.stdout)
+        self.assertEqual(self.count(conversation), before + 1)
+
+    def test_close_is_terminal_and_not_task_completion(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Antes de cerrar")
+        closed = self.relay(self.a, "A", "close", conversation)
+        self.assertIn("Relay: commit", closed.stdout)
+        self.assertEqual(self.last_line(closed.stdout), "Listo - 0002")
+        self.assertIn("state: closed", self.doc(conversation))
+        self.assertNotIn("COMPLETADO", closed.stdout)
+        self.assertNotEqual(
+            self.relay(self.b, "B", "send", conversation, "--body-file", self.body("late.md", "Tarde"), "--reply-expected", "false", check=False).returncode,
+            0,
+        )
+        self.assertIn("Conversación cerrada", self.read(self.b, "B", conversation).stdout)
+        self.assertIn("Estado: closed", self.relay(self.b, "B", "status", conversation).stdout)
+
+    def test_push_failure_is_reported_without_success(self):
+        conversation = self.init()
+        self.join(conversation)
+        hook = self.origin / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        failed = self.relay(
+            self.a, "A", "send", conversation,
+            "--body-file", self.body("blocked.md", "Bloqueado"),
+            "--reply-expected", "false", check=False,
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertNotIn("Listo", failed.stdout)
+        self.assertNotIn("Relay:", failed.stdout)
+        self.assertIn("publication rejected", failed.stderr)
+
+    def test_secret_like_body_is_rejected(self):
+        conversation = self.init()
+        self.join(conversation)
+        before = self.count(conversation)
+        fake = "gh" + "p_" + "a" * 36
+        failed = self.relay(
+            self.a, "A", "send", conversation,
+            "--body-file", self.body("secret.md", fake),
+            "--reply-expected", "false", check=False,
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(self.count(conversation), before)
+        self.assertIn("evident credential", failed.stderr)
+
+    def test_ack_requires_message_id(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Mensaje")
+        failed = self.relay(self.b, "B", "read", conversation, "--ack", check=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("--message-id", failed.stderr)
+
+    def test_github_links_are_pinned_and_remote_aware(self):
+        sha = "a" * 40
+        self.git(self.a, "remote", "add", "gh-ssh", "git@github.com:owner/repo.git")
+        self.git(self.a, "remote", "add", "gh-https", "https://github.com/owner/repo.git")
+        self.git(self.a, "remote", "add", "gh-path", "ssh://git@github.com/owner/repo.git")
+        self.git(self.a, "remote", "add", "other", "https://gitlab.com/owner/repo.git")
+        expected = f"https://github.com/owner/repo/blob/{sha}/relay.md"
+        for remote in ("gh-ssh", "gh-https", "gh-path"):
+            self.assertEqual(self.api["github_blob_url"](self.a, remote, sha), expected)
+        self.assertIsNone(self.api["github_blob_url"](self.a, "origin", sha))
+        self.assertIsNone(self.api["github_blob_url"](self.a, "other", sha))
+        self.assertIsNone(self.api["github_blob_url"](self.a, "gh-ssh", "not-a-sha"))
+        self.assertIn(sha, expected)
+        self.assertNotIn("relay/", expected)
+
+    def test_init_creates_orphan_root_commit(self):
+        conversation = self.init()
+        parents = self.git(self.origin, "show", "-s", "--format=%P", f"relay/{conversation}").stdout.strip()
+        self.assertEqual(parents, "")
+
+    def test_nonparticipant_cannot_send_read_or_close(self):
+        conversation = self.init()
+        self.join(conversation)
+        c = self.clone("c")
+        before = self.count(conversation)
+        read = self.relay(c, "C", "read", conversation, check=False)
+        self.assertNotEqual(read.returncode, 0)
+        send = self.relay(
+            c, "C", "send", conversation,
+            "--body-file", self.body("c.md", "No autorizado"),
+            "--reply-expected", "false", check=False,
+        )
+        self.assertNotEqual(send.returncode, 0)
+        close = self.relay(c, "C", "close", conversation, check=False)
+        self.assertNotEqual(close.returncode, 0)
+        self.assertEqual(self.count(conversation), before)
+
+    def test_in_reply_to_requires_an_addressed_message(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Para B")
+        before = self.count(conversation)
+        wrong = self.relay(
+            self.a, "A", "send", conversation,
+            "--body-file", self.body("wrong.md", "Respuesta"),
+            "--reply-expected", "false", "--in-reply-to", "1", check=False,
+        )
+        self.assertNotEqual(wrong.returncode, 0)
+        missing = self.relay(
+            self.b, "B", "send", conversation,
+            "--body-file", self.body("missing.md", "Respuesta"),
+            "--reply-expected", "false", "--in-reply-to", "99", check=False,
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertEqual(self.count(conversation), before)
+
+    def test_working_tree_and_untracked_files_are_preserved(self):
+        conversation = self.init()
+        self.join(conversation)
+        local = self.a / "local.txt"
+        local.write_text("keep me", encoding="utf-8")
+        before = self.git(self.a, "status", "--porcelain").stdout
+        self.send(self.a, "A", conversation, "Mensaje")
+        message = self.read(self.b, "B", conversation)
+        message_id = self.message_id(message.stdout)
+        self.relay(self.b, "B", "read", conversation, "--ack", "--message-id", message_id)
+        self.relay(self.a, "A", "close", conversation)
+        after = self.git(self.a, "status", "--porcelain").stdout
+        self.assertEqual(after, before)
+        self.assertEqual(local.read_text(encoding="utf-8"), "keep me")
+
+    def test_empty_body_and_remote_option_are_rejected(self):
+        conversation = self.init()
+        self.join(conversation)
+        before = self.count(conversation)
+        empty = self.relay(
+            self.a, "A", "send", conversation,
+            "--body-file", self.body("empty.md", ""),
+            "--reply-expected", "false", check=False,
+        )
+        self.assertNotEqual(empty.returncode, 0)
+        self.assertIn("empty", empty.stderr)
+        device = self.relay(
+            self.a, "A", "send", conversation,
+            "--body-file", "/dev/null", "--reply-expected", "false", check=False,
+        )
+        self.assertNotEqual(device.returncode, 0)
+        self.assertIn("regular file", device.stderr)
+        huge = self.relay(
+            self.a, "A", "send", conversation,
+            "--body-file", self.body("huge.md", "x" * 70000),
+            "--reply-expected", "false", check=False,
+        )
+        self.assertNotEqual(huge.returncode, 0)
+        self.assertIn("exceeds", huge.stderr)
+        injected = self.relay(
+            self.a, "A", "--remote=--upload-pack=/bin/false", "status", conversation,
+            check=False,
+        )
+        self.assertNotEqual(injected.returncode, 0)
+        self.assertIn("invalid remote", injected.stderr)
+        self.assertEqual(self.count(conversation), before)
+
+    def test_non_fast_forward_publish_is_rejected(self):
+        conversation = self.init()
+        c = self.clone("c")
+        branch = f"relay/{conversation}"
+        old = self.git(c, "rev-parse", f"origin/{branch}").stdout.strip()
+        tree = self.git(c, "rev-parse", f"{old}^{{tree}}").stdout.strip()
+        stale = self.git(c, "commit-tree", tree, "-p", old, "-m", "stale").stdout.strip()
+        self.join(conversation)
+        before = self.head(conversation)
+        with self.assertRaises(self.api["RelayError"]):
+            self.api["publish"](c, "origin", branch, stale)
+        self.assertEqual(self.head(conversation), before)
+
+    def test_init_publish_but_verification_failure_keeps_id(self):
+        def fail(*args, **kwargs):
+            raise self.api["RelayError"]("simulated verification failure")
+        self.api["cmd_init"].__globals__["verify_published"] = fail
+        args = argparse.Namespace(description="Verification failure", me="A")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = self.api["cmd_init"](args, self.a, "origin")
+        self.assertEqual(rc, 2)
+        self.assertIn("Publicado, no verificado", err.getvalue())
+        match = re.search(r"Publicado, no verificado - ([a-z0-9-]+)", err.getvalue())
+        self.assertIsNotNone(match)
+        self.assertEqual(
+            self.git(self.origin, "show-ref", "--verify", f"refs/heads/relay/{match.group(1)}", check=False).returncode,
+            0,
+        )
+
+    def test_ack_verification_failure_uses_distinct_receipt(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Mensaje")
+        message = self.read(self.b, "B", conversation)
+        message_id = self.message_id(message.stdout)
+
+        def fail(*args, **kwargs):
+            raise self.api["RelayError"]("simulated verification failure")
+        self.api["cmd_read"].__globals__["verify_published"] = fail
+        args = argparse.Namespace(
+            id=conversation, ack=True, message_id=message_id, seq=None,
+            last=None, after=None, me="B",
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = self.api["cmd_read"](args, self.b, "origin")
+        self.assertEqual(rc, 2)
+        self.assertIn("Leído, no verificado", err.getvalue())
+        self.assertNotIn("Leído, no registrado", err.getvalue())
+
+    def test_join_close_and_send_verification_failure_receipts(self):
+        conversation = self.init()
+
+        def fail(*args, **kwargs):
+            raise self.api["RelayError"]("simulated verification failure")
+
+        self.api["cmd_join"].__globals__["verify_published"] = fail
+        args = argparse.Namespace(id=conversation, me="B")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = self.api["cmd_join"](args, self.b, "origin")
+        self.assertEqual(rc, 2)
+        self.assertIn(f"Publicado, no verificado - join {conversation}", err.getvalue())
+
+        self.api["cmd_send"].__globals__["verify_published"] = fail
+        args = argparse.Namespace(
+            id=conversation, body_file=self.body("send-fail.md", "Mensaje"),
+            reply_expected="false", in_reply_to=None, me="A",
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = self.api["cmd_send"](args, self.a, "origin")
+        self.assertEqual(rc, 2)
+        self.assertIn("No verificado - 0001", err.getvalue())
+
+        self.api["cmd_close"].__globals__["verify_published"] = fail
+        args = argparse.Namespace(id=conversation, body_file=None, me="A")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = self.api["cmd_close"](args, self.a, "origin")
+        self.assertEqual(rc, 2)
+        self.assertIn(f"Publicado, no verificado - {conversation} close 0002", err.getvalue())
+
+
+    def fetch(self, conversation):
+        branch = f"relay/{conversation}"
+        self.git(self.a, "fetch", "-q", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}")
+        return self.git(self.a, "rev-parse", f"refs/remotes/origin/{branch}").stdout.strip()
+
+    def _message_meta(self, conversation, sequence, message_id, sender, recipient):
+        base, _ = self.api["parse_document"](self.doc(conversation), conversation)
+        return {
+            "conversation": conversation,
+            "description": base["description"],
+            "type": "message",
+            "state": "open",
+            "participants": base["participants"],
+            "sequence": sequence,
+            "message_id": message_id,
+            "from": sender,
+            "to": recipient,
+            "reply_expected": "false",
+            "read_by": [],
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+
+    def _commit_message(self, conversation, parent, sequence, message_id, sender, recipient, marker):
+        meta = self._message_meta(conversation, sequence, message_id, sender, recipient)
+        return self.api["commit_file"](
+            self.a, parent, self.api["render_document"](meta, marker + "\n"),
+            f"relay: message {sequence:04d} {sender} -> {recipient}",
+        )
+
+    def test_send_send_same_head_rejects_stale_without_overwrite(self):
+        conversation = self.init()
+        self.join(conversation)
+        branch = f"relay/{conversation}"
+        parent = self.fetch(conversation)
+        before = self.count(conversation)
+        first = self._commit_message(conversation, parent, 1, "11111111-1111-1111-1111-111111111111", "A", "B", "Mensaje uno")
+        stale = self._commit_message(conversation, parent, 1, "22222222-2222-2222-2222-222222222222", "A", "B", "Mensaje dos")
+        self.api["publish"](self.a, "origin", branch, first)
+        with self.assertRaises(self.api["RelayError"]):
+            self.api["publish"](self.a, "origin", branch, stale)
+        self.assertEqual(self.head(conversation), first)
+        self.assertEqual(self.count(conversation), before + 1)
+        current = self.doc(conversation)
+        self.assertIn("Mensaje uno", current)
+        self.assertNotIn("Mensaje dos", current)
+        self.assertNotEqual(self.git(self.origin, "merge-base", "--is-ancestor", stale, branch, check=False).returncode, 0)
+
+    def test_send_ack_same_head_ack_wins_without_overwrite(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Pregunta")
+        branch = f"relay/{conversation}"
+        parent = self.fetch(conversation)
+        before = self.count(conversation)
+        meta, body = self.api["parse_document"](self.doc(conversation), conversation)
+        ack_meta = dict(meta)
+        ack_meta["read_by"] = ["B"]
+        ack = self.api["commit_file"](self.a, parent, self.api["render_document"](ack_meta, body), "relay: ack 0001 by B")
+        send = self._commit_message(conversation, parent, 2, "33333333-3333-3333-3333-333333333333", "B", "A", "Respuesta B")
+        self.api["publish"](self.a, "origin", branch, ack)
+        with self.assertRaises(self.api["RelayError"]):
+            self.api["publish"](self.a, "origin", branch, send)
+        self.assertEqual(self.head(conversation), ack)
+        self.assertEqual(self.count(conversation), before + 1)
+        current = self.doc(conversation)
+        self.assertIn("read_by: B", current)
+        self.assertIn("sequence: 1", current)
+        self.assertNotIn("Respuesta B", current)
+        self.assertNotEqual(self.git(self.origin, "merge-base", "--is-ancestor", send, branch, check=False).returncode, 0)
+
+    def test_send_ack_same_head_send_wins_without_overwrite(self):
+        conversation = self.init()
+        self.join(conversation)
+        self.send(self.a, "A", conversation, "Pregunta")
+        branch = f"relay/{conversation}"
+        parent = self.fetch(conversation)
+        before = self.count(conversation)
+        meta, body = self.api["parse_document"](self.doc(conversation), conversation)
+        ack_meta = dict(meta)
+        ack_meta["read_by"] = ["B"]
+        ack = self.api["commit_file"](self.a, parent, self.api["render_document"](ack_meta, body), "relay: ack 0001 by B")
+        send = self._commit_message(conversation, parent, 2, "44444444-4444-4444-4444-444444444444", "B", "A", "Respuesta B")
+        self.api["publish"](self.a, "origin", branch, send)
+        with self.assertRaises(self.api["RelayError"]):
+            self.api["publish"](self.a, "origin", branch, ack)
+        self.assertEqual(self.head(conversation), send)
+        self.assertEqual(self.count(conversation), before + 1)
+        current = self.doc(conversation)
+        self.assertIn("Respuesta B", current)
+        self.assertIn("read_by: none", current)
+        self.assertIn("sequence: 2", current)
+        self.assertNotEqual(self.git(self.origin, "merge-base", "--is-ancestor", ack, branch, check=False).returncode, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

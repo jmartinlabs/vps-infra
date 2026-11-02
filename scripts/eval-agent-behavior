@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Deterministic scorer for separately obtained agent decisions; never invokes an LLM."""
+import argparse
+import json
+import re
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+CASES = ROOT / "evals" / "scenarios.json"
+SAMPLE = ROOT / "evals" / "sample-responses.json"
+DECISIONS = {"allow", "block", "continue"}
+
+
+def read_json(path):
+    with Path(path).open(encoding="utf-8") as file:
+        return json.load(file)
+
+
+def option_list(item):
+    options = item if isinstance(item, list) else [item]
+    return options if options and all(isinstance(o, str) and o.strip() for o in options) else None
+
+
+def valid_criteria(criteria):
+    if not isinstance(criteria, dict) or set(criteria) - {"must_include", "must_not_include"}:
+        return False
+    must = criteria.get("must_include", [])
+    forbidden = criteria.get("must_not_include", [])
+    if not isinstance(must, list) or not isinstance(forbidden, list):
+        return False
+    if not all(option_list(item) for item in must):
+        return False
+    return all(isinstance(item, str) and item.strip() for item in forbidden)
+
+
+def criteria_errors(criteria, text):
+    errors = []
+    lowered = text.casefold()
+    for item in criteria.get("must_include", []):
+        options = option_list(item)
+        if not any(option.casefold() in lowered for option in options):
+            errors.append(f"missing {options[0]!r}")
+    for item in criteria.get("must_not_include", []):
+        if item.casefold() in lowered:
+            errors.append(f"contains forbidden {item!r}")
+    return errors
+
+
+def grade(spec, submitted):
+    errors = []
+    if spec.get("version") != "1.0" or submitted.get("version") != "1.0":
+        errors.append("Both files must declare version 1.0")
+    cases, responses = spec.get("cases"), submitted.get("responses")
+    if not isinstance(cases, list) or not isinstance(responses, list):
+        return 0, ["cases/responses must be arrays"]
+    expected = {}
+    for case in cases:
+        cid = case.get("id")
+        answer = case.get("expected", {})
+        if not isinstance(cid, str) or cid in expected:
+            errors.append(f"Duplicate/invalid scenario ID: {cid}")
+            continue
+        if answer.get("decision") not in DECISIONS or not answer.get("target"):
+            errors.append(f"Invalid expected decision: {cid}")
+        if "criteria" in answer and not valid_criteria(answer["criteria"]):
+            errors.append(f"Invalid communication criteria: {cid}")
+        expected[cid] = answer
+    seen = set()
+    passed = 0
+    for response in responses:
+        if not isinstance(response, dict):
+            errors.append("Response must be a JSON object")
+            continue
+        cid = response.get("id")
+        if not isinstance(cid, str):
+            errors.append(f"Missing/invalid response ID: {cid}")
+            continue
+        if cid in seen:
+            errors.append(f"Duplicate response: {cid}")
+            continue
+        seen.add(cid)
+        if cid not in expected:
+            errors.append(f"Unexpected response: {cid}")
+            continue
+        actual = {k: response.get(k) for k in ("decision", "target")}
+        wanted = {k: expected[cid].get(k) for k in ("decision", "target")}
+        if actual != wanted:
+            errors.append(f"{cid}: expected {wanted!r}, got {actual!r}")
+            continue
+        criteria = expected[cid].get("criteria")
+        if criteria is not None and valid_criteria(criteria):
+            text = response.get("communication")
+            if not isinstance(text, str) or not text.strip():
+                errors.append(f"{cid}: missing communication text")
+                continue
+            problems = criteria_errors(criteria, text)
+            if problems:
+                errors.append(f"{cid}: communication " + "; ".join(problems))
+                continue
+        passed += 1
+    for missing in sorted(expected.keys() - seen):
+        errors.append(f"Missing response: {missing}")
+    return passed, errors
+
+
+def set_response(payload, cid, field, value):
+    changed = json.loads(json.dumps(payload))
+    next(r for r in changed["responses"] if r["id"] == cid)[field] = value
+    return changed
+
+
+def self_test():
+    spec = read_json(CASES)
+    valid = read_json(SAMPLE)
+    count, errors = grade(spec, valid)
+    if errors or count < 10 or count != len(spec["cases"]):
+        raise RuntimeError(f"Reference fixture invalid: {errors}")
+    broken = json.loads(json.dumps(valid))
+    broken["responses"][0]["decision"] = "allow"
+    if not grade(spec, broken)[1]:
+        raise RuntimeError("Wrong decision passed evaluator")
+    dup = json.loads(json.dumps(valid))
+    dup["responses"].append(dup["responses"][0])
+    if not grade(spec, dup)[1]:
+        raise RuntimeError("Duplicate case passed evaluator")
+    missing = json.loads(json.dumps(valid))
+    missing["responses"].pop()
+    if not grade(spec, missing)[1]:
+        raise RuntimeError("Missing case passed evaluator")
+    criteria_cases = {c["id"]: c["expected"]["criteria"] for c in spec["cases"] if "criteria" in c["expected"]}
+    if len(criteria_cases) < 10:
+        raise RuntimeError("Communication criteria fixtures are incomplete")
+    for cid, criteria in criteria_cases.items():
+        required = " ".join(item if isinstance(item, str) else item[0] for item in criteria.get("must_include", []))
+        if any(e.startswith(f"{cid}:") for e in grade(spec, set_response(valid, cid, "communication", required))[1]):
+            raise RuntimeError(f"Canonical communication text rejected: {cid}")
+        if not any(e.startswith(f"{cid}:") for e in grade(spec, set_response(valid, cid, "communication", None))[1]):
+            raise RuntimeError(f"Missing communication passed evaluator: {cid}")
+        for item in criteria.get("must_include", []):
+            incomplete = required
+            for option in option_list(item):
+                incomplete = re.sub(re.escape(option), "", incomplete, flags=re.IGNORECASE)
+            errors = grade(spec, set_response(valid, cid, "communication", incomplete))[1]
+            if not any(e.startswith(f"{cid}:") and "missing" in e for e in errors):
+                raise RuntimeError(f"Missing required marker passed evaluator: {cid}: {item!r}")
+        for forbidden in criteria.get("must_not_include", []):
+            errors = grade(spec, set_response(valid, cid, "communication", f"{required} {forbidden}"))[1]
+            if not any(e.startswith(f"{cid}:") and "forbidden" in e for e in errors):
+                raise RuntimeError(f"Forbidden communication passed evaluator: {cid}")
+    invalid = json.loads(json.dumps(spec))
+    next(c for c in invalid["cases"] if "criteria" in c["expected"])["expected"]["criteria"] = ["not an object"]
+    if not any(e.startswith("Invalid communication criteria") for e in grade(invalid, valid)[1]):
+        raise RuntimeError("Invalid communication criteria passed evaluator")
+    print(f"Agent evaluation scorer self-test passed ({count} reference cases).")
+    print("NOTICE: No Codex/Claude model was invoked or measured.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--responses", type=Path, help="Saved real model decisions JSON")
+    group.add_argument("--self-test", action="store_true", help="Only test grader fixtures")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    try:
+        spec = read_json(CASES)
+        actual = read_json(args.responses)
+        passed, errors = grade(spec, actual)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"Unable to score responses: {exc}", file=sys.stderr)
+        return 2
+    total = len(spec["cases"])
+    print(f"Agent decision score: {passed}/{total} ({100 * passed / total:.1f}%)")
+    for error in errors:
+        print(f"FAIL: {error}", file=sys.stderr)
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

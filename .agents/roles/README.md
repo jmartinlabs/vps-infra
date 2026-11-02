@@ -1,8 +1,10 @@
-# Perfiles reutilizables para Codex
+# Epic orchestration specialist role contracts
 
-Adaptados selectivamente de `agent-project-template` v2.3.1.
+These files are **reusable role profiles**, not registered or permanent agents. The coordinator can assign zero, one or several independent tasks using the same role; see [dynamic agent management](../../specs/methodology/dynamic-agents.md). Read them when constructing bounded subagent tasks. If delegation is unavailable, the coordinator performs the same roles sequentially.
 
-- [Infraestructura / DevOps](infrastructure.md): inspección autorizada, configuración y operación compartida.
-- [QA / Seguridad](qa-review.md): revisión independiente de cambios y evidencias.
+- [Functional](functional.md): discovery, brainstorming and specs without self-approval
+- [Implementation](implementation.md): approved-spec-only development
+- [QA / Review](qa-review.md): independent acceptance and regression checks
+- [Infrastructure / DevOps](infrastructure.md): Docker, CI, data environment and bounded deployment preparation
 
-Son **contratos de rol**, no agentes permanentes ni garantía de soporte multiagente. `$orchestrate` elige 0, 1 o varios encargos independientes y asigna límites de acceso, ownership y evidencias. Con un cliente sin delegación real, realizar el flujo en secuencia. Nadie puede ampliar permisos, hacer merge ni desplegar por su cuenta.
+For each new instance the coordinator provides an [agent work packet](../../templates/agent-work-packet.md) with file ownership, applicable rules and expected evidence. The coordinator owns dependency scheduling and `specs/epic-board.md`. Parallel read-only preparation is safe; parallel writes need non-overlapping ownership and authorized isolation.

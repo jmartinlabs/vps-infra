@@ -53,10 +53,27 @@ handles in this session, and existing task, branch, worktree, PR and approval ev
    `stopped` only with runtime confirmation, otherwise `unconfirmed`. The final message must not
    trigger more tasks or agents.
 
-## Next session
+## Next session and checkpoint retirement
 A new user request (for example orchestrate: "inspect the latest handoff, verify its SHA and
 approvals, report state before proposing continuation") may reopen planning. The checkpoint
 grants **no** permission to resume automatically.
+
+After a new session reads the handoff, verify branch, SHA, PR, Git state, decisions, approvals
+and pending tasks; resolve discrepancies and consolidate durable information into the existing
+progress, decision, specification or evidence documents. Only after a successful restoration:
+
+- remove `specs/session-handoff.md` when it was a temporary checkpoint and its durable content is
+  now represented elsewhere;
+- if the handoff is tracked by Git, remove it in the same task branch/change that consolidates
+  the restoration, never in a standalone PR created only to delete a temporary file; leave no
+  unrelated pending change;
+- if restoration is incomplete, discrepancies remain, or ownership is unclear, **preserve** the
+  handoff and report what is missing;
+- when no temporary handoff exists, there is nothing to retire;
+- never remove permanent progress, decision, specification or evidence documents.
+
+Report the restoration and whether the handoff was removed or preserved. This cleanup does not
+authorize resuming development; it begins only from a new explicit user request.
 
 ## Quota exhaustion
 If quota ran out before handoff could run, nothing was guaranteed. When quota returns, run

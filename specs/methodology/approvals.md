@@ -103,3 +103,37 @@ worktree needs approval.
 
 Stronger enforcement (tool hooks, GitHub rulesets) needs separate configuration and an
 authorization source agents cannot forge or edit.
+
+## Post-merge local cleanup
+
+After the user has given explicit, identifiable merge approval **and** the PR is confirmed
+merged, removing the task's local worktree and local branch is ordinary authorized closure, not
+a new protected action. It does not authorize a remote-branch deletion, a force operation, a
+discard of work, cleanup of another task, or any server/network change or deployment.
+
+Before removing anything, prove all of the following:
+
+- the worktree and branch are exclusively associated with that task; the current checkout,
+  `main`, other task branches and unknown resources are out of scope;
+- no active or unknown agent/session owns them; when ownership cannot be established, preserve;
+- the PR is `MERGED` and its merge commit is known; the local branch head equals the PR head or
+  has no commits beyond the merged candidate;
+- the worktree is clean: no staged, unstaged or untracked files, and no ignored file that matters;
+- the local branch can be safely deleted without forcing.
+
+Use only the safe sequence:
+
+```sh
+git worktree remove <task-worktree>
+git branch -d <task-branch>
+```
+
+`git worktree remove` must run without `--force`. `git branch -d` must run without `-D`.
+Do not require every commit to appear literally in `main`: squash and rebase merges are valid.
+If `git branch -d` refuses because Git cannot prove integration, or any check is uncertain,
+preserve the branch and report it; do not switch to a forced deletion.
+
+Never use `git reset --hard`, `git clean -fd`, forced worktree removal, remote branch deletion
+or deletion of unowned/unknown resources as part of this cleanup. If a check fails, keep the
+resource and report the exact blocker; ask for specific authorization only if an exception is
+actually required. Report which resources were removed and which were preserved.

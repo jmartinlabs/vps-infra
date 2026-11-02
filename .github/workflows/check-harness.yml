@@ -11,6 +11,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,5 +19,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - run: python3 scripts/check_harness.py
+      - run: ./scripts/validate-template
+      - run: ./scripts/test-validator
+      - run: python3 scripts/eval-agent-behavior --self-test
+      - run: python3 scripts/test-agent-usage
+      - run: python3 scripts/test-auto-agent-usage
+      - run: python3 scripts/test-agent-relay
+      - run: npm install --no-save --no-package-lock --ignore-scripts mermaid@11.12.1 jsdom@26.1.0
+      - run: node scripts/check-mermaid.mjs docs/GUIA_VISUAL_ORQUESTACION.md
+      - name: Prove malformed Mermaid is rejected
+        run: |
+          set -eu
+          cat > "$RUNNER_TEMP/invalid-mermaid.md" <<'EOF'
+          ```mermaid
+          flowchart TD
+            A -->|broken B
+          ```
+          EOF
+          if node scripts/check-mermaid.mjs "$RUNNER_TEMP/invalid-mermaid.md"; then
+            echo 'Malformed Mermaid was incorrectly accepted'
+            exit 1
+          fi
       - run: git diff --check

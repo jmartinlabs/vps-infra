@@ -19,7 +19,7 @@ Administrar y evolucionar el VPS de Aruba Cloud para alojar **MyFinanzas** y fut
 | [docs/estado-actual.md](docs/estado-actual.md) | Inventario conocido, evidencias y cuestiones no verificadas |
 | [docs/roadmap.md](docs/roadmap.md) | Prioridades, dependencias y condiciones de aceptación |
 | [docs/operaciones.md](docs/operaciones.md) | Guías de actuación **pendientes de validar**, recuperación y cambios |
-| [docs/metodologia-agentes.md](docs/metodologia-agentes.md) | Adopción ligera de skills Codex, roles y niveles de trabajo |
+| [docs/metodologia-agentes.md](docs/metodologia-agentes.md) | Adopción del harness (skills, roles, modos) y desviaciones locales |
 | [CLAUDE.md](CLAUDE.md) | Punto de entrada para Claude Code, siguiendo AGENTS.md |
 | [docs/harness.md](docs/harness.md) | Compatibilidad Codex/Claude y límites de validación automatizada |
 

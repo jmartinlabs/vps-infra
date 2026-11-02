@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Advisory Codex lifecycle adapter: stdin JSON, no model/network calls."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import sys
+import tempfile
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+REPORT = runpy.run_path(str(Path(__file__).with_name('report-agent-usage')))
+EVENTS = {'Stop', 'SubagentStop', 'SessionEnd'}
+UUID = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
+
+
+def atomic_json(path, value):
+    descriptor, temporary = tempfile.mkstemp(prefix='.state-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(value, stream, sort_keys=True)
+            stream.write('\n')
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def update(event, sessions, output):
+    if not isinstance(event, dict) or event.get('hook_event_name') not in EVENTS:
+        return 'ignored'
+    session = event.get('session_id')
+    if not isinstance(session, str) or not re.fullmatch(UUID, session):
+        raise ValueError('Invalid session identifier.')
+    if fcntl is None:
+        raise ValueError('Automatic reporting requires POSIX advisory locks.')
+    # Deliberately use the parent session for SubagentStop and collect all root turns.
+    # Child turn IDs and last_assistant_message/prompt/transcript text are not used.
+    destination = Path(output) / session
+    destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Kernel releases this lock on process exit, including a client timeout/crash.
+    # Keep the lock file: unlinking it would allow locking different inodes.
+    lock = (destination / '.update-lock').open('a', encoding='utf-8')
+    os.chmod(destination / '.update-lock', 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        return 'busy'
+    try:
+        rows, warnings = REPORT['collect'](sessions, session)
+        fingerprint = hashlib.sha256(json.dumps([rows, warnings], sort_keys=True).encode()).hexdigest()
+        state_path = destination / 'latest.json'
+        previous = {}
+        if state_path.exists():
+            previous = json.loads(state_path.read_text(encoding='utf-8'))
+            if not isinstance(previous, dict):
+                raise ValueError('Invalid saved report pointer.')
+        if previous.get('fingerprint') == fingerprint:
+            return 'unchanged'
+        folder = REPORT['write_report'](rows, warnings, destination, session, 'Automatic session snapshot')
+        atomic_json(state_path, {'fingerprint': fingerprint,
+                                'markdown': str(folder / 'usage.md'),
+                                'csv': str(folder / 'usage.csv')})
+        return 'updated'
+    finally:
+        lock.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    home = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')).expanduser()
+    parser.add_argument('--sessions-dir', type=Path, default=home / 'sessions')
+    parser.add_argument('--output-dir', type=Path,
+                        help='Default: <CODEX_HOME>/usage-reports/<cwd-name>/auto')
+    args = parser.parse_args()
+    try:
+        # Bounded input: ignore event text fields and never store them.
+        raw = sys.stdin.read(1048577)
+        if len(raw) > 1048576:
+            raise ValueError('Event too large.')
+        event = json.loads(raw)
+        if not isinstance(event, dict):
+            raise ValueError('Invalid event.')
+        cwd = event.get('cwd')
+        if not isinstance(cwd, str) or not cwd:
+            raise ValueError('Missing working directory.')
+        project = re.sub(r'[^a-zA-Z0-9_.-]', '-', Path(cwd).name) or 'project'
+        output = args.output_dir or home / 'usage-reports' / project / 'auto'
+        update(event, args.sessions_dir, output)
+        # No additionalContext, continuation decision, or model invocation.
+        print('{}')
+    except (ValueError, OSError):
+        # Advisory failure: never block/continue the agent or claim reporting succeeded.
+        print(json.dumps({'systemMessage': 'Local usage report was not updated. '
+                          'Run report-agent-usage manually to inspect the failure.'}))
+
+
+if __name__ == '__main__':
+    main()

@@ -114,6 +114,38 @@ class ValidationTests(unittest.TestCase):
  def test_opencode_orphan_plugin_dir(self):
   self.remove_specialized(); (self.root/'.opencode/agents/review.md').unlink(); (self.root/'scripts/review-read').unlink()
   (self.root/'.opencode/plugins/review-read/index.ts').unlink(); self.assertRule('opencode')
+ def test_opencode_review_empty(self):
+  (self.root/'.opencode/agents/review.md').write_text(''); self.assertRule('opencode')
+ def test_opencode_review_permissions_missing(self):
+  p=self.root/'.opencode/agents/review.md'
+  p.write_text(re.sub(r'(?ms)^permissions:\n(?:  -.*\n)+','',p.read_text()))
+  self.assertRule('opencode')
+ def test_opencode_specialized_malformed_without_review(self):
+  (self.root/'.opencode/agents/review.md').unlink(); (self.root/'scripts/review-read').unlink()
+  shutil.rmtree(self.root/'.opencode/plugins/review-read')
+  self.change('.opencode/agents/functional.md','mode: subagent','mode: primary')
+  self.assertRule('opencode')
+ def test_review_read_boundary(self):
+  root=self.root
+  def git(*args,check=True):
+   return subprocess.run(['git',*args],cwd=root,capture_output=True,text=True,check=check)
+  def review(*args):
+   return subprocess.run([sys.executable,str(root/'scripts/review-read'),*args],
+     cwd=root,capture_output=True,text=True)
+  git('init','-q'); git('config','user.email','review@example.invalid'); git('config','user.name','Review')
+  (root/'.env').write_text('SECRET_MARKER=one\n')
+  (root/'.env.example').write_text('EXAMPLE_TOKEN=placeholder\n')
+  (root/'app.py').write_text('def setup():\n    return "ok"\n')
+  git('add','-A'); git('add','-f','.env'); git('commit','-qm','fixture')
+  self.assertEqual(review('file','read','--path','.env').returncode,2)
+  self.assertEqual(review('file','read','--path','.env.example').returncode,0)
+  self.assertEqual(review('file','read','--path','../outside').returncode,2)
+  self.assertEqual(review('git','show','--rev','HEAD','--path','.env').returncode,2)
+  self.assertEqual(review('git','show','--rev','HEAD:app.py').returncode,2)
+  (root/'.env').write_text('SECRET_MARKER=two\n')
+  result=review('git','diff','--base','HEAD')
+  self.assertEqual(result.returncode,0)
+  self.assertNotIn('SECRET_MARKER',result.stdout)
  def test_opencode_full_removal(self):
   (self.root/'.opencode/agents/review.md').unlink(); (self.root/'scripts/review-read').unlink()
   shutil.rmtree(self.root/'.opencode/plugins/review-read'); self.remove_specialized()

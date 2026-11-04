@@ -13,7 +13,7 @@ dependen del adaptador de review. Eliminar todos los especialistas es válido; e
 trío de review y conservar los especialistas también es válido.
 
 El adaptador se adoptó desde `agent-project-template` en la revisión fijada
-`7148371`; las comprobaciones de comportamiento real en esta instalación siguen **UNRUN**
+`71483712c4c25effa886d5433156c85246119667`; las comprobaciones de comportamiento real en esta instalación siguen **UNRUN**
 hasta que se ejecuten con una versión concreta de OpenCode. El template declaró una
 verificación manual con OpenCode V2.1.4; no se hereda como evidencia de `vps-infra`.
 
@@ -76,8 +76,8 @@ permitiendo `--output=<archivo>` para escribir, `--ext-diff` o un driver externo
 ejecutar código, y `git show HEAD:.env` para imprimir un archivo protegido. `git grep`
 tiene opciones de paginación que ejecutan comandos.
 
-Una allowlist por prefijo tampoco es un sandbox suficiente. En OpenCode V2.1.4 una prueba
-temporal mostró que una regla que permitía `python3 scripts/review-read *` también admitía
+Una allowlist por prefijo tampoco es un sandbox suficiente. Según la prueba del template en
+OpenCode V2.1.4, una regla que permitía `python3 scripts/review-read *` también admitía
 redirección de shell (`... > archivo`), porque el patrón coincide con el texto completo.
 Por eso este adaptador de review **no concede `shell`**.
 
@@ -220,7 +220,8 @@ verificación.
 
 ## Límites y compatibilidad
 
-- Adoptado desde `agent-project-template` en la revisión `7148371`.
+- Adoptado desde `agent-project-template` en la revisión
+  `71483712c4c25effa886d5433156c85246119667`.
 - El template lo verificó contra OpenCode V2.1.4 el 2026-11-02; `vps-infra` no ha repetido
   todavía esa prueba de registro, delegación, lectura de Git/PR ni denegación de escrituras.
 - Versiones anteriores o configuración V1 pueden registrar agentes, plugins o permisos de

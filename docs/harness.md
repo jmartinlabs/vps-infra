@@ -1,4 +1,4 @@
-# Adaptación del harness · Codex / Claude Code
+# Adaptación del harness · Codex / Claude Code / OpenCode
 
 ## Estado
 

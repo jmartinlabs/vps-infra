@@ -64,7 +64,7 @@ For implementation smoke tests and Skills discovery see
 [Claude adapter](CLAUDE_ADAPTER.md).
 
 For reproducible Quick / Standard / Full client measurements, see the
-[v2.4.2 benchmark protocol](archive/V2_4_2_BENCHMARK.md). No performance results are implied.
+[v2.4.2 benchmark reference](archive/README.md). No performance results are implied.
 
 ## Coordination and external-client scenarios
 
@@ -194,7 +194,7 @@ runs for these cases are UNRUN.
 
 ### 2026-10-23 — execution benchmark (reduced)
 
-Reduced run of the [benchmark protocol](archive/V2_4_2_BENCHMARK.md): Claude Code only,
+Reduced run of the [benchmark reference](archive/README.md): Claude Code only,
 Quick and Standard tasks, 3 paired repetitions, alternating revision order.
 
 - **Client:** Claude Code CLI 2.1.301, `claude -p --model sonnet`, `--permission-mode acceptEdits`,

@@ -228,14 +228,17 @@ independent QA still reviews it.
 
 ## Capability boundaries
 This repository holds **instructions and templates**: it provides no universal agent registry,
-always-on scheduler or job queue. No universal agent count is claimed. The only repository-local native agent registration is the
-optional OpenCode `review` subagent installed by the [OpenCode adapter](../../docs/OPENCODE_ADAPTER.md).
-That adapter is a read-only audit surface, not a launcher, scheduler or controller for external
-OpenCode sessions, and it may be removed as a unit. Check what the actual client (Codex, Claude
-Code or another) supports for delegation, non-blocking execution and isolation before using it,
-per execution. API runtimes configured separately do not describe what an interactive session
-can do. Releasing a coordinator turn does not end a running subagent's runtime, but nothing keeps
-running after the active session or client closes.
+always-on scheduler or job queue. No universal agent count is claimed. The only repository-local
+native agent registration with an explicit read-only matrix is the optional OpenCode `review`
+subagent installed by the [OpenCode adapter](../../docs/OPENCODE_ADAPTER.md). The optional
+OpenCode `functional`, `implementation` and `infrastructure` subagents use the client's default
+capabilities; they are native adapters, not always-running workers, and their role contract and
+work packet govern behavior. `review` is a read-only audit surface, not a launcher, scheduler or
+controller for external OpenCode sessions, and it may be removed as a unit. Check what the actual
+client (Codex, Claude Code or another) supports for delegation, non-blocking execution and
+isolation before using it, per execution. API runtimes configured separately do not describe what
+an interactive session can do. Releasing a coordinator turn does not end a running subagent's
+runtime, but nothing keeps running after the active session or client closes.
 
 ## Result contract
 Each packet returns: packet ID; done/blocked status; changed and read files; commit/revision; real tests and results (passed/failed/unrun); open decisions, collisions or blockers; evidence; next independent action. The coordinator verifies, updates the board and decides on the next packet. No delegate self-approves, merges or edits the board.

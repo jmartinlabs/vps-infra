@@ -131,8 +131,26 @@ def validate(root):
    target=(p.parent/unquote(u.path)).resolve()
    if not opencode_installed and target==optional_opencode_doc: continue
    if not target.is_relative_to(root) or not target.exists(): fail('links',f'{p.relative_to(root)} -> {dest}')
+ specialized_present=[]
+ for name in ('functional','implementation','infrastructure'):
+  native_path=root/f'.opencode/agents/{name}.md'
+  if not native_path.exists(): continue
+  specialized_present.append(name)
+  if not native_path.stat().st_size:
+   fail('opencode',f'{name} adapter is empty'); continue
+  native=native_path.read_text(encoding='utf-8')
+  for token in ('mode: subagent',f'.agents/roles/{name}.md','Required packet','## Return'):
+   if token not in native: fail('opencode',f'{name} adapter missing {token}')
+  if not re.search(r'(?m)^mode: subagent$',native): fail('opencode',f'{name} mode must be exactly subagent')
+  if not re.search(r'(?m)^description: \S',native): fail('opencode',f'{name} adapter needs a description')
+  if re.search(r'(?m)^model:',native): fail('opencode',f'{name} adapter must inherit the coordinator model')
+  entries,parse_errors=parse_opencode_permissions(native)
+  for message in parse_errors: fail('opencode',f'{name}: {message}')
+  if entries: fail('opencode',f'{name} adapter must use OpenCode default permissions')
  if opencode_installed:
-  if opencode_agent.stat().st_size:
+  if not opencode_agent.stat().st_size:
+   fail('opencode','review adapter is empty')
+  else:
    opencode=opencode_agent.read_text(encoding='utf-8')
    for token in ('mode: subagent','.agents/roles/qa-review.md','work packet','Applicable rules','read-only','BLOCKED','UNRUN','scripts/review-read','review_query'):
     if token not in opencode: fail('opencode',f'review adapter missing {token}')
@@ -140,6 +158,8 @@ def validate(root):
    if not re.search(r'(?m)^description: \S',opencode): fail('opencode','review adapter needs a description')
    entries,parse_errors=parse_opencode_permissions(opencode)
    for message in parse_errors: fail('opencode',message)
+   if not entries:
+    fail('opencode','review adapter must declare a permission matrix')
    if entries:
     if not entries or entries[0] != ('*','*','deny'): fail('opencode','review adapter must start with a deny-all rule')
     if effective(entries,'read','AGENTS.md')!='deny' or effective(entries,'read','src/main.py')!='deny': fail('opencode','review adapter must deny the native read tool')
@@ -169,30 +189,17 @@ def validate(root):
   if 'shell: true' in plugin: fail('opencode','review query plugin must not enable a shell')
   policy_error=review_read_policy(root)[1]
   if policy_error: fail('opencode',policy_error)
-  specialized_present=[]
-  for name in ('functional','implementation','infrastructure'):
-   native_path=root/f'.opencode/agents/{name}.md'
-   if not native_path.exists(): continue
-   specialized_present.append(name)
-   if not native_path.stat().st_size:
-    fail('opencode',f'{name} adapter is empty'); continue
-   native=native_path.read_text(encoding='utf-8')
-   for token in ('mode: subagent',f'.agents/roles/{name}.md','Required packet','## Return'):
-    if token not in native: fail('opencode',f'{name} adapter missing {token}')
-   if not re.search(r'(?m)^mode: subagent$',native): fail('opencode',f'{name} mode must be exactly subagent')
-   if not re.search(r'(?m)^description: \S',native): fail('opencode',f'{name} adapter needs a description')
-   if re.search(r'(?m)^model:',native): fail('opencode',f'{name} adapter must inherit the coordinator model')
-   entries,parse_errors=parse_opencode_permissions(native)
-   for message in parse_errors: fail('opencode',f'{name}: {message}')
-   if entries: fail('opencode',f'{name} adapter must use OpenCode default permissions')
+ elif opencode_agent.exists():
+  fail('opencode','review adapter is empty')
+ if opencode_installed:
   opencode_doc=read('docs/OPENCODE_ADAPTER.md')
   for token in ('.opencode/agents/review.md','.agents/roles/qa-review.md','read-only','not a launcher','scripts/review-read','review_query','optional','BLOCKED','UNRUN'):
    if token not in opencode_doc: fail('opencode',f'documentation missing {token}')
+ if specialized_present:
+  opencode_doc=read('docs/OPENCODE_ADAPTER.md')
   for name in specialized_present:
    for token in (f'.opencode/agents/{name}.md',f'.agents/roles/{name}.md','OpenCode default'):
     if token not in opencode_doc: fail('opencode',f'documentation missing {name} token {token}')
- elif opencode_agent.exists():
-  fail('opencode','review adapter is empty')
  agents=read('AGENTS.md')
  for n in ('architecture','ui','quality','security'):
   if f'(specs/guidelines/{n}.md)' not in agents: fail('agents',f'missing guideline {n}')

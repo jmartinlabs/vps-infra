@@ -28,6 +28,7 @@
 - **Blocking notice:** notify operation, reason and owner before a potentially suspending escalation; preserve native approval
 - **Review milestones:** candidate | blocker | decision | final delta; no reminders without new information
 - **User decisions to request:** NONE / LIST
+- **Clarification routing:** Never ask the user directly from a subagent, including through the question tool. Return questions and required approvals to the coordinator; the coordinator decides whether to consult the user.
 - **Model selection:** requested model/effort; runtime assurance; observed model/effort and evidence or unverified; follow [model policy](../specs/methodology/model-selection.md)
 - **Quota gate:** source/time, five-hour and weekly remaining or unavailable; restrictive value; task-specific authorization and warning if required
 - **Return schema:** the copyable `HANDOFF → CODEX` block below, required in every interaction, including blocks and decisions; status COMPLETED / PARTIAL / BLOCKED / CANCELLED; tests PASS / FAIL / UNRUN with evidence; state in [coordinator communication](../specs/methodology/coordinator-communication.md)
@@ -56,6 +57,7 @@ Applicable rules: <copy the task's required rules and source links; preserve app
 Deliverable and acceptance: <concrete checks and expected behavior>.
 Tests: <commands, environment, expected evidence; report PASS/FAIL/UNRUN with evidence>.
 Blockers: stop and report on missing permissions, conflicting requirements, ownership collisions or scope expansion. Do not work around them.
+Questions: do not ask the user directly or invoke the question tool. Return unresolved questions and required decisions to the coordinator in the HANDOFF.
 Implement, test and commit only when covered by the stated authorization. Push and create or update the PR only when the authorized scope includes publication; respect local-only instructions.
 Never merge, deploy, self-approve QA, expand scope or start other workers.
 Return exactly one final copyable message, also when blocked, partial or needing a decision, with this heading and every field:

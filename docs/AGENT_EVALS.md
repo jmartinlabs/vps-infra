@@ -73,7 +73,11 @@ advance escalation notice, permissions, milestone waits, environment mapping, in
 QA, current-state closure, mixed-client isolation, manual relay and honest missing usage.
 CI tests the scorer and reference fixtures only. Live Codex/Claude/OpenCode trials and
 performance comparisons for these additions are UNRUN; historical results below apply
-to their dated scenario sets, not these new cases. No OpenCode adapter is supplied.
+to their dated scenario sets, not these new cases. The optional OpenCode `review` and
+specialized adapters are installed (see the [OpenCode adapter](OPENCODE_ADAPTER.md)); their
+registration, delegation and read-only boundary in this installation remain UNRUN. The
+template's 2026-11-02 OpenCode smoke tests are evidence from that revision, not from
+`vps-infra`, and are not inherited.
 
 The `comms-01..16` cases cover the [coordinator communication](../specs/methodology/coordinator-communication.md)
 contract: full return after the first delegation (01), correction that re-requests it (02),

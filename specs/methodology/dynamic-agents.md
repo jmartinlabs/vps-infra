@@ -151,7 +151,11 @@ Record client/version, session/worker ID, runtime-controlled versus external sta
 start/stop owner, communication route, instruction entry points and evidence destination
 in the existing packet. Confirm the worker can read applicable canonical rules and return
 packet ID, candidate, checks and blockers. Client adapters expose the same rules without
-duplicating or weakening them. No OpenCode adapter is supplied: verify its instruction
+duplicating or weakening them. A repository-local OpenCode `review` subagent is available as
+a read-only audit adapter (see [OpenCode adapter](../../docs/OPENCODE_ADAPTER.md)); it may
+read project files and consult local Git, PR and CI evidence through a validated query
+interface, but it cannot run tests or modify code. It is not a launcher or controller for
+external OpenCode sessions. Verify other instruction
 loading/configuration in the chosen installation. Never assume Claude hooks run elsewhere.
 An optional repository-local Git relay is user-triggered transport only; it does not
 launch, poll, control or replace start/stop ownership.
@@ -223,7 +227,15 @@ independent QA still reviews it.
 - Infrastructure work has its own queue; it does not starve functional work unless it is a documented hard prerequisite.
 
 ## Capability boundaries
-This repository holds **instructions and templates**: no subagent registration, always-on scheduler or job queue. Check what the actual client (Codex, Claude Code or another) supports for delegation, non-blocking execution and isolation before using it, per execution. API runtimes configured separately do not describe what an interactive session can do. Releasing a coordinator turn does not end a running subagent's runtime, but nothing keeps running after the active session or client closes.
+This repository holds **instructions and templates**: it provides no universal agent registry,
+always-on scheduler or job queue. No universal agent count is claimed. The only repository-local native agent registration is the
+optional OpenCode `review` subagent installed by the [OpenCode adapter](../../docs/OPENCODE_ADAPTER.md).
+That adapter is a read-only audit surface, not a launcher, scheduler or controller for external
+OpenCode sessions, and it may be removed as a unit. Check what the actual client (Codex, Claude
+Code or another) supports for delegation, non-blocking execution and isolation before using it,
+per execution. API runtimes configured separately do not describe what an interactive session
+can do. Releasing a coordinator turn does not end a running subagent's runtime, but nothing keeps
+running after the active session or client closes.
 
 ## Result contract
 Each packet returns: packet ID; done/blocked status; changed and read files; commit/revision; real tests and results (passed/failed/unrun); open decisions, collisions or blockers; evidence; next independent action. The coordinator verifies, updates the board and decides on the next packet. No delegate self-approves, merges or edits the board.

@@ -48,6 +48,12 @@ class ValidationTests(unittest.TestCase):
   build_fixture(ROOT,self.root)
  def change(self,name,old,new):
   p=self.root/name; p.write_text(p.read_text().replace(old,new))
+ def add_permission(self,block):
+  p=self.root/'.opencode/agents/review.md'; s=p.read_text(); marker='\n---\n\nYou are'
+  self.assertIn(marker,s); p.write_text(s.replace(marker,'\n'+block+'---\n\nYou are',1))
+ def remove_specialized(self):
+  for name in ('functional','implementation','infrastructure'):
+   (self.root/f'.opencode/agents/{name}.md').unlink(missing_ok=True)
  def assertRule(self,rule): self.assertTrue(any(e.startswith(rule+':') for e in validate(self.root)),rule)
  def test_valid(self): self.assertEqual(validate(self.root),[])
  def test_claude_adapter_required(self):
@@ -92,8 +98,138 @@ class ValidationTests(unittest.TestCase):
   (self.root/'.claude/settings.json').unlink(); self.assertRule('structure')
  def test_profile_packet_rules(self):
   self.change('.claude/agents/implementation.md','Applicable rules','policy list'); self.assertRule('claude')
+ def test_packet_subagent_questions_route(self):
+  self.change('templates/agent-work-packet.md','Never ask the user directly from a subagent','Ask the user directly from a subagent')
+  self.assertRule('dynamic-agents')
  def test_packet_applicable_rules(self):
   self.change('templates/agent-work-packet.md','Applicable rules','Extra notes'); self.assertRule('dynamic-agents')
+ def test_opencode_agent_removed_only(self):
+  self.remove_specialized(); (self.root/'.opencode/agents/review.md').unlink(); self.assertRule('opencode')
+ def test_opencode_orphan_plugin(self):
+  self.remove_specialized(); (self.root/'.opencode/agents/review.md').unlink(); (self.root/'scripts/review-read').unlink()
+  self.assertRule('opencode')
+ def test_opencode_orphan_wrapper(self):
+  self.remove_specialized(); (self.root/'.opencode/agents/review.md').unlink()
+  (self.root/'.opencode/plugins/review-read/index.ts').unlink(); self.assertRule('opencode')
+ def test_opencode_orphan_plugin_dir(self):
+  self.remove_specialized(); (self.root/'.opencode/agents/review.md').unlink(); (self.root/'scripts/review-read').unlink()
+  (self.root/'.opencode/plugins/review-read/index.ts').unlink(); self.assertRule('opencode')
+ def test_opencode_full_removal(self):
+  (self.root/'.opencode/agents/review.md').unlink(); (self.root/'scripts/review-read').unlink()
+  shutil.rmtree(self.root/'.opencode/plugins/review-read'); self.remove_specialized()
+  self.assertEqual(validate(self.root),[])
+ def test_opencode_complete_removal(self):
+  (self.root/'.opencode/agents/review.md').unlink(); (self.root/'scripts/review-read').unlink()
+  shutil.rmtree(self.root/'.opencode/plugins/review-read'); self.remove_specialized()
+  (self.root/'docs/OPENCODE_ADAPTER.md').unlink()
+  self.assertEqual(validate(self.root),[])
+ def test_opencode_specialized_optional_removal(self):
+  self.remove_specialized(); self.assertEqual(validate(self.root),[])
+ def test_opencode_specialized_independent_of_review(self):
+  (self.root/'.opencode/agents/review.md').unlink(); (self.root/'scripts/review-read').unlink()
+  shutil.rmtree(self.root/'.opencode/plugins/review-read'); self.assertEqual(validate(self.root),[])
+ def test_opencode_specialized_empty(self):
+  (self.root/'.opencode/agents/functional.md').write_text(''); self.assertRule('opencode')
+ def test_opencode_specialized_mode(self):
+  self.change('.opencode/agents/functional.md','mode: subagent','mode: primary')
+  self.assertRule('opencode')
+ def test_opencode_specialized_role(self):
+  self.change('.opencode/agents/implementation.md','.agents/roles/implementation.md','README.md')
+  self.assertRule('opencode')
+ def test_opencode_specialized_model(self):
+  self.change('.opencode/agents/infrastructure.md','mode: subagent','mode: subagent\nmodel: provider/model')
+  self.assertRule('opencode')
+ def test_opencode_specialized_color_format(self):
+  self.change('.opencode/agents/functional.md','color: "#3B82F6"','color: "blue"')
+  self.assertRule('opencode')
+ def test_opencode_review_color_format(self):
+  self.change('.opencode/agents/review.md','color: "#A855F7"','color: "#GGGGGG"')
+  self.assertRule('opencode')
+ def test_opencode_specialized_permissions_rejected(self):
+  self.change('.opencode/agents/functional.md','mode: subagent',
+              'mode: subagent\npermissions:\n  - action: read\n    resource: "*"\n    effect: allow')
+  self.assertRule('opencode')
+ def test_opencode_specialized_legacy_permission_rejected(self):
+  self.change('.opencode/agents/functional.md','mode: subagent',
+              'mode: subagent\npermission: read')
+  self.assertRule('opencode')
+ def test_opencode_specialized_malformed_frontmatter(self):
+  self.change('.opencode/agents/functional.md','---\n\nYou are','\nYou are')
+  self.assertRule('opencode')
+ def test_opencode_specialized_description_required(self):
+  self.change('.opencode/agents/functional.md','description: Native OpenCode functional specialist for approved roadmap and specification work. Read-only by role; returns questions, draft sections and acceptance cases to the coordinator.\n','')
+  self.assertRule('opencode')
+ def test_opencode_specialized_packet_token(self):
+  self.change('.opencode/agents/implementation.md','## Required packet','## Packet')
+  self.assertRule('opencode')
+ def test_opencode_plugin_required(self):
+  (self.root/'.opencode/plugins/review-read/index.ts').unlink(); self.assertRule('opencode')
+ def test_opencode_plugin_no_shell(self):
+  self.change('.opencode/plugins/review-read/index.ts','shell: false','shell: true'); self.assertRule('opencode')
+ def test_opencode_plugin_single_tool(self):
+  self.change('.opencode/plugins/review-read/index.ts','editor.add({',
+    'editor.add({ // second\n      editor.add({'); self.assertRule('opencode')
+ def test_opencode_plugin_safe_integer(self):
+  self.change('.opencode/plugins/review-read/index.ts','Number.isSafeInteger','Number.isInteger')
+  self.assertRule('opencode')
+ def test_opencode_plugin_codemode(self):
+  self.change('.opencode/plugins/review-read/index.ts','codemode: false','codemode: true'); self.assertRule('opencode')
+ def test_opencode_plugin_namespace(self):
+  self.change('.opencode/plugins/review-read/index.ts','name: "review"','name: "other"'); self.assertRule('opencode')
+ def test_opencode_plugin_wrapper_path(self):
+  self.change('.opencode/plugins/review-read/index.ts','scripts/review-read','scripts/other'); self.assertRule('opencode')
+ def test_opencode_review_query_scope(self):
+  self.add_permission('  - action: review_query\n    resource: "src/**"\n    effect: allow\n'); self.assertRule('opencode')
+ def test_opencode_doc_required(self):
+  (self.root/'docs/OPENCODE_ADAPTER.md').unlink(); self.assertRule('opencode')
+ def test_opencode_partial_install(self):
+  self.remove_specialized(); (self.root/'scripts/review-read').unlink(); self.assertRule('opencode')
+ def test_opencode_adapter_canonical_role(self):
+  self.change('.opencode/agents/review.md','.agents/roles/qa-review.md','README.md'); self.assertRule('opencode')
+ def test_opencode_adapter_no_model(self):
+  self.change('.opencode/agents/review.md','mode: subagent','mode: subagent\nmodel: provider/model'); self.assertRule('opencode')
+ def test_opencode_adapter_read_ask_rejected(self):
+  self.add_permission('  - action: read\n    resource: "AGENTS.md"\n    effect: ask\n'); self.assertRule('opencode')
+ def test_opencode_adapter_read_allow_rejected(self):
+  self.add_permission('  - action: read\n    resource: "AGENTS.md"\n    effect: allow\n'); self.assertRule('opencode')
+ def test_opencode_adapter_deny_first(self):
+  p=self.root/'.opencode/agents/review.md'; s=p.read_text()
+  deny='  - action: "*"\n    resource: "*"\n    effect: deny\n'
+  allow='  - action: read\n    resource: "*"\n    effect: allow\n'
+  p.write_text(s.replace(deny,'',1).replace(allow,allow+deny,1)); self.assertRule('opencode')
+ def test_opencode_edit_allow(self):
+  self.add_permission('  - action: edit\n    resource: "*"\n    effect: allow\n'); self.assertRule('opencode')
+ def test_opencode_edit_ask(self):
+  self.add_permission('  - action: edit\n    resource: "*"\n    effect: ask\n'); self.assertRule('opencode')
+ def test_opencode_shell_ask(self):
+  self.add_permission('  - action: shell\n    resource: "*"\n    effect: ask\n'); self.assertRule('opencode')
+ def test_opencode_shell_git_prefix(self):
+  self.add_permission('  - action: shell\n    resource: "git *"\n    effect: allow\n'); self.assertRule('opencode')
+ def test_opencode_second_shell_allow(self):
+  self.add_permission('  - action: shell\n    resource: "python3 scripts/review-read *"\n    effect: allow\n'); self.assertRule('opencode')
+ def test_opencode_env_reopened(self):
+  self.add_permission('  - action: read\n    resource: "*.env"\n    effect: allow\n'); self.assertRule('opencode')
+ def test_opencode_legacy_permission_key(self):
+  self.change('.opencode/agents/review.md','permissions:','permission:'); self.assertRule('opencode')
+ def test_opencode_webfetch_allow(self):
+  self.add_permission('  - action: webfetch\n    resource: "*"\n    effect: allow\n'); self.assertRule('opencode')
+ def test_opencode_grep_allow(self):
+  self.add_permission('  - action: grep\n    resource: "*"\n    effect: allow\n'); self.assertRule('opencode')
+ def test_opencode_review_read_operation_allowlist(self):
+  self.change('scripts/review-read','"status": {"options": {}},',
+    '"status": {"options": {}},\n            "push": {"options": {}},'); self.assertRule('opencode')
+ def test_opencode_review_read_option_allowlist(self):
+  self.change('scripts/review-read','"max": "int", "path": "path", "rev": "rev"',
+    '"max": "int", "path": "path", "rev": "rev", "output": "path"'); self.assertRule('opencode')
+ def test_opencode_review_read_protection_list(self):
+  self.change('scripts/review-read','".git-credentials", ".netrc", ".npmrc", ".pypirc",',
+    '".git-credentials", ".netrc", ".pypirc",'); self.assertRule('opencode')
+ def test_opencode_review_read_secret_names(self):
+  self.change('scripts/review-read','".env", ".env.*", "*.env.example", ".envrc", ".envrc.*",',
+    '".env", ".env.*",'); self.assertRule('opencode')
+ def test_opencode_review_read_run_id_type(self):
+  self.change('scripts/review-read','"run": {"options": {"run-id": "run_id"}, "required": ["run-id"]},',
+    '"run": {"options": {"run-id": "int"}, "required": ["run-id"]},'); self.assertRule('opencode')
  def test_wrapper_no_restated_approvals(self):
   self.change('.claude/skills/tweak/SKILL.md','adds no rules.','adds no rules. Never treat `dale` as approval.'); self.assertRule('claude')
  def test_claude_md_no_restated_approvals(self):
@@ -330,7 +466,7 @@ class ValidationTests(unittest.TestCase):
    ('specs/methodology/dynamic-agents.md', 'fresh bounded context by default'),
    ('specs/methodology/dynamic-agents.md', 'not repeated status reminders'),
    ('specs/methodology/dynamic-agents.md', 'QA independently'),
-   ('specs/methodology/dynamic-agents.md', 'No OpenCode adapter is supplied'),
+   ('specs/methodology/dynamic-agents.md', 'repository-local OpenCode'),
    ('specs/methodology/dynamic-agents.md', 'explicit user authorization and supported tools'),
    ('specs/methodology/dynamic-agents.md', 'separate checkouts/worktrees AND non-overlapping ownership'),
    ('specs/methodology/dynamic-agents.md', 'Separate test ports, databases'),

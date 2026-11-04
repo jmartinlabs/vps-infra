@@ -2,17 +2,20 @@
 
 ## Estado
 
-`vps-infra` adopta el harness de `agent-project-template` en la revisión fijada `6725b67`
-(ver [metodología](metodologia-agentes.md)). `AGENTS.md` y la documentación de `docs/`
+`vps-infra` adopta el harness de `agent-project-template` en la revisión fijada
+`71483712c4c25effa886d5433156c85246119667` (ver [metodología](metodologia-agentes.md)). `AGENTS.md` y la documentación de `docs/`
 siguen siendo la política y el estado del proyecto. Las Skills canónicas viven en
-`.agents/skills/`; `CLAUDE.md` y `.claude/` solo aportan descubrimiento para Claude Code.
+`.agents/skills/`; `CLAUDE.md` y `.claude/` aportan descubrimiento para Claude Code, y
+`.opencode/` contiene el adaptador nativo opcional descrito en
+[OPENCODE_ADAPTER](OPENCODE_ADAPTER.md).
 
 ## Qué sí se valida automáticamente
 
 `.github/workflows/check-harness.yml` (job `validate`) ejecuta:
 
 - `python3 scripts/check_harness.py` — rutas, manifiestos, adaptadores y restricciones locales.
-- `./scripts/validate-template` — estructura, enlaces, contratos y guardas metodológicas.
+- `./scripts/validate-template` — estructura, enlaces, contratos, guardas metodológicas y
+  coherencia del adaptador OpenCode (agentes, plugin, wrapper y permisos).
 - `./scripts/test-validator` — fixtures positivos y negativos del validador.
 - `python3 scripts/eval-agent-behavior --self-test` — evaluador determinista.
 - Tests de usage y del protocolo de relay.

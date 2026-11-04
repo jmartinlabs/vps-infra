@@ -21,7 +21,8 @@ Administrar y evolucionar el VPS de Aruba Cloud para alojar **MyFinanzas** y fut
 | [docs/operaciones.md](docs/operaciones.md) | Guías de actuación **pendientes de validar**, recuperación y cambios |
 | [docs/metodologia-agentes.md](docs/metodologia-agentes.md) | Adopción del harness (skills, roles, modos) y desviaciones locales |
 | [CLAUDE.md](CLAUDE.md) | Punto de entrada para Claude Code, siguiendo AGENTS.md |
-| [docs/harness.md](docs/harness.md) | Compatibilidad Codex/Claude y límites de validación automatizada |
+| [docs/harness.md](docs/harness.md) | Compatibilidad Codex/Claude/OpenCode y límites de validación automatizada |
+| [docs/OPENCODE_ADAPTER.md](docs/OPENCODE_ADAPTER.md) | Adaptador OpenCode opcional: review de solo lectura y especialistas |
 
 ## Responsabilidades
 

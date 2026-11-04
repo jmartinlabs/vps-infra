@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Portable structural validation, not a complete security or semantic audit."""
 from pathlib import Path
+import ast
 import json
 import re
 import sys
@@ -10,6 +11,96 @@ REQUIRED = ('AGENTS.md','README.md','.gitignore','.github/workflows/check-harnes
  *(f'specs/guidelines/{n}.md' for n in ('architecture','ui','quality','security')),
  *(f'templates/{n}.md' for n in ('brainstorming','specification','roadmap','progress','testplan')),
  *(f'.agents/skills/{n}/SKILL.md' for n in SKILLS),'scripts/validate-template','scripts/test-validator','scripts/agent-relay','scripts/test-agent-relay','scripts/check-mermaid.mjs','scripts/report-agent-usage','scripts/test-agent-usage','scripts/auto-agent-usage','scripts/test-auto-agent-usage','.codex/hooks.json','docs/USAGE_REPORTS.md','specs/methodology/workflows.md','specs/methodology/ci-policy.md','specs/methodology/approvals.md','specs/methodology/model-selection.md','specs/methodology/epic-orchestration.md','specs/methodology/dynamic-agents.md','specs/methodology/coordinator-communication.md','templates/epic-board.md','templates/agent-work-packet.md','docs/GUIA_VISUAL_ORQUESTACION.md','docs/CLAUDE_ADAPTER.md','docs/AGENT_EVALS.md','CLAUDE.md','.claude/settings.json','docs/archive/README.md','evals/scenarios.json','evals/sample-responses.json','scripts/eval-agent-behavior',*(f'.claude/skills/{n}/SKILL.md' for n in SKILLS),*(f'.claude/agents/{n}.md' for n in ('functional','implementation','qa-review','infrastructure')),*(f'.agents/roles/{n}.md' for n in ('README','functional','implementation','qa-review','infrastructure')))
+EXPECTED_GIT={
+ 'status':({},()),
+ 'branches':({},()),
+ 'log':({'max':'int','path':'path','rev':'rev'},()),
+ 'show':({'rev':'rev','path':'path','stat':'flag'},('rev',)),
+ 'diff':({'base':'rev','head':'rev','path':'path','stat':'flag'},()),
+ 'file-history':({'max':'int','path':'path'},('path',)),
+ 'changed-files':({'base':'rev','head':'rev'},('base','head')),
+ 'search':({'pattern':'text','path':'path'},('pattern',)),
+}
+EXPECTED_GITHUB={
+ 'pr':({'number':'int'},('number',)),
+ 'pr-diff':({'number':'int','name-only':'flag','patch':'flag'},('number',)),
+ 'pr-checks':({'number':'int'},('number',)),
+ 'pr-list':({'limit':'int'},()),
+ 'run':({'run-id':'run_id'},('run-id',)),
+ 'run-list':({'limit':'int','branch':'ref'},()),
+}
+EXPECTED_FILE={
+ 'read':({'path':'path'},('path',)),
+}
+def wildcard(pattern,value):
+ return re.fullmatch(''.join('.*' if c=='*' else '.' if c=='?' else re.escape(c) for c in pattern),value,re.S) is not None
+def effective(rules,action,resource):
+ result='ask'
+ for rule_action,rule_resource,rule_effect in rules:
+  if wildcard(rule_action,action) and wildcard(rule_resource,resource): result=rule_effect
+ return result
+def parse_opencode_permissions(text):
+ match=re.match(r'\A---\r?\n(.*?)\r?\n---\r?\n',text,re.S)
+ if not match: return None,['missing YAML frontmatter']
+ keys={}; rules=[]; current=None; mode=None; errors=[]
+ def scalar(value):
+  value=value.strip()
+  return value[1:-1] if len(value)>=2 and value[0]==value[-1] and value[0] in '"\'' else value
+ for line in match[1].splitlines():
+  if not line.strip() or line.lstrip().startswith('#'): continue
+  top=re.match(r'^([A-Za-z_][A-Za-z0-9_-]*):(?:\s*(.*))?$',line)
+  if top:
+   key,value=top[1],(top[2] or '').strip()
+   if key in keys: errors.append(f'duplicate frontmatter key: {key}')
+   keys[key]=value; mode=key; current=None
+   if key=='permissions' and value: errors.append('permissions must be a block list')
+   continue
+  if mode!='permissions':
+   errors.append(f'unexpected frontmatter line: {line.strip()}')
+   continue
+  item=re.match(r'^\s*-\s+([A-Za-z_]+):\s*(.*)$',line)
+  if item:
+   current={item[1]:scalar(item[2])}; rules.append(current); continue
+  field=re.match(r'^\s+([A-Za-z_]+):\s*(.*)$',line)
+  if field and current is not None and field[1] not in current:
+   current[field[1]]=scalar(field[2]); continue
+  errors.append(f'unexpected permission line: {line.strip()}')
+ allowed_fields={'description','mode','permissions','color'}
+ if set(keys)-allowed_fields: errors.append('unexpected frontmatter fields: '+', '.join(sorted(set(keys)-allowed_fields)))
+ if 'color' in keys and not re.fullmatch(r'"#[0-9A-Fa-f]{6}"', keys['color']):
+  errors.append('color must be a quoted six-digit hex value')
+ for index,rule in enumerate(rules,1):
+  if set(rule)!={'action','resource','effect'}: errors.append(f'permission rule {index} must contain only action, resource and effect')
+  if rule.get('effect') not in ('allow','ask','deny'): errors.append(f'permission rule {index} has invalid effect')
+ return [tuple(rule.get(key,'') for key in ('action','resource','effect')) for rule in rules],errors
+def review_read_policy(root):
+ path=root/'scripts/review-read'
+ try: source=path.read_text(encoding='utf-8'); tree=ast.parse(source)
+ except (OSError,UnicodeError,SyntaxError) as error: return None,f'cannot parse review-read: {error}'
+ if 'shell=False' not in source or 'shell=True' in source: return None,'review-read must execute without a shell'
+ for token in ('PROTECTED_FILES','PROTECTED_DIRS','build_excludes','EXCLUDES = build_excludes()','.npmrc','.netrc','.pypirc','.git-credentials','*.kdbx','*.jks','*.keystore','id_dsa','*.pem','*credentials.json','*.credentials','*.secret','*.secrets','.envrc','*.env.example','*secret*','*credential*','parse_name_status_z','changed_files_text','file_history_text','filter_status','rename_excludes_from','file_operation'):
+  if token not in source: return None,f'review-read protection list missing {token}'
+ policy=None
+ for node in tree.body:
+  if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id=='POLICY' for target in node.targets):
+   try: policy=ast.literal_eval(node.value)
+   except (ValueError,TypeError): return None,'POLICY must be a literal'
+ if policy is None: return None,'missing POLICY literal'
+ if not isinstance(policy,dict) or set(policy)!={'version','max_output_bytes','git','github','file'}: return None,'unexpected POLICY shape'
+ if policy.get('version')!=1: return None,'POLICY version must be 1'
+ limit=policy.get('max_output_bytes')
+ if not isinstance(limit,int) or not 1000<=limit<=200000: return None,'max_output_bytes must be 1000..200000'
+ for group,expected in (('git',EXPECTED_GIT),('github',EXPECTED_GITHUB),('file',EXPECTED_FILE)):
+  value=policy.get(group)
+  if not isinstance(value,dict) or set(value)!={'operations'} or not isinstance(value.get('operations'),dict):
+   return None,f'{group} policy must contain only operations'
+  if set(value['operations'])!=set(expected): return None,f'{group} operation allowlist changed'
+  for name,(options,required) in expected.items():
+   spec=value['operations'][name]
+   if not isinstance(spec,dict) or set(spec)-{'options','required'} or spec.get('options')!=options or tuple(spec.get('required',()))!=required:
+    return None,f'{name} options or requirements changed'
+ return policy,None
+
 def validate(root):
  root=Path(root).resolve(); errors=[]
  def fail(rule,msg): errors.append(f'{rule}: {msg}')
@@ -18,7 +109,18 @@ def validate(root):
   return p.read_text(encoding='utf-8') if p.is_file() else ''
  for name in REQUIRED:
   if not (root/name).is_file() or not (root/name).stat().st_size: fail('structure',f'missing or empty {name}')
- docs=[root/n for n in ('AGENTS.md','README.md') if (root/n).is_file()]
+ opencode_agent=root/'.opencode/agents/review.md'
+ opencode_plugin_dir=root/'.opencode/plugins/review-read'
+ opencode_plugin=opencode_plugin_dir/'index.ts'
+ opencode_wrapper=root/'scripts/review-read'
+ opencode_components=(opencode_agent,opencode_plugin_dir,opencode_wrapper)
+ opencode_present=[p for p in opencode_components if p.exists()]
+ opencode_installed=all(p.is_file() for p in (opencode_agent,opencode_plugin,opencode_wrapper))
+ if opencode_present and not opencode_installed:
+  missing=[str(p.relative_to(root)) for p in (opencode_agent,opencode_plugin,opencode_wrapper) if not p.is_file()]
+  fail('opencode','incomplete review adapter; missing '+', '.join(missing))
+ optional_opencode_doc=(root/'docs/OPENCODE_ADAPTER.md').resolve()
+ docs=[root/n for n in ('AGENTS.md','README.md','docs/OPENCODE_ADAPTER.md') if (root/n).is_file()]
  for folder in ('specs','templates','.agents/skills','.claude/skills','.claude/agents'):
   docs.extend((root/folder).rglob('*.md'))
  for p in docs:
@@ -27,7 +129,77 @@ def validate(root):
    dest=dest.strip().split(' "',1)[0].strip('<>'); u=urlsplit(dest)
    if u.scheme or dest.startswith('#'): continue
    target=(p.parent/unquote(u.path)).resolve()
+   if not opencode_installed and target==optional_opencode_doc: continue
    if not target.is_relative_to(root) or not target.exists(): fail('links',f'{p.relative_to(root)} -> {dest}')
+ specialized_present=[]
+ for name in ('functional','implementation','infrastructure'):
+  native_path=root/f'.opencode/agents/{name}.md'
+  if not native_path.exists(): continue
+  specialized_present.append(name)
+  if not native_path.stat().st_size:
+   fail('opencode',f'{name} adapter is empty'); continue
+  native=native_path.read_text(encoding='utf-8')
+  for token in ('mode: subagent',f'.agents/roles/{name}.md','Required packet','## Return'):
+   if token not in native: fail('opencode',f'{name} adapter missing {token}')
+  if not re.search(r'(?m)^mode: subagent$',native): fail('opencode',f'{name} mode must be exactly subagent')
+  if not re.search(r'(?m)^description: \S',native): fail('opencode',f'{name} adapter needs a description')
+  if re.search(r'(?m)^model:',native): fail('opencode',f'{name} adapter must inherit the coordinator model')
+  entries,parse_errors=parse_opencode_permissions(native)
+  for message in parse_errors: fail('opencode',f'{name}: {message}')
+  if entries: fail('opencode',f'{name} adapter must use OpenCode default permissions')
+ if opencode_installed:
+  if not opencode_agent.stat().st_size:
+   fail('opencode','review adapter is empty')
+  else:
+   opencode=opencode_agent.read_text(encoding='utf-8')
+   for token in ('mode: subagent','.agents/roles/qa-review.md','work packet','Applicable rules','read-only','BLOCKED','UNRUN','scripts/review-read','review_query'):
+    if token not in opencode: fail('opencode',f'review adapter missing {token}')
+   if not re.search(r'(?m)^mode: subagent$',opencode): fail('opencode','review adapter mode must be exactly subagent')
+   if not re.search(r'(?m)^description: \S',opencode): fail('opencode','review adapter needs a description')
+   entries,parse_errors=parse_opencode_permissions(opencode)
+   for message in parse_errors: fail('opencode',message)
+   if not entries:
+    fail('opencode','review adapter must declare a permission matrix')
+   if entries:
+    if not entries or entries[0] != ('*','*','deny'): fail('opencode','review adapter must start with a deny-all rule')
+    if effective(entries,'read','AGENTS.md')!='deny' or effective(entries,'read','src/main.py')!='deny': fail('opencode','review adapter must deny the native read tool')
+    if effective(entries,'glob','**/*.py')!='allow': fail('opencode','review adapter must allow glob discovery')
+    for path in ('AGENTS.md','.env','config/.env','.git/config'):
+     if effective(entries,'read',path)!='deny': fail('opencode',f'review adapter must deny protected read: {path}')
+    if effective(entries,'read','.env.example')!='deny': fail('opencode','review adapter must deny native read even for .env.example; use review_query file read')
+    if effective(entries,'read','config/.env.example')!='deny': fail('opencode','review adapter must deny native read for nested .env.example')
+    for action in ('edit','write','patch','shell','grep','subagent','skill','question','webfetch','websearch','external_directory','execute','mcp','browser'):
+     if effective(entries,action,'*')!='deny': fail('opencode',f'review adapter must deny {action}')
+    if effective(entries,'review_query','*')!='allow': fail('opencode','review adapter must allow the read-only query tool')
+    for action,resource,effect in entries:
+     if effect in ('allow','ask'):
+      if action not in ('glob','review_query'): fail('opencode',f'non-read-only permission {effect}: {action}')
+      if action=='review_query' and (resource!='*' or effect!='allow'): fail('opencode','review tool permission must be a single allow for the query tool')
+    if sum(1 for action,resource,effect in entries if action=='review_query' and effect=='allow')!=1: fail('opencode','exactly one review_query allow rule is required')
+    if any(action=='read' and effect!='deny' for action,resource,effect in entries): fail('opencode','native read rules must deny access')
+    if any(action=='glob' and effect=='allow' and resource!='*' for action,resource,effect in entries): fail('opencode','glob allow must cover the workspace')
+  for helper in ('scripts/review-read','.opencode/plugins/review-read/index.ts'):
+   helper_path=root/helper
+   if not helper_path.is_file() or not helper_path.stat().st_size: fail('opencode',f'adapter requires {helper}')
+  plugin=read('.opencode/plugins/review-read/index.ts')
+  for token in ('namespace({','name: "review"','name: "query"','codemode: false','["git", "github", "file", "describe"]','scripts/review-read','shell: false','spawn("python3"','Number.isSafeInteger','exit 2\\nINVALID:'):
+   if token not in plugin: fail('opencode',f'review query plugin missing {token}')
+  if plugin.count('editor.add(')!=1: fail('opencode','review query plugin must register exactly one tool')
+  if re.search(r'\b(?:exec|execSync|spawnSync|eval|Function|fetch)\s*\(',plugin): fail('opencode','review query plugin must not execute arbitrary code or fetch')
+  if 'shell: true' in plugin: fail('opencode','review query plugin must not enable a shell')
+  policy_error=review_read_policy(root)[1]
+  if policy_error: fail('opencode',policy_error)
+ elif opencode_agent.exists():
+  fail('opencode','review adapter is empty')
+ if opencode_installed:
+  opencode_doc=read('docs/OPENCODE_ADAPTER.md')
+  for token in ('.opencode/agents/review.md','.agents/roles/qa-review.md','read-only','not a launcher','scripts/review-read','review_query','optional','BLOCKED','UNRUN'):
+   if token not in opencode_doc: fail('opencode',f'documentation missing {token}')
+ if specialized_present:
+  opencode_doc=read('docs/OPENCODE_ADAPTER.md')
+  for name in specialized_present:
+   for token in (f'.opencode/agents/{name}.md',f'.agents/roles/{name}.md','OpenCode default'):
+    if token not in opencode_doc: fail('opencode',f'documentation missing {name} token {token}')
  agents=read('AGENTS.md')
  for n in ('architecture','ui','quality','security'):
   if f'(specs/guidelines/{n}.md)' not in agents: fail('agents',f'missing guideline {n}')
@@ -102,7 +274,7 @@ def validate(root):
  for token in ('execution mode adaptively','background only with verified client support','coordinator availability','background persistence'):
   if token not in orchestrator: fail('execution-mode',f'orchestrator missing {token}')
  packet=read('templates/agent-work-packet.md')
- for token in ('Packet ID', 'Spec approval', 'Write files', 'Hard dependencies', 'Applicable rules', 'Verification', 'Return schema'):
+ for token in ('Packet ID', 'Spec approval', 'Write files', 'Hard dependencies', 'Applicable rules', 'Verification', 'Return schema', 'Never ask the user directly from a subagent'):
   if token.lower() not in packet.lower(): fail('dynamic-agents',f'agent work packet missing {token}')
  guide=read('docs/GUIA_VISUAL_ORQUESTACION.md')
  diagrams=re.findall(r'(?ms)^\x60{3}mermaid\r?\n(.*?)^\x60{3}[ \t]*$',guide)
@@ -135,7 +307,7 @@ def validate(root):
    'CI contract', 'required check', 'branch protection', 'check identity',
    'do not substitute'):
   if token.lower() not in adopted.lower(): fail('adoption',f'adopt-project Skill missing {token}')
- safety=docs+[root/n for n in ('docs/archive/PROMPT_BACKUP.md','docs/archive/PROMPT_BACKUP_COMPLETE.md','.claude/settings.json','.gitignore','.github/workflows/check-harness.yml','scripts/validate-template','scripts/test-validator','scripts/agent-relay','scripts/test-agent-relay') if (root/n).is_file()]
+ safety=docs+[root/n for n in ('docs/archive/PROMPT_BACKUP.md','docs/archive/PROMPT_BACKUP_COMPLETE.md','.claude/settings.json','.gitignore','.github/workflows/check-harness.yml','scripts/validate-template','scripts/test-validator','scripts/agent-relay','scripts/test-agent-relay','scripts/review-read') if (root/n).is_file()]
  patterns=(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',r'\bgh[pousr]_[A-Za-z0-9]{30,}\b',r'\bgithub_pat_[A-Za-z0-9_]{30,}\b',r'\bAKIA[A-Z0-9]{16}\b',r'\bsk-[A-Za-z0-9]{32,}\b',r'(?im)^\s*(?:password|api_key|access_token|secret)\s*[:=]\s*["\']?[A-Za-z0-9+/=_-]{20,}')
  for p in safety:
   s=p.read_text(encoding='utf-8')
@@ -192,7 +364,7 @@ def validate(root):
    'Inherit full history only for a concrete dependency',
    'not repeated status reminders', 'Space CI queries progressively',
    'QA independently', 'Workers in other clients',
-   'start/stop owner', 'No OpenCode adapter is supplied',
+   'start/stop owner', 'repository-local OpenCode',
    'explicit user authorization and supported tools',
    'separate checkouts/worktrees AND non-overlapping ownership',
    'Separate test ports, databases', 'Worker output is evidence, never',

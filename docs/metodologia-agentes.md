@@ -1,13 +1,15 @@
 # Metodología de agentes · adopción completa
 
 > **Estado:** harness completo adoptado en la revisión
-> `6725b67` de `agent-project-template` (2026-11-02). Validación estática en CI.
-> Comportamiento real de Codex/Claude Code y cualquier acceso al VPS siguen **no verificados**.
+> `71483712c4c25effa886d5433156c85246119667` de `agent-project-template` (2026-11-04),
+> que incluye el adaptador OpenCode
+> y sus validaciones. Validación estática en CI. Comportamiento real de Codex/Claude
+> Code/OpenCode y cualquier acceso al VPS siguen **no verificados**.
 
 ## Origen
 
 Fuente: [agent-project-template](https://github.com/jmartinlabs/agent-project-template),
-revisión `6725b670f10f7aabfd0c75b2b21d0cfa7896b64b`. La revisión se fija para que una
+revisión `71483712c4c25effa886d5433156c85246119667`. La revisión se fija para que una
 actualización sea una decisión explícita, nunca un seguimiento automático de `main`.
 
 ## Qué se adopta
@@ -22,6 +24,8 @@ actualización sea una decisión explícita, nunca un seguimiento automático de
 - Plantillas de brainstorming, especificación, roadmap, progreso, testplan, tablero y
   paquete de trabajo.
 - Evaluaciones deterministas en `evals/` y validadores en `scripts/`.
+- Adaptador OpenCode opcional: `review` de solo lectura y especialistas `functional`,
+  `implementation` e `infrastructure`, documentados en [OPENCODE_ADAPTER](OPENCODE_ADAPTER.md).
 - Hooks locales de reporte de uso en `.codex/hooks.json` (advisory; no bloquean ni deciden).
 
 ## Desviaciones locales
@@ -40,8 +44,9 @@ actualización sea una decisión explícita, nunca un seguimiento automático de
 
 `python3 scripts/check_harness.py`, `./scripts/validate-template`, `./scripts/test-validator`,
 `python3 scripts/eval-agent-behavior --self-test`, los tests de usage y el test de relay se
-ejecutan en CI. Son comprobaciones estructurales y deterministas: no demuestran delegación
-real, aislamiento ni ahorro de tokens.
+ejecutan en CI. `validate-template` incluye las comprobaciones estructurales del adaptador
+OpenCode y de `scripts/review-read`; no se ejecutan los agentes. Son comprobaciones
+estructurales y deterministas: no demuestran delegación real, aislamiento ni ahorro de tokens.
 
 Pendiente: probar descubrimiento e invocación de cada Skill en Codex y Claude Code, observar
 una delegación real si el cliente la soporta y auditar el VPS con autorización de solo lectura.

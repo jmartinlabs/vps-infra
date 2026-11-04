@@ -64,7 +64,7 @@ For implementation smoke tests and Skills discovery see
 [Claude adapter](CLAUDE_ADAPTER.md).
 
 For reproducible Quick / Standard / Full client measurements, see the
-[v2.4.2 benchmark protocol](archive/V2_4_2_BENCHMARK.md). No performance results are implied.
+[v2.4.2 benchmark reference](archive/README.md). No performance results are implied.
 
 ## Coordination and external-client scenarios
 
@@ -73,7 +73,11 @@ advance escalation notice, permissions, milestone waits, environment mapping, in
 QA, current-state closure, mixed-client isolation, manual relay and honest missing usage.
 CI tests the scorer and reference fixtures only. Live Codex/Claude/OpenCode trials and
 performance comparisons for these additions are UNRUN; historical results below apply
-to their dated scenario sets, not these new cases. No OpenCode adapter is supplied.
+to their dated scenario sets, not these new cases. The optional OpenCode `review` and
+specialized adapters are installed (see the [OpenCode adapter](OPENCODE_ADAPTER.md)); their
+registration, delegation and read-only boundary in this installation remain UNRUN. The
+template's 2026-11-02 OpenCode smoke tests are evidence from that revision, not from
+`vps-infra`, and are not inherited.
 
 The `comms-01..16` cases cover the [coordinator communication](../specs/methodology/coordinator-communication.md)
 contract: full return after the first delegation (01), correction that re-requests it (02),
@@ -190,7 +194,7 @@ runs for these cases are UNRUN.
 
 ### 2026-10-23 — execution benchmark (reduced)
 
-Reduced run of the [benchmark protocol](archive/V2_4_2_BENCHMARK.md): Claude Code only,
+Reduced run of the [benchmark reference](archive/README.md): Claude Code only,
 Quick and Standard tasks, 3 paired repetitions, alternating revision order.
 
 - **Client:** Claude Code CLI 2.1.301, `claude -p --model sonnet`, `--permission-mode acceptEdits`,

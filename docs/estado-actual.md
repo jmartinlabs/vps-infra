@@ -26,13 +26,14 @@ No constan aquí pruebas de que haya reglas de firewall correctas, copias restau
 
 ## MyFinanzas: dependencia externa
 
-Repositorio de aplicación: [josemartin2000/myfinanzas-app](https://github.com/josemartin2000/myfinanzas-app).
+Repositorio de aplicación: [jmartinlabs/myfinanzas-app](https://github.com/jmartinlabs/myfinanzas-app).
+El remoto se verificó el 2026-11-04; el enlace anterior a `josemartin2000` era histórico.
 
 Consulta GitHub del 22-10-2026, **no estado congelado ni autorización de despliegue**:
-- Dev 31 integrado; PR [#31](https://github.com/josemartin2000/myfinanzas-app/pull/31) integrada.
-- Spec Dev 32: PR [#29](https://github.com/josemartin2000/myfinanzas-app/pull/29) abierta, aprobación documental comunicada; pendiente de integración.
-- Implementación Dev 32: PR [#30](https://github.com/josemartin2000/myfinanzas-app/pull/30) abierta/Draft, checkpoint 23/24 AC; AC-22 y riesgos de concurrencia/durabilidad pendientes. No equivale a estar preparada para producción.
-- Adopción metodológica PR [#32](https://github.com/josemartin2000/myfinanzas-app/pull/32) y política de aislamiento PR [#33](https://github.com/josemartin2000/myfinanzas-app/pull/33) integradas en la aplicación; **no suponen instalación de `$orchestrate` en `vps-infra`**.
+- Dev 31 integrado; PR [#31](https://github.com/jmartinlabs/myfinanzas-app/pull/31) integrada.
+- Spec Dev 32: PR [#29](https://github.com/jmartinlabs/myfinanzas-app/pull/29) abierta, aprobación documental comunicada; pendiente de integración.
+- Implementación Dev 32: PR [#30](https://github.com/jmartinlabs/myfinanzas-app/pull/30) abierta/Draft, checkpoint 23/24 AC; AC-22 y riesgos de concurrencia/durabilidad pendientes. No equivale a estar preparada para producción.
+- Adopción metodológica PR [#32](https://github.com/jmartinlabs/myfinanzas-app/pull/32) y política de aislamiento PR [#33](https://github.com/jmartinlabs/myfinanzas-app/pull/33) integradas en la aplicación; **no suponen instalación de `$orchestrate` en `vps-infra`**.
 
 Antes de coordinar una entrega relacionada, **volver a comprobar** estos enlaces y los criterios vigentes en el repositorio de aplicación.
 

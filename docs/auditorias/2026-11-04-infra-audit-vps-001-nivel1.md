@@ -5,8 +5,8 @@ Fecha de ejecución: 2026-11-04, ~20:16 UTC.
 Autorización: mensaje explícito del usuario del 2026-11-04 para `ssh mi-vps` como `mfadmin`,
 solo comandos revisados y sin `sudo`.
 Candidato: no aplica; es una auditoría de host, sin artefacto de código ni PR/CI.
-Evidencia: registro local con permisos restringidos, fuera del repositorio y no publicado.
-No está cifrado; se cifrará o se eliminará según la política que se acuerde.
+Evidencia: registro local cifrado, fuera del repositorio y no publicado. El texto plano se
+eliminó tras verificar el descifrado. La clave se custodia en macOS Keychain.
 
 ## 1. Resumen ejecutivo
 
@@ -195,7 +195,24 @@ y Quadlet. `apt list --upgradable` formaba parte de la lista autorizada; devolvi
 `Listing...` sin líneas de paquetes, lo que **no acredita** que el sistema esté parcheado.
 No se ejecutaron comandos adicionales de diagnóstico.
 
-El registro local contiene la salida completa con permisos restringidos; no se publica.
-Este informe omite IP, hostname completo, machine ID, boot ID y cualquier secreto.
-La revisión independiente `qa-review` se ha realizado sobre este informe; sus correcciones
-se han incorporado.
+El registro local contiene la salida completa; no se publica. Custodia aplicada:
+
+- Cifrado: `AES-256-CBC` con `PBKDF2` (600.000 iteraciones).
+- Clave: custodiada en macOS Keychain, fuera del repositorio.
+- Fichero cifrado: ruta local fuera del repositorio; no se publica.
+- SHA-256 del cifrado: `fae53483c13a9344e281c0033a079c2cb38803847b5952240b969de1212743b1`.
+- SHA-256 del texto plano original: registrado en el metadato local junto al cifrado.
+- Texto plano eliminado tras verificar que el descifrado coincide.
+- Retención: hasta la integración de PR #10 o 30 días, lo que ocurra primero; después se
+  revisa y se elimina. No se publica en GitHub.
+
+Este informe omite IP, hostname completo, machine ID, boot ID y cualquier secreto. No
+actualiza `docs/estado-actual.md`; es un resultado parcial de Nivel 1. La revisión
+independiente `qa-review` se ha realizado sobre la versión final de este informe y su
+veredicto fue **APTO PARA PRESENTAR**.
+
+## 8. Plan de Nivel 2
+
+El alcance candidato para una eventual Nivel 2, con comandos, permisos y riesgos, está en
+[2026-11-04 · Plan de Nivel 2](2026-11-04-infra-audit-vps-001-nivel2-plan.md). Ese documento
+**no autoriza** acceso ni ejecución; requiere aprobación separada.

@@ -48,6 +48,9 @@ de arrancar el servicio (§6.5 del procedimiento principal).
 Ejecutar en una sola sesión, tras `sudo -v`. El script no detiene, recarga ni reinicia Caddy; no
 instala paquetes; no escribe en `/etc/caddy` ni en `/var/lib/caddy`.
 
+La detección de locks usa `lsof`, presente en Debian 13. **`fuser` no está instalado en el
+VPS**, por lo que no se usa. Un error de `lsof` o de los detectores aborta siempre.
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -62,7 +65,7 @@ OLD_SIZE=10110872
 NEW_SIZE=18049414
 
 sudo install -d -m 0700 "$PF"
-for t in curl openssl sha256sum dpkg-deb namei; do
+for t in curl openssl sha256sum dpkg-deb namei lsof; do
   command -v "$t" >/dev/null || { echo "Falta la herramienta $t: abortar"; exit 1; }
 done
 
@@ -105,13 +108,13 @@ for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/
   sudo test -e "$f" || { echo "Falta el lock $f: abortar"; exit 1; }
 done
 ERR=$(mktemp)
-if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+if sudo lsof /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
     /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>"$ERR"; then
   BUSY=1
 else
   rc=$?
-  if [ -s "$ERR" ]; then echo "fuser falló: $(cat "$ERR"): abortar"; rm -f "$ERR"; exit 1; fi
-  [ "$rc" -eq 1 ] || { echo "fuser rc=$rc: abortar"; rm -f "$ERR"; exit 1; }
+  if [ -s "$ERR" ]; then echo "lsof falló: $(cat "$ERR"): abortar"; rm -f "$ERR"; exit 1; fi
+  [ "$rc" -eq 1 ] || { echo "lsof rc=$rc: abortar"; rm -f "$ERR"; exit 1; }
 fi
 rm -f "$ERR"
 [ "$BUSY" -eq 0 ] || { echo "APT/dpkg ocupado: abortar sin interrumpir"; exit 1; }
@@ -249,7 +252,7 @@ contener rutas internas o hashes de credenciales.
 
 | Sin `sudo` | Con `sudo` | Con `sudo -u caddy` |
 | --- | --- | --- |
-| `caddy version`, `dpkg-query`, `apt-cache`, `apt-mark showhold`, `systemctl is-active/is-enabled/show/cat`, `ss -ltn`, `df`, `id`, `curl`, `openssl` | Crear `PF`, `fuser` y locks, `dpkg --audit`, `dpkg --no-act`, descargas a `PF`, `sha256sum`/`stat`/`namei` de configuración y datos, `journalctl`, `ss -ltnp`, `mktemp` de validación | Leer el `Caddyfile`, validar con 2.6.2 y comprobar la ruta servida |
+| `caddy version`, `dpkg-query`, `apt-cache`, `apt-mark showhold`, `systemctl is-active/is-enabled/show/cat`, `ss -ltn`, `df`, `id`, `curl`, `openssl` | Crear `PF`, `lsof` y locks, `dpkg --audit`, `dpkg --no-act`, descargas a `PF`, `sha256sum`/`stat`/`namei` de configuración y datos, `journalctl`, `ss -ltnp`, `mktemp` de validación | Leer el `Caddyfile`, validar con 2.6.2 y comprobar la ruta servida |
 
 ## 5. Qué no hace la preflight
 
@@ -283,9 +286,10 @@ retención de 30 días (§6.4). La validación definitiva del `Caddyfile` se har
 | V-02 | `./scripts/validate-template` | PASS |
 | V-03 | `python3 scripts/check_harness.py` | PASS |
 | V-04 | `./scripts/test-validator` (185 tests) | PASS |
-| V-05 | Detector APT con dobles (rc 0/1/2, `fuser` con error y lock ausente) | PASS |
+| V-05 | Detector APT con dobles (rc 0/1/2, `lsof` con error y lock ausente) | PASS |
 | T-01…T-12 | Ensayo en VM Debian 13 | BLOQUEADO / UNRUN |
 
+V-05 se probó con `lsof` real (libre, ocupado y ruta ausente) y con un doble que devuelve 2.
 Las validaciones estáticas no sustituyen a la ejecución en el VPS ni al ensayo de rollback.
 
 ## 8. Riesgos pendientes

@@ -152,7 +152,7 @@ Otros puntos:
    curso, **abortar sin interrumpirla**.
 7. Ensayo aislado del procedimiento y del rollback si existe entorno; si no, bloqueo documentado
    y riesgo residual pendiente de autorización (§8.1 y §10).
-8. Herramientas presentes: `curl`, `openssl`, `gpg`, `fuser`, `sha256sum`, `dpkg-deb`. Si falta
+8. Herramientas presentes: `curl`, `openssl`, `gpg`, `lsof`, `sha256sum`, `dpkg-deb`. Si falta
    alguna, detenerse y decidir antes de la ventana.
 9. Comprobación previa de solo lectura ejecutada o revisada: [03.1 — preflight](03-caddy-upgrade-01-preflight.md).
    No copia `/var/lib/caddy`; la copia definitiva se hace en la ventana, con Caddy detenido.
@@ -270,15 +270,27 @@ else
   rc=$?
   [ "$rc" -eq 1 ] || { echo "Detector unattended falló (rc=$rc): abortar"; exit 1; }
 fi
-if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then BUSY=1; fi
+for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock; do
+  sudo test -e "$f" || { echo "Falta el lock $f: abortar"; exit 1; }
+done
+ERR=$(mktemp)
+if sudo lsof /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>"$ERR"; then
+  BUSY=1
+else
+  rc=$?
+  if [ -s "$ERR" ]; then echo "lsof falló: $(cat "$ERR"): abortar"; rm -f "$ERR"; exit 1; fi
+  [ "$rc" -eq 1 ] || { echo "lsof rc=$rc: abortar"; rm -f "$ERR"; exit 1; }
+fi
+rm -f "$ERR"
 if systemctl is-active --quiet apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; then BUSY=1; fi
 if sudo systemctl list-jobs | grep -qE 'apt|unattended|dpkg'; then BUSY=1; fi
 if [ "$BUSY" -ne 0 ]; then echo "APT/dpkg ocupado: abortar sin interrumpir"; exit 1; fi
 ```
 
 `pgrep` recibe **un único patrón** ERE con `-x`; si devuelve un código distinto de 0
-(coincidencia) o 1 (sin coincidencias), se aborta. **Un fallo del detector nunca se interpreta
-como sistema libre.**
+(coincidencia) o 1 (sin coincidencias), se aborta. Los locks se comprueban con `lsof`: código 0
+indica ocupado, 1 libre y cualquier otro, o salida en `stderr`, aborta. **Un fallo del detector
+nunca se interpreta como sistema libre.**
 
 Si está libre, registrar el estado de los timers y detener **solo los timers**:
 
@@ -427,7 +439,18 @@ else
   rc=$?
   [ "$rc" -eq 1 ] || { echo "Detector APT falló (rc=$rc): detener"; exit 1; }
 fi
-if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then BUSY=1; fi
+for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock; do
+  sudo test -e "$f" || { echo "Falta el lock $f: detener"; exit 1; }
+done
+ERR=$(mktemp)
+if sudo lsof /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>"$ERR"; then
+  BUSY=1
+else
+  rc=$?
+  if [ -s "$ERR" ]; then echo "lsof falló: $(cat "$ERR"): detener"; rm -f "$ERR"; exit 1; fi
+  [ "$rc" -eq 1 ] || { echo "lsof rc=$rc: detener"; rm -f "$ERR"; exit 1; }
+fi
+rm -f "$ERR"
 if [ "$BUSY" -ne 0 ]; then echo "APT/dpkg ocupado: detener sin interrumpir"; exit 1; fi
 sudo sh -c "cd '$CASE_DIR' && sha256sum -c new.expected"
 sudo dpkg --force-confdef --force-confold --unpack "$DEB_NEW"
@@ -504,7 +527,18 @@ else
   rc=$?
   [ "$rc" -eq 1 ] || { echo "Detector APT falló (rc=$rc): detener"; exit 1; }
 fi
-if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then BUSY=1; fi
+for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock; do
+  sudo test -e "$f" || { echo "Falta el lock $f: detener"; exit 1; }
+done
+ERR=$(mktemp)
+if sudo lsof /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>"$ERR"; then
+  BUSY=1
+else
+  rc=$?
+  if [ -s "$ERR" ]; then echo "lsof falló: $(cat "$ERR"): detener"; rm -f "$ERR"; exit 1; fi
+  [ "$rc" -eq 1 ] || { echo "lsof rc=$rc: detener"; rm -f "$ERR"; exit 1; }
+fi
+rm -f "$ERR"
 if [ "$BUSY" -ne 0 ]; then echo "APT/dpkg ocupado: detener sin interrumpir"; exit 1; fi
 sudo dpkg --force-confdef --force-confold --configure caddy
 dpkg -l caddy
@@ -926,7 +960,7 @@ Las validaciones estáticas no sustituyen al ensayo de ejecución ni a la ventan
 | 2.11.9 es del mismo día y sucede a una versión con regresión | Medio-Alto | Validar, preparar rollback y considerar posponer la ventana; si se pospone, CVE-2026-77281 sigue abierto |
 | **Rollback no ensayado (sin entorno aislado)** | **Alto** | Aceptar el riesgo expresamente o conseguir una VM Debian 13 desechable; no se sustituye por pruebas en el VPS |
 | `postinst` arranca el servicio y deshace `mask` | Alto | `dpkg --unpack` + validar antes de `--configure`; `mask` no se usa como control |
-| Otro `apt`/`dpkg` configura el paquete antes de validar | Alto | Timers detenidos, `fuser`/`pgrep` sin procesos, ventana exclusiva |
+| Otro `apt`/`dpkg` configura el paquete antes de validar | Alto | Timers detenidos, `lsof`/`pgrep` sin procesos, ventana exclusiva |
 | Caddyfile incompatible o módulo ausente | Medio | Revisión de directivas, `validate` y `diff` de módulos antes de configurar |
 | Reemplazo del `Caddyfile` en `--configure` | Medio | `--force-confold` en `--unpack` **y** `--configure`; hash y ausencia de `.dpkg-dist` |
 | Pérdida de certificados/claves | Alto | Snapshot `0700` de `/var/lib/caddy`; prohibido purgar; no tocar DNS |

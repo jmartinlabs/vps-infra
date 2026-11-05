@@ -47,3 +47,12 @@ Prioridad inicial: proteger datos y aplicaciones existentes, constatar alcance y
 ## Mantenimiento y observabilidad
 
 Tras la auditoría concretar responsables y periodicidad de revisión de parches, logs, caducidad TLS, espacio/inodos, memoria, disponibilidad y fallos de copia. Preferir checks simples y útiles antes que desplegar una pila completa de observabilidad.
+
+## Caddy: versión fijada y revisión
+
+Caddy **2.11.9** (repositorio estable oficial Cloudsmith) está en `apt-mark hold` desde el
+2026-11-05. Revisar **mensualmente** el repositorio oficial, los avisos de seguridad de Caddy y
+el Debian Security Tracker. Si hay una versión corregida, `unhold` solo en una ventana
+autorizada y repetir la [especificación](../specs/03-caddy-upgrade-01-specification.md) y la
+[preflight](../specs/03-caddy-upgrade-01-preflight.md), con QA y rollback disponible. No dejar
+el `hold` sin revisión. Detalle: [cierre VPS-CADDY-UPGRADE-01](auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).

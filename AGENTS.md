@@ -34,7 +34,7 @@ Estas instrucciones aplican a todo el repositorio `vps-infra` y a cualquier agen
 ## Coordinación
 - [$orchestrate](.agents/skills/orchestrate/SKILL.md), [flujos](specs/methodology/workflows.md), [aprobaciones](specs/methodology/approvals.md) y [comunicación](specs/methodology/coordinator-communication.md).
 - [Agentes dinámicos](specs/methodology/dynamic-agents.md), [modelos](specs/methodology/model-selection.md), [épicas](specs/methodology/epic-orchestration.md) y [roles](.agents/roles/README.md) on demand.
-- Mantén identificados los siguientes trabajos del roadmap y sus dependencias; mientras algo avanza o espera, prepara SPEC, investigación, paquete DEV ya autorizado o diseño QA sin cruzar gates. Replanifica ante resultados o bloqueos y deja una siguiente acción verificable; no crees trabajo artificial ni un segundo scheduler.
+- El coordinador mantiene identificados los siguientes trabajos del roadmap y sus dependencias; mientras algo avanza o espera, prepara SPEC, investigación, paquete DEV ya autorizado o diseño QA sin cruzar gates. Replanifica ante resultados o bloqueos y deja una siguiente acción verificable; no crees trabajo artificial ni un segundo scheduler.
 - Un ejecutor por defecto; QA independiente al candidato. Escritores concurrentes necesitan ownership disjunto y aislamiento efectivo; worktrees según [la política canónica](specs/methodology/approvals.md#local-worktrees); si no hay aislamiento, serializar.
 - Continue authorized work hasta completar o encontrar un bloqueo real, según [execution-continuity](.agents/skills/orchestrate/SKILL.md#execution-continuity).
 - Sin subagentes fingidos, servicios residentes ni trabajo prometido entre sesiones.

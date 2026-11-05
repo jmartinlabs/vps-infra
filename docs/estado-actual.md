@@ -88,10 +88,6 @@ una entrega nueva.
 
 Antes de coordinar una entrega relacionada, **volver a comprobar** estos enlaces y los criterios vigentes en el repositorio de aplicación.
 
-El [contrato de despliegue por tags](despliegue-por-tags.md) es documentación de diseño
-aprobada el 2026-11-05. No hay tags operativos, workflows de despliegue, credenciales de
-activación ni automatización habilitada; el VPS y sus servicios no se han modificado.
-
 ## Alcance de la auditoría ejecutada — solo lectura
 
 Los resultados verificados están en la sección anterior y en los informes enlazados. SSH y

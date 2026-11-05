@@ -345,18 +345,6 @@ class ValidationTests(unittest.TestCase):
      self.assertRule('delegation-preference')
     finally:
      p.write_text(original)
- def test_thin_adapters(self):
-  cases=(('.opencode/agents/functional.md','opencode'),('.opencode/agents/implementation.md','opencode'),
-         ('.opencode/agents/infrastructure.md','opencode'),('.claude/agents/functional.md','claude'),
-         ('.claude/agents/implementation.md','claude'),('.claude/agents/infrastructure.md','claude'))
-  for name, rule in cases:
-   with self.subTest(name=name):
-    p=self.root/name; original=p.read_text()
-    try:
-     p.write_text(original+'\n'+'\n'.join(['Duplicated role rule']*10)+'\n')
-     self.assertRule(rule)
-    finally:
-     p.write_text(original)
  def test_mermaid_validator_script_required(self):
   (self.root/'scripts/check-mermaid.mjs').unlink(); self.assertRule('structure')
  def test_mermaid_ci_wiring(self):

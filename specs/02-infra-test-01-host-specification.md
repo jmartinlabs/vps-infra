@@ -313,7 +313,7 @@ retirada de `reset/` exige inventario y autorización.
 
 - `seed verify` → `0`, sin drift, con `seed_manifest_sha256` registrado.
 - SQL de solo lectura: `PRAGMA integrity_check=ok`, `foreign_key_check` vacío,
-  `schema_version`/`schema_contract` declarados por el manifiesto de la release (hoy 25/C25),
+  `schema_version`/`schema_contract` declarados por el manifiesto de la release,
   conteos e IDs de `FT-1`.
 - API autenticada y UI: IDs ficticios esperados; sin sesión, `401`.
 - Solo `FT-1`; sin Excel, bases reales, exportaciones ni credenciales.
@@ -582,7 +582,7 @@ Todos son **documentales** hasta que se ejecuten en la fase indicada del
 La auditoría de 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de
 backups, pero **no completó** la revalidación de Quadlet/cgroup ni el inventario profundo de
 backups. Por eso AC02 no se marca `PASS`. AC10 queda pendiente de la release/seed desde
-`main`; el contrato de integración lo declara MyFinanzas (hoy 25/C25) y no se fija permanentemente.
+`main`; el contrato de integración lo declara el manifiesto de la release y no se fija permanentemente.
 
 | ID | Criterio verificable | Fase |
 | --- | --- | --- |
@@ -662,11 +662,11 @@ acredita HTTPS, smoke y copias.
 | Dependencia | Estado | Efecto |
 | --- | --- | --- |
 | Contrato de integración (SPEC34 §5) | Vigente; actualización de esquema/seed a cargo de MyFinanzas | Contrato de app; no autoriza DEV ni deploy. |
-| Esquema/seed por release | Declarado en el manifiesto del SHA; hoy 25/C25 como candidato | Seed/AC10 usan el contrato declarado; no se ancla a 24 ni a 25 para siempre. |
+| Esquema/seed por release | Declarado en el manifiesto del SHA y de cada release | Seed/AC10 usan el contrato declarado; no se ancla a una versión fija. |
 | Release, imagen y artefacto de seed | No construidos | Sin ellos, fases 5–8 no ejecutables. |
-| E4.9 / v25 | **Mergeado** (`0176ffc`); `schemaVersion=25`; contrato de integración a cargo de MyFinanzas | TEST usa el esquema declarado por la release (hoy 25); no se fija para siempre. |
+| E4.9 / v25 | Estado de desarrollo en MyFinanzas | TEST usa el esquema declarado por el manifiesto de la release; no se fija una versión concreta. |
 | E4.5 / DT7 | QA APTO; DT7 abierto; DEV no autorizado | Sin históricos ni transición de ejercicio. |
-| E4.7 / E4.10 / E4.11 | E4.7 integrado; E4.10 SPEC28 ratificada sin DEV; E4.11 borrador | Fuera del dataset y del smoke por D5. |
+| E4.7 / E4.10 / E4.11 | Estado de desarrollo en MyFinanzas | Fuera del dataset y del smoke por D5. |
 | Flujo actual `feature/* → main` | Sin rama `test`; TEST usa SHA de `main` | Deploy manual e independiente de los merges; host no gestiona ramas. |
 | DT6 / T-BKP | Abierto | Afecta a backup/restore; TEST exige mínimo local+externo. |
 | Gate Rootless | Obligatorio por RUNBOOK | Sin `SUCCESS` sobre el SHA de `main` no se despliega TEST. |

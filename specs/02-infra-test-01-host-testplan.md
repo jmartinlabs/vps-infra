@@ -73,7 +73,7 @@ siguen `UNRUN` y no se cubren con el contador de AC host.
 
 La auditoría 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de backups,
 pero **no** completó Quadlet/cgroup ni el inventario profundo de backups: AC02 sigue `UNRUN`.
-AC10 queda pendiente de la release/seed desde `main`; el contrato de integración lo declara MyFinanzas en el manifiesto (hoy 25/C25).
+AC10 queda pendiente de la release/seed desde `main`; el contrato de integración lo declara el manifiesto de la release.
 
 ## 4. Fases y gates de autorización
 
@@ -113,7 +113,7 @@ Todos `UNRUN`; ninguno se convierte en `PASS` por ausencia de error.
 | Seed con directorio `0755` o archivos `0644` | Rechazo `2`; no se corrige el permiso. |
 | Seed con `owner` ya creado | Rechazo `2`; el estado se preserva. |
 | Seed sobre base con movimientos ajenos | Rechazo `2`/`3`; sin reparación automática. |
-| Seed con esquema distinto del declarado por la release (hoy 25/C25; 24/26) | Rechazo; no se migra ni se fuerza. |
+| Seed con esquema distinto del declarado por la release | Rechazo; no se migra ni se fuerza. |
 | Seed repetido con el mismo manifiesto | `0` sin escrituras. |
 | Seed con la unidad activa o `18082` respondiendo | Rechazo; no se siembra. |
 | Reset sin confirmación explícita | Rechazo; no se archiva nada. |

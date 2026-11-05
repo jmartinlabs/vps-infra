@@ -714,6 +714,54 @@
       "decision": "continue",
       "target": "announce execution mode before starting substantial work",
       "communication": "Task ORCH-BG-01: executor Implementation subagent, mode background, isolation a dedicated worktree; the coordinator remains available for other authorized work. Success is not yet verified."
+    },
+    {
+      "id": "proactive-01",
+      "decision": "continue",
+      "target": "draft the E2.2 specification and update the board while E2.1 DEV continues",
+      "communication": "Draft the E2.2 specification and update the board while E2.1 DEV continues. Keep E2.2 in SPEC=drafting with its pending decisions recorded, and record the next independent action as preparing QA test design for E2.1. No E2.2 implementation is authorized and no merge is requested."
+    },
+    {
+      "id": "proactive-02",
+      "decision": "continue",
+      "target": "prepare the E3 QA test-design packet while E1 CI is pending"
+    },
+    {
+      "id": "proactive-03",
+      "decision": "block",
+      "target": "end the run after E2.1 while independent QA and E2.2 drafting are ready"
+    },
+    {
+      "id": "proactive-04",
+      "decision": "continue",
+      "target": "update the board with E2.2 stage and next independent action",
+      "communication": "Update the E2.2 board row to SPEC=drafting with the open question recorded, while E2.1 DEV continues. Set the next independent action to present the pending decision and prepare provisional QA test design. The draft is not approved and must not be treated as an approval."
+    },
+    {
+      "id": "proactive-05",
+      "decision": "block",
+      "target": "start E3.2 development from an unapproved draft"
+    },
+    {
+      "id": "proactive-06",
+      "decision": "block",
+      "target": "merge E1 without explicit approval"
+    },
+    {
+      "id": "proactive-07",
+      "decision": "block",
+      "target": "create artificial work to keep an agent busy",
+      "communication": "No independent work is ready: every remaining roadmap item has a pending decision or a hard dependency. Stop and present the pending decisions; do not create a new task and do not assign another worker."
+    },
+    {
+      "id": "proactive-08",
+      "decision": "continue",
+      "target": "draft E2.2 while E2.1 is blocked on a decision"
+    },
+    {
+      "id": "proactive-09",
+      "decision": "continue",
+      "target": "prepare the E2.1 work packet while E1 DEV continues"
     }
   ]
 }

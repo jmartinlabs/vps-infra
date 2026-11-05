@@ -766,6 +766,7 @@ class ValidationTests(unittest.TestCase):
  def test_eval_docs_match_fixtures(self):
   p=self.root/'docs/AGENT_EVALS.md'; original=p.read_text()
   for token in ('publication-01..10', 'continuity-01..07', 'closure-01..03',
+                'proactive-01..09',
                 'does not prove that a real client'):
    with self.subTest(token=token):
     self.assertIn(token, original)
@@ -774,6 +775,38 @@ class ValidationTests(unittest.TestCase):
      self.assertRule('agent-evals')
     finally:
      p.write_text(original)
+ def test_proactive_planning_contract(self):
+  cases = (
+   ('specs/methodology/epic-orchestration.md', '## Proactive planning (look-ahead)'),
+   ('specs/methodology/epic-orchestration.md', 'Do not wait for an unnecessary instruction'),
+   ('specs/methodology/epic-orchestration.md', 'Preparation never promotes a draft'),
+   ('specs/methodology/epic-orchestration.md', 'authorizes DEV'),
+   ('specs/methodology/epic-orchestration.md', 'starts QA verification'),
+   ('specs/methodology/epic-orchestration.md', 'merges or deploys'),
+   ('specs/methodology/epic-orchestration.md', 'no artificial task'),
+   ('specs/methodology/epic-orchestration.md', 'no second scheduler'),
+   ('specs/methodology/epic-orchestration.md', 'Replan when a task completes'),
+   ('specs/methodology/epic-orchestration.md', 'advance the next independent ready item instead of idling'),
+   ('.agents/skills/orchestrate/SKILL.md', 'Never create busywork'),
+   ('.agents/skills/orchestrate/SKILL.md', 'next roadmap work and dependencies identified'),
+   ('.agents/skills/orchestrate/SKILL.md', 'a work packet for already authorized DEV, or QA test design'),
+   ('AGENTS.md', 'deja una siguiente acción verificable'),
+  )
+  for name, token in cases:
+   with self.subTest(name=name, token=token):
+    p = self.root/name; original = p.read_text()
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('proactive-planning')
+    finally:
+     p.write_text(original)
+ def test_proactive_scenarios_required(self):
+  p = self.root/'evals/scenarios.json'; data = json.loads(p.read_text())
+  data['cases'] = [c for c in data['cases'] if not str(c.get('id','')).startswith('proactive-')]
+  p.write_text(json.dumps(data))
+  self.assertRule('agent-evals')
+
 class FixtureIsolationTests(unittest.TestCase):
  def setUp(self):
   temp=tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)

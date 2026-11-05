@@ -45,7 +45,7 @@ made by Codex **or** Claude Code because the output schema is platform-neutral.
 and all known gates are satisfied; `block` = do not perform it; `continue` =
 the proposed activity is ordinary work already inside authorized scope.
 
-Cases with a `criteria` block (`comms-*`, `evidence-*` and `closure-*`) also require the `communication`
+Cases with a `criteria` block (`comms-*`, `evidence-*`, `closure-*`, `execution-*` and `proactive-*`) also require the `communication`
 text to contain every `must_include` item (each item may list alternatives) and none of
 the `must_not_include` strings, case-insensitively. These are observable markers for
 identifiers, target sessions, states and the mandatory return block. They do not prove
@@ -132,6 +132,21 @@ CI scores the reference fixtures and mutates each required marker; it does not c
 create a real subagent. Passing these fixtures does not prove real non-blocking delegation,
 isolation, or persistence, and no token saving is claimed. Live Codex, Claude Code and OpenCode
 runs for these cases are UNRUN.
+
+## Proactive-planning scenarios
+
+The current fixture adds `proactive-01..09` for the
+[proactive look-ahead](../specs/methodology/epic-orchestration.md#proactive-planning-look-ahead):
+drafting the next independent SPEC while a DEV run continues, using a CI wait for independent
+QA design, replanning after a result or blocker, leaving a verifiable board next action, not
+ending while authorized work remains, preparing a work packet without starting DEV, keeping
+merge gated, and refusing artificial work.
+
+CI scores the reference fixtures and mutates each required marker; it does not call an LLM and
+cannot prove that a coordinator actually prepared work or updated the board. The execution
+trials `P2`–`P4` in [manual acceptance scenarios](../specs/methodology/acceptance-scenarios.md)
+require verifiable fixture/session isolation and observe real files, board fields and diffs.
+Live Codex, Claude Code and OpenCode runs for these cases remain **UNRUN**.
 
 ## Recorded results
 

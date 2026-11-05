@@ -38,6 +38,11 @@ No afirmar «backup funcionando» hasta comprobar copias recientes y al menos un
 
 Confirmar owner y repositorio, imagen/versiones verificadas, usuario rootless, puertos internos, rutas de persistencia, secretos fuera de Git, límites de recursos y disponibilidad de backup/rollback. Acordar con `vps-infra` solo la entrada Caddy, dominio y controles comunes.
 
+La recepción y activación de releases por tag se rige por el
+[contrato de despliegue por tags](despliegue-por-tags.md). Es un **diseño no habilitado**:
+hasta su aprobación e implementación, el despliegue sigue siendo manual y conserva todos
+los gates de esta guía y del runbook de la aplicación.
+
 Probar de forma aislada los cambios de Quadlet/Caddy y simular recuperación. Solicitar autorización específica antes de poner el servicio en marcha, cambiar DNS, publicar puertos o sustituir la página de prueba.
 
 ## Incidencias

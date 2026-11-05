@@ -664,7 +664,7 @@ acredita HTTPS, smoke y copias.
 | Contrato de integración (SPEC34 §5) | Vigente; actualización de esquema/seed a cargo de MyFinanzas | Contrato de app; no autoriza DEV ni deploy. |
 | Esquema/seed por release | Declarado en el manifiesto del SHA; hoy 25/C25 como candidato | Seed/AC10 usan el contrato declarado; no se ancla a 24 ni a 25 para siempre. |
 | Release, imagen y artefacto de seed | No construidos | Sin ellos, fases 5–8 no ejecutables. |
-| E4.9 / v25 | **Mergeado** (`0176ffc`, PR #200); `schemaVersion=25`; contrato de integración a cargo de MyFinanzas | TEST usa el esquema declarado por la release (hoy 25); no se fija para siempre. |
+| E4.9 / v25 | **Mergeado** (`0176ffc`); `schemaVersion=25`; contrato de integración a cargo de MyFinanzas | TEST usa el esquema declarado por la release (hoy 25); no se fija para siempre. |
 | E4.5 / DT7 | QA APTO; DT7 abierto; DEV no autorizado | Sin históricos ni transición de ejercicio. |
 | E4.7 / E4.10 / E4.11 | E4.7 integrado; E4.10 SPEC28 ratificada sin DEV; E4.11 borrador | Fuera del dataset y del smoke por D5. |
 | Flujo actual `feature/* → main` | Sin rama `test`; TEST usa SHA de `main` | Deploy manual e independiente de los merges; host no gestiona ramas. |

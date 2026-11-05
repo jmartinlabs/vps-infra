@@ -305,6 +305,9 @@ sudo cp -a /etc/caddy "$CASE_DIR/etc-caddy"
 sudo cp -a /var/lib/caddy "$CASE_DIR/var-lib-caddy"
 sudo cp -a /lib/systemd/system/caddy.service "$CASE_DIR/caddy.service.before"
 sudo cp -a /lib/systemd/system/caddy-api.service "$CASE_DIR/caddy-api.service.before" 2>/dev/null || true
+if [ -e /etc/systemd/system/caddy.service.d/10-local-capabilities.conf ]; then
+  sudo cp -a /etc/systemd/system/caddy.service.d/10-local-capabilities.conf "$CASE_DIR/dropin.before"
+fi
 sudo systemctl cat caddy | sudo tee "$CASE_DIR/unit.before" >/dev/null
 sudo chmod 0700 "$CASE_DIR"
 sudo stat -c '%A %U:%G %n' "$CASE_DIR" /etc/caddy /etc/caddy/Caddyfile /var/lib/caddy
@@ -363,13 +366,10 @@ detenido; no se ha ejecutado el `postinst`.
 ### 6.6 Unidad, capacidades y arranque
 
 Si se aprueba el mínimo privilegio (§10), crear el *drop-in* **antes** del primer arranque para
-que el `postinst` ya lo aplique. Si ya existiera, se respalda como `dropin.before`:
+que el `postinst` ya lo aplique. Un *drop-in* preexistente ya quedó respaldado en §6.4:
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
-if [ -e /etc/systemd/system/caddy.service.d/10-local-capabilities.conf ]; then
-  sudo cp -a /etc/systemd/system/caddy.service.d/10-local-capabilities.conf "$CASE_DIR/dropin.before"
-fi
 sudo install -d -m 0755 /etc/systemd/system/caddy.service.d
 printf '%s\n' '[Service]' 'AmbientCapabilities=CAP_NET_BIND_SERVICE' 'LimitNPROC=512' \
   | sudo tee /etc/systemd/system/caddy.service.d/10-local-capabilities.conf >/dev/null
@@ -472,6 +472,8 @@ hasta que se autorice. Actualizar exige repetir esta spec con ventana, QA y `unh
 Alternativa sin repo: no se aplica `hold`; las actualizaciones son manuales y hay que registrar
 explícitamente que Caddy no recibirá parches automáticos.
 
+Cerrar la ventana en §6.9.
+
 ### 6.9 Cierre de la ventana
 
 Ejecutar **siempre**, tanto tras una actualización correcta como tras cualquier rollback:
@@ -484,8 +486,10 @@ systemctl is-active apt-daily.timer apt-daily-upgrade.timer || true
 ```
 
 Comparar con el estado registrado en `baseline.txt`: si un timer estaba inactivo o deshabilitado
-antes de la ventana, restaurar ese estado en lugar de arrancarlo. `unattended-upgrades.service`
-no se arranca a mano: lo dispara `apt-daily-upgrade.timer`.
+antes de la ventana, restaurar ese estado. Los comandos anteriores arrancan los timers
+habilitados; si el baseline muestra uno habilitado pero inactivo, volver a pararlo con
+`systemctl stop`. `unattended-upgrades.service` no se arranca a mano: lo dispara
+`apt-daily-upgrade.timer`.
 
 ## 7. Rollback
 
@@ -496,15 +500,13 @@ no se arranca a mano: lo dispara `apt-daily-upgrade.timer`.
 sudo systemctl stop caddy 2>/dev/null || true
 sudo apt-mark unhold caddy 2>/dev/null || true
 apt-mark showhold | grep '^caddy$' || true
-if sudo test -e "$CASE_DIR/repo-added"; then
-  if [ -e /etc/apt/sources.list.d/caddy-stable.list ]; then
-    sudo mv /etc/apt/sources.list.d/caddy-stable.list "$CASE_DIR/caddy-stable.list.disabled"
-  fi
-  if sudo test -e "$CASE_DIR/keyring.before"; then
-    sudo cp -a "$CASE_DIR/keyring.before" /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  else
-    sudo rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  fi
+if [ -e /etc/apt/sources.list.d/caddy-stable.list ]; then
+  sudo mv /etc/apt/sources.list.d/caddy-stable.list "$CASE_DIR/caddy-stable.list.disabled"
+fi
+if [ -e "$CASE_DIR/keyring.before" ]; then
+  sudo cp -a "$CASE_DIR/keyring.before" /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+elif sudo test -e "$CASE_DIR/repo-added"; then
+  sudo rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 fi
 sudo apt-get update
 apt-cache policy caddy
@@ -554,6 +556,7 @@ if sudo test -e "$CASE_DIR/dropin.before"; then
   sudo cp -a "$CASE_DIR/dropin.before" /etc/systemd/system/caddy.service.d/10-local-capabilities.conf
 fi
 sudo systemctl daemon-reload
+sudo systemctl restart caddy
 sudo systemctl show caddy -p FragmentPath -p AmbientCapabilities
 ```
 
@@ -619,7 +622,7 @@ Comprobar que no quedan `.dpkg-dist`/`.dpkg-new` en `/etc/caddy` **antes** de ar
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
 dpkg -l caddy
 sudo apt-mark unhold caddy 2>/dev/null || true
-if sudo test -e "$CASE_DIR/repo-added" && [ -e /etc/apt/sources.list.d/caddy-stable.list ]; then
+if [ -e /etc/apt/sources.list.d/caddy-stable.list ]; then
   sudo mv /etc/apt/sources.list.d/caddy-stable.list "$CASE_DIR/caddy-stable.list.disabled"
 fi
 sudo apt-get update

@@ -753,9 +753,8 @@ gestiona ramas.
 - **Test plans:** el de la app cubre sus AC, incluidas AC04–AC09, AC12, AC14, AC15, AC17 y
   AC19; este plan cubre los AC host y enlaza la trazabilidad de §8.1. Ningún resultado se
   hereda.
-- **Merge:** la aprobación de SPEC34 no autoriza DEV, release, despliegue ni merge. La
-  PR #207 consta `MERGED` en `58346e1`; no
-  se infiere permiso operativo.
+- **Merge:** la aprobación de SPEC34 no autoriza DEV, release, despliegue ni merge. El
+  estado de sus PRs se consulta en el repositorio de la app; no se infiere permiso operativo.
 
 ### 11.1 Flujo de versiones, validación y despliegue
 

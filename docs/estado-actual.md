@@ -78,16 +78,11 @@ No constan aquí pruebas de que haya reglas de firewall correctas, copias restau
 
 Repositorio de aplicación: [jmartinlabs/myfinanzas-app](https://github.com/jmartinlabs/myfinanzas-app).
 
-Consulta GitHub del 22-10-2026, **no estado congelado ni autorización de despliegue**:
-SPEC34/testplan fue aprobada y mergeada en `main` `58346e1` (PR #207); el resto de esta
-sección conserva el contexto histórico de Dev 31/32 y debe contrastarse antes de coordinar
-una entrega nueva.
-- Dev 31 integrado; PR [#31](https://github.com/jmartinlabs/myfinanzas-app/pull/31) integrada.
-- Spec Dev 32: PR [#29](https://github.com/jmartinlabs/myfinanzas-app/pull/29) abierta, aprobación documental comunicada; pendiente de integración.
-- Implementación Dev 32: PR [#30](https://github.com/jmartinlabs/myfinanzas-app/pull/30) abierta/Draft, checkpoint 23/24 AC; AC-22 y riesgos de concurrencia/durabilidad pendientes. No equivale a estar preparada para producción.
-- Adopción metodológica PR [#32](https://github.com/jmartinlabs/myfinanzas-app/pull/32) y política de aislamiento PR [#33](https://github.com/jmartinlabs/myfinanzas-app/pull/33) integradas en la aplicación; **no suponen instalación de `$orchestrate` en `vps-infra`**.
-
-Antes de coordinar una entrega relacionada, **volver a comprobar** estos enlaces y los criterios vigentes en el repositorio de aplicación.
+Consulta histórica del 22-10-2026; **no estado congelado ni autorización de despliegue**.
+El estado de desarrollo y las PRs de MyFinanzas se consultan en su propio repositorio;
+`vps-infra` no los replica ni los usa como contrato. El contrato de integración vigente es
+[SPEC34 §5](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md#5-contrato-de-despliegue-con-vps-infra-solo-interfaz)
+y el manifiesto de cada release.
 
 ## Alcance de la auditoría ejecutada — solo lectura
 

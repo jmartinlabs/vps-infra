@@ -15,9 +15,8 @@ PROD futuro, de `main`; no hay rama `test`; el despliegue es manual y no automat
 Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-infra/pull/7)
 (CLOSED, no mergeado); no es contrato vigente.
 
-> **Nota de verificación.** El packet describe PR #207 como «no mergeado». La consulta de
-> solo lectura a GitHub devuelve `MERGED` (head `8fe839c`, merge commit `58346e1`). Se
-> registra la discrepancia; no se infiere autorización de DEV ni de despliegue.
+> **Nota histórica.** El estado del contrato de aplicación se consulta en su repositorio;
+> `vps-infra` no rastrea sus PRs ni infiere autorización de DEV o despliegue.
 
 ## 1. Cómo leer este plan
 
@@ -137,11 +136,10 @@ Todos `UNRUN`; ninguno se convierte en `PASS` por ausencia de error.
 
 ## 6. Coordinación con myfinanzas-app
 
-`[CONFIRMADO]` El contrato de aplicación vive en
-[SPEC34](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md),
-PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head `8fe839c`, merge
-commit `58346e12eb24b9d8ddef6a0be660f0d66654f5ec`, aprobada y mergeada el 2026-11-04. Este test plan **no
-abre una segunda spec de aplicación**.
+`[CONFIRMADO]` El contrato de integración es
+[SPEC34 §5](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md#5-contrato-de-despliegue-con-vps-infra-solo-interfaz)
+y el manifiesto de cada release. `vps-infra` no rastrea PRs de MyFinanzas. Este test plan
+**no abre una segunda spec de aplicación**.
 
 - La app posee release, imagen, frontend, runtime, seed test-only, dataset `FT-1`,
   manifiesto/checksums y evidencia Rootless.
@@ -154,7 +152,7 @@ abre una segunda spec de aplicación**.
 - Los AC de la app (`INFRA-TEST-01-AC04…AC09`, `AC12`, `AC14`, `AC15`, `AC17`, `AC19`) y los host de §3 se
   enlazan en la trazabilidad de la [spec](02-infra-test-01-host-specification.md#81-trazabilidad-con-spec34).
   Ningún resultado se hereda.
-- PR #207 consta `MERGED` en `58346e1`; no se infiere permiso
+- El estado de las PRs de la app se consulta en su repositorio; no se infiere permiso
   operativo.
 
 ## 7. Comandos previstos (borrador, no ejecutados)

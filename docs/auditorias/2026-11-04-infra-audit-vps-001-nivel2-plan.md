@@ -1,6 +1,6 @@
 # INFRA-AUDIT-VPS-001 · Nivel 2 — Plan de auditoría
 
-Status: **PREPARADO — NO EJECUTADO — ACCESO AL VPS NO AUTORIZADO PARA NIVEL 2**
+Status: **EJECUTADO PARCIALMENTE (2C) — ver [informe de resultados](2026-11-05-infra-audit-vps-001-nivel2-result.md). No autoriza nuevas sesiones ni cambios.**
 Fecha: 2026-11-04
 Base: informe de Nivel 1 ([2026-11-04](2026-11-04-infra-audit-vps-001-nivel1.md)), PR #10.
 Contrato host: `specs/02-infra-test-01-host-specification.md`, PR #9, **DRAFT**; no aprobado.
@@ -15,8 +15,8 @@ específicamente esa elevación; si no, se registran como `BLOQUEADO`.
 
 Efectos incidentales que se declaran y aceptan o se omiten:
 
-- `podman` puede iniciar un proceso `podman-pause-*` transitorio; `podman unshare` crea un
-  namespace de usuario transitorio.
+- `podman` puede iniciar un proceso `podman-pause-*` transitorio. No se ejecutará
+  `podman unshare` ni se creará un namespace de usuario en esta auditoría.
 - Las conexiones TCP/HTTP y `dig` pueden dejar entradas en logs o en fail2ban; no se
   interpretan como exposición ni como cambio de configuración.
 - `systemctl`, `ss`, `find`, `stat` y `loginctl` pueden actualizar atime.
@@ -81,7 +81,8 @@ sudo -n nft list ruleset
 ```
 
 Filtrado local obligatorio: conservar `127.0.0.1`, `0.0.0.0`, `::1` y `::`; redactar el
-resto de IPv4/IPv6, MAC y comentarios con IPs. No se ejecutan `ufw allow/deny/delete/reset`,
+resto de IPv4/IPv6, MAC y comentarios con IPs. Se usa la función `redact_net` definida en
+el informe de Nivel 2 (§11.1). No se ejecutan `ufw allow/deny/delete/reset`,
 `nft add/delete/flush` ni `iptables` de cambio.
 
 Evidencia: política por defecto, reglas de entrada/salida, puertos permitidos, loopback,
@@ -126,17 +127,10 @@ No se ejecuta `caddy validate` en la auditoría: puede escribir directorios de s
 reproducir configuración en errores. La validación queda para una ventana de cambio separada.
 No se usa la API admin `127.0.0.1:2019`, ni `caddy reload`, ni `caddy stop/start`.
 
-TLS público desde la estación, **solo para `test.myfinanzas.pp.ua`** (requiere autorización
-de red):
-
-```bash
-openssl s_client -connect test.myfinanzas.pp.ua:443 -servername test.myfinanzas.pp.ua -showcerts </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName
-curl -sS -o /dev/null -D - --max-time 10 https://test.myfinanzas.pp.ua/ | grep -iE '^(HTTP/|location:|server:|strict-transport-security:|content-security-policy:|x-content-type-options:|referrer-policy:)'
-```
-
-No se consulta `myfinanzas.pp.ua` por HTTP/TLS en este nivel sin autorización específica por
-dominio; un GET al sitio raíz podría alcanzar la aplicación si estuviera desplegada. La
-consulta DNS de ambos nombres sí se incluye en §3.5.
+Las comprobaciones TLS/HTTP externas están en §3.6: `HEAD` a la raíz `/`, sin cuerpo y sin
+rutas `/api` ni autenticadas, para `myfinanzas.pp.ua` y `test.myfinanzas.pp.ua`. No se
+consulta el apex por HTTP/TLS en otros niveles sin autorización específica por dominio.
+La consulta DNS de ambos nombres está en §3.5.
 
 No se leen `.key`, `private`, `acme` ni secretos de DNS. Si una ruta o dominio no se puede
 determinar sin valores sensibles, se marca `NO VERIFICADO`; no se imprime el Caddyfile
@@ -157,8 +151,7 @@ podman info --format '{{.Host.CgroupManager}}' 2>&1
 cat /proc/self/cgroup
 cat /sys/fs/cgroup/cgroup.controllers 2>&1
 systemctl --user show -p Delegate 2>&1
-podman unshare cat /proc/self/uid_map 2>&1
-podman unshare cat /proc/self/gid_map 2>&1
+podman info --format '{{json .Host.IDMappings}}' 2>&1
 awk -F: '$1=="mfadmin"{print FILENAME":"$1":"$3}' /etc/subuid /etc/subgid 2>&1
 command -v newuidmap newgidmap fuse-overlayfs slirp4netns pasta crun 2>&1
 podman system df
@@ -170,9 +163,9 @@ podman pod ps --format 'table {{.Name}}\t{{.Status}}\t{{.Containers}}'
 ```
 
 `podman info --format '{{json .Host}}' | python3 ...` imprime solo las claves del objeto
-Host; si falla, se registra y no se imprime el JSON completo. `podman unshare` crea un
-namespace de usuario transitorio para leer los mapas; no persiste ni modifica el store. Si
-el usuario no acepta ese efecto, se omite y se marca `NO VERIFICADO`.
+Host; si falla, se registra y no se imprime el JSON completo. Los mapas UID/GID se consultan
+con `podman info --format '{{json .Host.IDMappings}}'` y con `/etc/subuid`/`/etc/subgid`; no
+se crea ningún namespace ni se ejecuta `podman unshare`.
 
 Quadlet, sin leer valores sensibles:
 
@@ -203,7 +196,7 @@ systemctl show -p ActiveState -p SubState -p NRestarts -p FragmentPath -p DropIn
 ss -ltn | grep -E ':22\b' || true
 ls -l /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>&1
 find /etc/ssh/sshd_config.d -maxdepth 1 -type f -printf '%M %u:%g %p\n' 2>&1
-sed -n '1,200p' /etc/ssh/sshd_config 2>&1 | grep -vE '^[[:space:]]*(#|$)' | sed -E 's/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser) .*/\1 <redacted>/I'
+sed -n '1,200p' /etc/ssh/sshd_config 2>&1 | grep -vE '^[[:space:]]*(#|$)' | sed -E 's/^[[:space:]]*(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser)[[:space:]].*/\1 <redacted>/I; s/^[[:space:]]*(allowusers|allowgroups|denyusers|denygroups|permitopen|permitlisten)[[:space:]].*/\1 <redacted>/I' | redact_net
 systemctl show -p ActiveState -p SubState -p NRestarts -p FragmentPath fail2ban.service
 systemctl is-enabled fail2ban.service 2>&1
 ls -ld /etc/fail2ban /var/lib/fail2ban 2>&1
@@ -212,14 +205,15 @@ ls -ld /etc/fail2ban /var/lib/fail2ban 2>&1
 Con autorización de `sudo -n`:
 
 ```bash
-sudo -n sshd -T | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|pubkeyauthentication|permitemptypasswords|usepam|x11forwarding|allowusers|allowgroups|denyusers|denygroups|maxauthtries|logingracetime|clientaliveinterval|clientalivecountmax|authorizedkeysfile|hostkey|banner|gatewayports|permittunnel|permituserenvironment|allowtcpforwarding|permitopen|permitlisten|forcecommand|chrootdirectory|authenticationmethods|maxsessions|maxstartups|pubkeyacceptedalgorithms|hostbasedauthentication|ignoreuserknownhosts|gssapiauthentication|kerberosauthentication|usedns|revokedkeys|trustedusercakeys|authorizedkeyscommand|authorizedkeyscommanduser|acceptenv|setenv)' | sed -E 's#(/etc/ssh/ssh_host_[a-z0-9_]+_key)#<hostkey-path>#g; s/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser) .*/\1 <redacted>/I' | redact_net
+sudo -n sshd -T | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|pubkeyauthentication|permitemptypasswords|usepam|x11forwarding|allowusers|allowgroups|denyusers|denygroups|maxauthtries|logingracetime|clientaliveinterval|clientalivecountmax|authorizedkeysfile|hostkey|banner|gatewayports|permittunnel|permituserenvironment|allowtcpforwarding|permitopen|permitlisten|forcecommand|chrootdirectory|authenticationmethods|maxsessions|maxstartups|pubkeyacceptedalgorithms|hostbasedauthentication|ignoreuserknownhosts|gssapiauthentication|kerberosauthentication|usedns|revokedkeys|trustedusercakeys|authorizedkeyscommand|authorizedkeyscommanduser|acceptenv|setenv)' | sed -E 's#(/etc/ssh/ssh_host_[a-z0-9_]+_key)#<hostkey-path>#g; s/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser)[[:space:]].*/\1 <redacted>/I; s/^(allowusers|allowgroups|denyusers|denygroups|permitopen|permitlisten)[[:space:]].*/\1 <redacted>/I' | redact_net
 sudo -n fail2ban-client status
 sudo -n fail2ban-client status sshd 2>&1 | grep -E 'Currently banned|Total banned'
 ```
 
-Aplicar `redact_net` de Nivel 1 a `listenaddress`, `allowusers`, `permitopen` y
-`permitlisten`. `fail2ban-client status` solo devuelve jails; la consulta de `sshd` se
-filtra a conteos, sin lista de IPs. No se ejecutan `fail2ban-client set/unban` ni `reload`.
+Aplicar `redact_net` del informe de Nivel 2 (§11.1) a `listenaddress`, `allowusers`,
+`permitopen` y `permitlisten`. `fail2ban-client status` solo devuelve jails; la consulta de
+`sshd` se filtra a conteos, sin lista de IPs. No se ejecutan `fail2ban-client set/unban` ni
+`reload`.
 
 `sshd -T` es configuración derivada de archivos; puede no coincidir con el demonio en
 ejecución. Se compara el `mtime` de los archivos con `ExecMainStartTimestamp` y se clasifica
@@ -256,12 +250,14 @@ Solo con autorización de red expresa; desde la estación, sin sudo:
 for p in 22 80 443 2019 3001 18082; do
   nc -z -G 4 <VPS_IP> "$p" >/dev/null 2>&1 && echo "$p open" || echo "$p closed/filtered"
 done
-curl -sS -o /dev/null -D - --connect-timeout 5 --max-time 10 https://test.myfinanzas.pp.ua/ | grep -iE '^(HTTP/|location:|server:|strict-transport-security:|content-security-policy:|x-content-type-options:|referrer-policy:)'
+curl -sSI --connect-timeout 5 --max-time 10 https://myfinanzas.pp.ua/ | grep -iE '^(HTTP/|location:|server:|strict-transport-security:|content-security-policy:|x-content-type-options:|referrer-policy:)'
+curl -sSI --connect-timeout 5 --max-time 10 https://test.myfinanzas.pp.ua/ | grep -iE '^(HTTP/|location:|server:|strict-transport-security:|content-security-policy:|x-content-type-options:|referrer-policy:)'
 ```
 
-No se amplía la lista de puertos ni se usa `nmap`. No se consulta `myfinanzas.pp.ua` por
-HTTP/TLS sin autorización específica. Si no se autoriza, la exposición queda
-`NO VERIFICADA`.
+Solo se consulta la raíz `/` con `HEAD`; no se accede a `/api`, rutas autenticadas ni
+contenido de la aplicación. La ausencia de `test.myfinanzas.pp.ua` es un resultado esperado,
+no un fallo. No se amplía la lista de puertos ni se usa `nmap`. Si no se autoriza, la
+exposición queda `NO VERIFICADA`.
 
 ### 3.7 Backups y recuperación
 
@@ -361,9 +357,8 @@ IPs, secretos, claves, cookies, bases ni datos reales.
 | Riesgo | Mitigación |
 | --- | --- |
 | Exposición de secretos en Caddyfile/`sshd -T` | Filtros de redacción; no imprimir valores de `tls`, tokens, `setenv` ni claves |
-| Cambio accidental o efecto incidental | Lista de solo lectura; `sudo -n` solo para lectura; sin reload/restart/UFW; declarados `podman-pause`, namespace de `podman unshare`, atime y logs/fail2ban por probes |
+| Cambio accidental o efecto incidental | Lista de solo lectura; `sudo -n` solo para lectura; sin reload/restart/UFW; declarados `podman-pause`, atime y logs/fail2ban por probes |
 | Caída de SSH/UFW | No se tocan SSH/UFW; consola del proveedor solo con autorización separada |
-| `podman unshare` crea namespace | Efecto transitorio; si no se acepta, se omite y se marca `NO VERIFICADO` |
 | `fail2ban-client` muestra IPs | Filtrar a conteos; no imprimir lista de baneos |
 | DNS/HTTPS interpretado como ataque | Consultas mínimas, sin AXFR/enumeración/escaneo |
 | Backups con contenido | Solo metadatos; prohibido abrir/descifrar/restaurar |
@@ -384,7 +379,8 @@ Se solicita autorización separada para:
 6. Confirmación de que no se lee contenido de bases/backups, no se accede a
    `myfinanzas-app`, no se hacen cambios, instalaciones, reinicios, merges ni despliegues.
 
-No se ejecutará Nivel 2 hasta recibir esa autorización.
+Esta autorización fue consumida por la sesión 2C del 2026-11-05. **No autoriza nuevas
+sesiones, cambios ni una repetición del Nivel 2.**
 
 ## 7. Bloqueos y decisiones pendientes
 

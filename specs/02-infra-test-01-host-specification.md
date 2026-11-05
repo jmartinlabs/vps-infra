@@ -696,7 +696,7 @@ acredita HTTPS, smoke y copias.
 | H3 | Rutas | `/srv/myfinanzas-test/{data,releases,backups}` y `/var/www/myfinanzas-test/current`. | `[PROPUESTA]` Hay 35 GB libres; `/srv` aún no existe. No reutilizar backups de `mfadmin`. |
 | H4 | Seed | Consumir el artefacto test-only en orden `production-init → seed → setup`, con marcador/manifiesto y reset archivado. | `[CONFIRMADA]` SPEC34 D1–D5; bloqueada por la actualización de contrato y el artefacto de seed. |
 | H5 | Unidad | Unidad TEST propia de `vps-infra`; no reutilizar `runtime.py:render` de PROD. | `[CONFIRMADA]` D6; pendiente validar Quadlet/cgroup. |
-| H6 | Recuperación | Copia local+externa cifrada y restore aislado antes de habilitar Caddy. | `[PENDIENTE]` El destino externo y la custodia de `age` siguen sin aprobar; la copia de Caddy no cubre la app. |
+| H6 | Recuperación | Copia local+externa cifrada antes de habilitar Caddy; restore aislado en fase 7 antes de declarar TEST operativo. | `[PENDIENTE]` El destino externo y la custodia de `age` siguen sin aprobar; la copia de Caddy no cubre la app. |
 
 `[PROPUESTA]` Revisión H1–H6: la arquitectura sigue siendo la más simple para 2 vCPU/3,8 GiB;
 no añade contenedores ni puertos. H2/H3 son compatibles con lo auditado; H1 y H5 dependen de
@@ -708,7 +708,7 @@ pendiente** junto con el destino externo. Esta revisión no aprueba H1–H6.
 | Tema | Qué se decide | Bloquea |
 | --- | --- | --- |
 | Contrato de app | Actualizar/aprobar SPEC34 o sucesora para esquema 25/E4.9, release y seed | Fase 5; sin ello AC10 no es válido |
-| Backup externo y recuperación (H6) | Destino, custodia de la identidad `age`, retención, RPO/RTO mínimo y prueba de restore | Fase 6 y activación de Caddy |
+| Backup externo y recuperación (H6) | Destino, custodia de la identidad `age`, retención, RPO/RTO mínimo y prueba de restore | Fase 6 (copia) y fase 7 (restore) |
 | Diseño host H1–H3 | `mftest`, loopback `18082`, rutas `/srv` y `/var/www` | Fase 2 |
 | Quadlet/cgroup | Validar Podman 5.4.2, `linger`, `systemd --user` y arranque tras reboot | Fases 2 y 5 |
 | DNS TEST | Crear `test` A/AAAA sin tocar el apex | Fase 3 |

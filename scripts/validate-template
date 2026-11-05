@@ -268,6 +268,13 @@ def validate(root):
  if '(specs/methodology/dynamic-agents.md)' not in agents: fail('dynamic-agents','AGENTS.md missing dynamic management link')
  if '(dynamic-agents.md)' not in workflows: fail('dynamic-agents','workflows missing dynamic management link')
  if '(infrastructure.md)' not in read('.agents/roles/README.md'): fail('dynamic-agents','infrastructure specialist not linked')
+ # Proactive look-ahead prepares ready work; it never promotes a draft or crosses a gate.
+ for token in ('## Proactive planning (look-ahead)','Do not wait for an unnecessary instruction','Preparation never promotes a draft','authorizes DEV','starts QA verification','merges or deploys','Replan when','no artificial task','no second scheduler'):
+  if token not in epic: fail('proactive-planning',f'epic look-ahead missing {token}')
+ for token in ('next roadmap work and dependencies identified','a work packet for already authorized DEV, or QA test design','Never create busywork'):
+  if token not in orchestrator: fail('proactive-planning',f'orchestrator look-ahead missing {token}')
+ if 'deja una siguiente acción verificable' not in agents: fail('proactive-planning','AGENTS.md missing the look-ahead next action')
+ if 'advance the next independent ready item instead of idling' not in epic: fail('proactive-planning','scheduler must advance ready work while waiting')
  # Execution mode is adaptive: direct, foreground or background only with verified support.
  for token in ('## Execution mode: direct, foreground, background','**Direct (coordinator).**','**Foreground subagent.**','**Background subagent.**','verified client support',"Releasing the coordinator's turn",'Promise no background persistence','who executes','mode (direct, foreground or background)','coordinator stays available','Never claim a subagent','No universal agent count'):
   if token not in dynamic: fail('execution-mode',f'dynamic policy missing {token}')
@@ -417,10 +424,12 @@ def validate(root):
   if len(closure)<3: fail('agent-evals','closure scenarios with observable criteria are incomplete')
   execution=[c for c in cases if str(c.get('id','')).startswith('execution-')]
   if len(execution)<10: fail('agent-evals','execution-mode scenarios are incomplete')
+  proactive=[c for c in cases if str(c.get('id','')).startswith('proactive-')]
+  if len(proactive)<9: fail('agent-evals','proactive-planning scenarios are incomplete')
  except (ValueError,AttributeError,TypeError):
   fail('agent-evals','scenarios.json invalid for communication criteria')
  evals_doc=read('docs/AGENT_EVALS.md')
- for token in ('publication-01..10','continuity-01..07','closure-01..03','execution-01..10','does not prove that a real client'):
+ for token in ('publication-01..10','continuity-01..07','closure-01..03','execution-01..10','proactive-01..09','does not prove that a real client'):
   if token not in evals_doc: fail('agent-evals',f'docs/AGENT_EVALS.md missing {token}')
  # Delivery closure evidence is structural here; real report quality needs independent review.
  for name,tokens in {

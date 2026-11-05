@@ -21,14 +21,31 @@ For Full work, or Standard work with several independent workstreams. It extends
 - **QA:** planned → test-design → awaiting-implementation → verifying → passed/failed/blocked. Never report a pass before running against the actual candidate.
 - **merge:** published or draft PR → ready-for-user-review → user-approved → merged. Never auto-merge. Merging is a separate approval gate per [approvals](approvals.md).
 
+## Proactive planning (look-ahead)
+
+Keep the next roadmap items and their hard dependencies identified, not only the item in
+progress. While current work advances or waits (a long DEV run, CI, an external return),
+prepare the next independent ready work: brainstorming or a specification draft, a bounded
+investigation, a work packet for already approved and authorized development, or QA test
+design. Do not wait for an unnecessary instruction, and do not ask permission for preparation
+that commits no protected decision.
+
+Preparation never promotes a draft, authorizes DEV, starts QA verification, merges or deploys.
+Replan when a task completes, a result or return arrives, a blocker appears, or an approval or
+dependency changes: consolidate verified results and pending decisions, and raise only
+decisions that require user authorization. Keep the existing board row or current summary
+current with a verifiable next independent action. Create no second scheduler, queue or status
+system, and no artificial task to keep an agent busy. If no independent work is ready, record
+the pending decision or hard dependency and stop.
+
 ## Scheduler (at milestones, not every message)
 
 1. On resume, check Git/PR/approval changes since the last trusted checkpoint; read only what the next gate needs. Reload full sources when stale, conflicting or needed for safety.
 2. Mark work blocked only for a real hard dependency; name the prerequisite and its owner. Separate "waiting on user" from technical blockers.
-3. Recompute **ready** work when gates change: approved and authorized implementation; candidate QA; independent spec drafting up to approval; bounded investigations.
-4. Follow user priorities and the critical path. When something is blocked, pick the next independent ready item.
+3. Recompute **ready** work when gates or the look-ahead change: approved and authorized implementation; candidate QA; independent SPEC drafting up to approval; bounded investigations; QA test design; and work packets for approved, authorized DEV. Do not wait for an explicit instruction to prepare ready work that commits no protected decision.
+4. Follow user priorities and the critical path. When work is blocked **or merely waiting**, advance the next independent ready item instead of idling. If nothing useful is ready, report the pending decision or hard dependency and stop; never create artificial work.
 5. Prefer one complete development packet per feature, then independent QA on the candidate. Parallelize only distinct ready work worth the overhead; concurrent edits need disjoint ownership and authorized isolated checkouts.
-6. At milestones (approved spec, candidate, QA verdict, PR) update only changed state. Approved spec + dev authorization → dev; candidate → independent QA; checks and QA green → publish/update the PR within the authorized scope; merge remains a separate approval.
+6. At milestones (approved spec, candidate, QA verdict, PR, task completion, result, blocker) update only changed state and the board's next independent action. Approved spec + DEV authorization → DEV; candidate → independent QA; checks and QA green → publish/update the PR within the authorized scope; merge remains a separate approval. Preparation does not promote a draft or bypass a gate.
 7. End an active run with a short board summary: done, underway, waiting on user, blocked, newly ready, next action. Nothing runs between sessions.
 
 Delegation sizing follows [dynamic agent management](dynamic-agents.md): default to one executor plus required independent QA.

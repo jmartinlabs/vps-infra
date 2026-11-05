@@ -49,10 +49,11 @@ Cierre: [VPS-CADDY-UPGRADE-01](auditorias/2026-11-05-vps-caddy-upgrade-01-cierre
 | Rollback | no necesario |
 
 **Pendiente:** AC-17 y AC-18 (`UNRUN`), revisión mensual de Caddy por el `hold`, Quadlet,
-backups/restore, hardening SSH, PR #9 DRAFT y autorizaciones de TEST. Caddy 2.11.9 incorpora la
-corrección de CVE-2026-77281 (corregido upstream en 2.11.4); no implica ausencia de nuevas
-vulnerabilidades. No se han realizado cambios intencionados fuera de la actualización
-autorizada; los efectos incidentales de la auditoría están en Nivel 2 §13.
+backups/restore, hardening SSH y autorizaciones de TEST. La spec host de PR #9 está **MERGED**
+en `901204c`; no autoriza por sí sola el despliegue. Caddy 2.11.9 incorpora la corrección de
+CVE-2026-77281 (corregido upstream en 2.11.4); no implica ausencia de nuevas vulnerabilidades.
+No se han realizado cambios intencionados fuera de la actualización autorizada; los efectos
+incidentales de la auditoría están en Nivel 2 §13.
 
 ## Inventario inicial informado — estado a 22-10-2026
 

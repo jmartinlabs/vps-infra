@@ -1,6 +1,6 @@
 # INFRA-AUDIT-VPS-001 · Nivel 2 — Plan de auditoría
 
-Status: **PREPARADO — NO EJECUTADO — ACCESO AL VPS NO AUTORIZADO PARA NIVEL 2**
+Status: **EJECUTADO PARCIALMENTE (2C) — ver [informe de resultados](2026-11-05-infra-audit-vps-001-nivel2-result.md). No autoriza nuevas sesiones ni cambios.**
 Fecha: 2026-11-04
 Base: informe de Nivel 1 ([2026-11-04](2026-11-04-infra-audit-vps-001-nivel1.md)), PR #10.
 Contrato host: `specs/02-infra-test-01-host-specification.md`, PR #9, **DRAFT**; no aprobado.
@@ -126,17 +126,10 @@ No se ejecuta `caddy validate` en la auditoría: puede escribir directorios de s
 reproducir configuración en errores. La validación queda para una ventana de cambio separada.
 No se usa la API admin `127.0.0.1:2019`, ni `caddy reload`, ni `caddy stop/start`.
 
-TLS público desde la estación, **solo para `test.myfinanzas.pp.ua`** (requiere autorización
-de red):
-
-```bash
-openssl s_client -connect test.myfinanzas.pp.ua:443 -servername test.myfinanzas.pp.ua -showcerts </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName
-curl -sS -o /dev/null -D - --max-time 10 https://test.myfinanzas.pp.ua/ | grep -iE '^(HTTP/|location:|server:|strict-transport-security:|content-security-policy:|x-content-type-options:|referrer-policy:)'
-```
-
-No se consulta `myfinanzas.pp.ua` por HTTP/TLS en este nivel sin autorización específica por
-dominio; un GET al sitio raíz podría alcanzar la aplicación si estuviera desplegada. La
-consulta DNS de ambos nombres sí se incluye en §3.5.
+Las comprobaciones TLS/HTTP externas están en §3.6: `HEAD` a la raíz `/`, sin cuerpo y sin
+rutas `/api` ni autenticadas, para `myfinanzas.pp.ua` y `test.myfinanzas.pp.ua`. No se
+consulta el apex por HTTP/TLS en otros niveles sin autorización específica por dominio.
+La consulta DNS de ambos nombres está en §3.5.
 
 No se leen `.key`, `private`, `acme` ni secretos de DNS. Si una ruta o dominio no se puede
 determinar sin valores sensibles, se marca `NO VERIFICADO`; no se imprime el Caddyfile
@@ -384,7 +377,8 @@ Se solicita autorización separada para:
 6. Confirmación de que no se lee contenido de bases/backups, no se accede a
    `myfinanzas-app`, no se hacen cambios, instalaciones, reinicios, merges ni despliegues.
 
-No se ejecutará Nivel 2 hasta recibir esa autorización.
+Esta autorización fue consumida por la sesión 2C del 2026-11-05. **No autoriza nuevas
+sesiones, cambios ni una repetición del Nivel 2.**
 
 ## 7. Bloqueos y decisiones pendientes
 

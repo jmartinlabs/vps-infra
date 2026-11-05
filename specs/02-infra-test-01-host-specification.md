@@ -79,7 +79,7 @@ posteriores a la actualización son evidencia del usuario; el agente no accedió
 | Hecho | Evidencia | Estado |
 | --- | --- | --- |
 | `vps-infra` `main` en `b45ffeb` | `git rev-parse` local | `[CONFIRMADO]` Base documental. |
-| SPEC34 actualizada: esquema 25/C25, FT-1 v1 y D7 aprobados el 2026-11-05 | [PR #229](https://github.com/jmartinlabs/myfinanzas-app/pull/229) (aprobada; pendiente de merge) | `[CONFIRMADO]` Contrato de app vigente para TEST; no autoriza despliegue. |
+| SPEC34 actualizada: esquema 25/C25, FT-1 v1 y D7 aprobados el 2026-11-05 | [PR #229](https://github.com/jmartinlabs/myfinanzas-app/pull/229) (aprobada; pendiente de merge) | `[INFORMADO]` Contrato de app vigente para TEST; no autoriza despliegue. |
 | Flujo `feature/* → test → main` | Decisión del usuario 2026-11-05 | `[PROPUESTA]` No implementado; `test` aún no existe y `main` no es producción. |
 | TEST consume SHA inmutable de `myfinanzas-app/test`; PROD futuro, de `main` | Decisión del usuario 2026-11-05 | `[PROPUESTA]` El host no gestiona ramas ni promoción. |
 | PR #7 de `vps-infra` cerrado sin merge | API de GitHub | `[CONFIRMADO]` Solo antecedente histórico. |
@@ -146,8 +146,8 @@ TEST ni creó usuarios o rutas.
 | `caddy_version` | 2.11.9 desde el repositorio estable oficial Cloudsmith; `apt-mark hold` | `[CONFIRMADO]` [Cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md). |
 | `caddy_caps` | Solo `CAP_NET_BIND_SERVICE`; *drop-in* `99-local-capabilities.conf` | `[CONFIRMADO]` Verificado en el proceso según evidencia del usuario. |
 | `image` | `sha256:<ID inmutable del manifiesto>`; `Pull=never` | `[CONFIRMADO]` SPEC34. |
-| `release_ref` | `myfinanzas-app/test` (TEST); `main` (PROD futuro) | `[PROPUESTA]` Flujo no implementado; el host no gestiona ramas. |
-| `release_sha` | SHA de 40 caracteres seleccionado y registrado | `[CONFIRMADO]` Inmutable; verificado por manifiesto. |
+| `release_ref` | `myfinanzas-app/test` (TEST); `myfinanzas-app/main` (PROD futuro) | `[PROPUESTA]` Flujo no implementado; el host no gestiona ramas. |
+| `release_sha` | SHA de 40 caracteres seleccionado y registrado | `[PROPUESTA]` Se registra cuando exista release; inmutable y verificado por manifiesto. |
 | `seed_image` | ID inmutable propio, solo tareas efímeras | `[PROPUESTA]` SPEC34 §4.2. |
 | `schema_contract` | Declarado por el manifiesto de la release; hoy `C25-E49-CIERRE-FINANCIERO` | `[CONFIRMADO]` El host no fija el esquema; lo verifica por release. |
 | `resources` | 1 GiB RAM, 1 CPU, 128 pids, tmpfs 64 MiB | `[CONFIRMADO]` SPEC34 y RUNBOOK. |
@@ -236,8 +236,8 @@ Aquí solo se resume lo que el host consume:
 | `state` | `state/database.sqlite` + `state/auth.key` | SPEC34. |
 | `env` | `NODE_ENV=production`, `APP_ORIGIN`, `DATABASE_PATH`, `AUTH_KEY_PATH`, `API_BIND_HOST` | SPEC34. |
 | `image` | ID inmutable del manifiesto; `Pull=never` | SPEC34. |
-| `release_ref` | `myfinanzas-app/test` para TEST; `main` para PROD futuro | Decisión 2026-11-05; flujo no implementado. |
-| `release_sha` | SHA de 40 caracteres del candidato seleccionado | Registrado por el host; no se infiere de una etiqueta. |
+| `release_ref` | `myfinanzas-app/test` para TEST; `myfinanzas-app/main` para PROD futuro | Decisión 2026-11-05; flujo no implementado. |
+| `release_sha` | SHA de 40 caracteres del candidato seleccionado | Se registra cuando exista release; no se infiere de una etiqueta. |
 | `seed_image` | ID inmutable propio; solo tareas efímeras | SPEC34 §4.2. |
 | `schema_contract` | Declarado por el manifiesto; hoy `C25-E49-CIERRE-FINANCIERO` | Se verifica por release; no se fija permanentemente. |
 | `resources` | 1 GiB, 1 CPU, 128 pids, tmpfs 64 MiB | SPEC34. |
@@ -603,7 +603,7 @@ backups. Por eso AC02 no se marca `PASS`. AC10 queda pendiente de la release/see
 | `INFRA-TEST-01-HOST-AC15` | La retirada autorizada detiene la unidad, retira Caddy/DNS de TEST, deshabilita `linger` si procede y preserva datos/copias; el dominio raíz queda intacto y no hay borrado sin inventario. | 8 |
 | `INFRA-TEST-01-HOST-AC16` | TEST respeta el presupuesto de disco acordado y los márgenes de espacio/inodos; memoria, CPU y pids se miden dentro de los límites y sin afectar a otros servicios. | 6 |
 | `INFRA-TEST-01-HOST-AC17` | No hay Excel, bases reales, exportaciones, credenciales, TOTP, cookies, claves ni datos personales en host, repo, logs o copias; solo `FT-1` identificable y evidencia redactada. | 5, 6 |
-| `INFRA-TEST-01-HOST-AC18` | La release TEST se construye desde un SHA inmutable de `myfinanzas-app/test`, registrado con `release_ref`/`release_sha`; no se usa `main` ni una etiqueta móvil; PROD futuro usará `main`; el host no gestiona ramas ni promoción. | 5 |
+| `INFRA-TEST-01-HOST-AC18` | La release TEST se construye desde un SHA inmutable de `myfinanzas-app/test`, registrado con `release_ref=myfinanzas-app/test` y `release_sha`; se comprueba que el SHA es ancestro de `origin/test` y no se usa `main` ni una etiqueta móvil; PROD futuro usará `myfinanzas-app/main`; el host no gestiona ramas ni promoción. | 5 |
 
 ### 8.1 Trazabilidad con SPEC34
 
@@ -710,7 +710,7 @@ acredita HTTPS, smoke y copias.
 | H1 | Identidad | Usuario dedicado `mftest`, rootless, sin login SSH, con `linger`. | `[PROPUESTA]` Viable; exige verificar `subuid`/`subgid`, `linger` y `systemd --user`/Quadlet en Debian 13. |
 | H2 | Exposición | Caddy → `127.0.0.1:18082` → `3001`; sin publicar API/DB/Vite. | `[PROPUESTA]` Compatible con Caddy 2.11.9 y UFW 22/80/443; no requiere puertos nuevos. |
 | H3 | Rutas | `/srv/myfinanzas-test/{data,releases,backups}` y `/var/www/myfinanzas-test/current`. | `[PROPUESTA]` Hay 35 GB libres; `/srv` aún no existe. No reutilizar backups de `mfadmin`. |
-| H4 | Seed | Consumir el artefacto test-only en orden `production-init → seed → setup`, con marcador/manifiesto y reset archivado. | `[CONFIRMADA]` SPEC34 D1–D5; bloqueada por la actualización de contrato y el artefacto de seed. |
+| H4 | Seed | Consumir el artefacto test-only en orden `production-init → seed → setup`, con marcador/manifiesto y reset archivado. | `[CONFIRMADA]` SPEC34 D1–D5; bloqueada por el merge de PR #229 y el artefacto de seed. |
 | H5 | Unidad | Unidad TEST propia de `vps-infra`; no reutilizar `runtime.py:render` de PROD. | `[CONFIRMADA]` D6; pendiente validar Quadlet/cgroup. |
 | H6 | Recuperación | Copia local+externa cifrada antes de habilitar Caddy; restore aislado en fase 7 antes de declarar TEST operativo. | `[PENDIENTE]` El destino externo y la custodia de `age` siguen sin aprobar; la copia de Caddy no cubre la app. |
 
@@ -723,7 +723,7 @@ pendiente** junto con el destino externo. Esta revisión no aprueba H1–H6.
 
 | Tema | Qué se decide | Bloquea |
 | --- | --- | --- |
-| Contrato de app | Actualizar/aprobar SPEC34 o sucesora para esquema 25/E4.9, release y seed | Fase 5; sin ello AC10 no es válido |
+| Contrato de app | Merge autorizado de PR #229 (schema 25/C25, FT-1 v1, D7); release y seed pendientes | Fase 5; sin release/seed AC10 no es válido |
 | Backup externo y recuperación (H6) | Destino, custodia de la identidad `age`, retención, RPO/RTO mínimo y prueba de restore | Fase 6 (copia) y fase 7 (restore) |
 | Diseño host H1–H3 | `mftest`, loopback `18082`, rutas `/srv` y `/var/www` | Fase 2 |
 | Quadlet/cgroup | Validar Podman 5.4.2, `linger`, `systemd --user` y arranque tras reboot | Fases 2 y 5 |

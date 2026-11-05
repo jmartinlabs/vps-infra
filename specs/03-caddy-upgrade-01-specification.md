@@ -34,19 +34,20 @@ TEST y cualquier cambio de red o DNS.
 | Entrada pública | 80/443; UFW `deny` incoming | Comprobación manual del usuario |
 | Actualizaciones | Sin candidato corregido en trixie/security | Debian tracker |
 
-Pendiente de confirmar **antes** de la ventana: contenido completo del `Caddyfile`, ruta real
-del `root`, módulos en uso, estado de `caddy-api.service`, presencia de
-`unattended-upgrades` y espacio libre. Se obtiene en el baseline (§6.1).
+Se confirman en el baseline (§6.1): contenido y directivas del `Caddyfile`, ruta del `root`,
+módulos cargados, pertenencia de `caddy` a `www-data`, estado de `caddy-api.service`, timers de
+APT y espacio libre.
 
 ## 3. Opciones evaluadas y decisión
 
-| Opción | Versión | Origen | ¿Corrige CVE-2026-77281? | Valoración |
-| --- | --- | --- | --- | --- |
-| Debian stable/security | `2.6.2-12+deb13u1` | trixie | **No** (vulnerable, no-DSA) | No cumple el objetivo |
-| Debian backports | `2.11.2-1~bpo13+1` | trixie-backports | **No** (corregido en 2.11.4) | No cumple el objetivo |
-| Debian testing/unstable | `2.11.4-1` | forky/sid | Sí | **Descartado**: prohíbe mezclar repositorios |
-| Caddy oficial | **2.11.9** | Cloudsmith stable (Caddy) | **Sí** | **Recomendado** |
-| Binario estático 2.11.9 | 2.11.9 | Descarga oficial | Sí | Alternativa; peor mantenimiento que el paquete |
+| Opción | Versión | Origen | CVE-2026-77281 (arreglado en 2.11.4) | Avisos 2026-11-04 (arreglados en 2.11.8) | Valoración |
+| --- | --- | --- | --- | --- | --- |
+| Debian stable/security | `2.6.2-12+deb13u1` | trixie | **No** (vulnerable, no-DSA) | **No** | No cumple el objetivo |
+| Debian backports | `2.11.2-1~bpo13+1` | trixie-backports | **No** | **No** | No cumple el objetivo |
+| Debian testing/unstable | `2.11.4-1` | forky/sid | Sí | **No** (≤ 2.11.7) | **Descartado** por seguridad y por prohibición de mezclar repositorios |
+| Caddy oficial | `2.11.8` | Cloudsmith stable | Sí | Sí | Descartado: regresión de índices PHP y sin los arreglos de 2.11.9 |
+| **Caddy oficial** | **`2.11.9`** | Cloudsmith stable | **Sí** | **Sí** | **Recomendado** |
+| Binario estático | `2.11.9` | Descarga oficial | Sí | Sí | Alternativa; peor mantenimiento que el paquete |
 
 **Decisión propuesta: paquete oficial `caddy 2.11.9` (amd64) desde el repositorio estable de
 Caddy en Cloudsmith.** No se añaden repositorios testing/unstable ni se cambia la base Debian.
@@ -56,22 +57,22 @@ Justificación del cambio de origen: Debian 13 no ofrece versión corregida y ba
 misma estructura de paquete, `Caddyfile` como `conffile`, usuario `caddy`, datos en
 `/var/lib/caddy` y unidad `caddy.service`.
 
-Justificación de **2.11.9** frente a 2.11.7/2.11.8: los avisos publicados el 2026-11-04
-(GHSA-jf74-f69g-hcj9, GHSA-r766-rf9f-588h, GHSA-25cw-38mq-q7m6, GHSA-69hv-5jfc-mvmv,
-GHSA-f278-mgc7-46j3) afectan a **≤ 2.11.7** y se corrigen en **2.11.8**; 2.11.9 (publicado
-2026-11-05T01:30Z) corrige además una regresión de 2.11.8 y varios problemas de seguridad,
-principalmente en FastCGI. **2.11.7 queda descartado por vulnerable.**
+Justificación de **2.11.9**: los avisos publicados el 2026-11-04 (GHSA-jf74-f69g-hcj9,
+GHSA-r766-rf9f-588h, GHSA-25cw-38mq-q7m6, GHSA-69hv-5jfc-mvmv, GHSA-f278-mgc7-46j3) afectan a
+**≤ 2.11.7** y se corrigen en **2.11.8**; 2.11.9 (publicado 2026-11-05T01:30Z) corrige además
+una regresión de 2.11.8 y varios problemas de seguridad, principalmente en FastCGI.
+**2.11.7 queda descartado por vulnerable** y **2.11.8 por regresión**.
 
 Paquete de referencia verificado por el agente (descarga HTTPS pública, sin instalar):
 
 - URL: `https://dl.cloudsmith.io/public/caddy/stable/deb/any-distro/pool/any-version/main/c/ca/caddy_2.11.9/caddy_2.11.9_linux_amd64.deb`
-- Tamaño: **18.049.414 bytes**
-- SHA-256: **`bbea4aeaadc86b233c168cc33bad9daa1cbce756dc08949b783b45398f8e65cb`**
+- Tamaño: **18.049.414 bytes**; SHA-256:
+  **`bbea4aeaadc86b233c168cc33bad9daa1cbce756dc08949b783b45398f8e65cb`**
+- Sin campo `Depends` (binario estático).
 - Clave de firma del repo: `Caddy Web Server <contact@caddyserver.com>`,
   fingerprint primaria `6576 0C51 EDEA 2017 CEA2 CA15 155B 6D79 CA56 EA34`.
 
-El checksum se **recalcula en el VPS** antes de instalar; no se confía en el valor copiado de
-este documento. Si no coincide, se aborta.
+El checksum se **recalcula en el VPS** antes de instalar; si no coincide, se aborta.
 
 Fuentes:
 - [Caddy — Install](https://caddyserver.com/docs/install#debian-ubuntu-raspbian)
@@ -85,181 +86,269 @@ Fuentes:
 
 ## 4. Compatibilidad analizada
 
-Comparación de los `.deb` (Debian `2.6.2-12+deb13u1` y oficial `2.11.9`), sin instalarlos:
+Comparación directa de los `.deb` (Debian `2.6.2-12+deb13u1` y oficial `2.11.9`), sin
+instalarlos:
 
 | Aspecto | Debian 2.6.2 | Oficial 2.11.9 | Efecto |
 | --- | --- | --- | --- |
 | Binario | `/usr/bin/caddy`, dinámico | `/usr/bin/caddy`, estático | Sin dependencias de runtime |
 | Config | `/etc/caddy/Caddyfile` (`conffile`) | Igual (`conffile`) | Se conserva con `--force-confold` |
-| Usuario/grupo | `caddy`/`caddy`, home `/var/lib/caddy` | Igual, y añade `caddy` a `www-data` si existe | Sin cambio de propietario |
-| Datos/certificados | `/var/lib/caddy` | Igual | Se copian y conservan |
-| Unidad | `/usr/lib/systemd/system/caddy.service` | `/lib/systemd/system/caddy.service` (mismo fichero en usr-merge) | Se reemplaza la unidad |
-| Capacidades | `AmbientCapabilities=CAP_NET_BIND_SERVICE` | `CAP_NET_ADMIN CAP_NET_BIND_SERVICE` | Delta a aceptar y registrar |
-| Límites | `LimitNPROC=512`, `LimitNOFILE=1048576` | `LimitNOFILE=1048576` | Se pierde `LimitNPROC` |
-| `caddy-api.service` | Presente, no usado | Presente, no usado | Se mantiene deshabilitado |
-| `postrm purge` | Borra `/var/lib/caddy`, `/var/log/caddy`, `/etc/caddy` | Añade `userdel -r caddy` | **Prohibido `apt purge caddy`**: destruye datos, configuración y usuario |
+| Usuario/grupo | `caddy`/`caddy`, home `/var/lib/caddy`; añade `caddy` a `www-data` | Idéntico | Sin delta; verificar en baseline |
+| Datos | `/var/lib/caddy` | Igual | Se copia y conserva |
+| Unidad | `/usr/lib/systemd/system/caddy.service` | `/lib/systemd/system/caddy.service` (mismo fichero en usr-merge) | Se reemplaza |
+| `postrm purge` | Borra `/etc/caddy`, `/var/lib/caddy`, `/var/log/caddy` | Añade `userdel -r caddy` | **Prohibido purgar** |
 
-Notas de compatibilidad:
+`diff` de unidades: solo dos diferencias.
+
+```text
+-LimitNPROC=512
+-AmbientCapabilities=CAP_NET_BIND_SERVICE
++AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+```
+
+El resto (`Type=notify`, `User/Group`, `ExecStart/ExecReload`, `Requires=network-online.target`,
+`PrivateTmp`, `ProtectSystem=full`, `LimitNOFILE`) es idéntico. La instalación amplía
+privilegios con `CAP_NET_ADMIN`, que un sitio estático en 80/443 no necesita: se recomienda un
+*drop-in* que conserve solo `CAP_NET_BIND_SERVICE` (§6.6), reversible.
+
+Otros puntos:
 
 - Las directivas observadas (dirección de sitio + `root`) son válidas en 2.11.x. Los cambios
   incompatibles de 2.11.8/2.11.9 afectan a `client_auth` conflictivo y FastCGI/PHP, no
   observados.
-- Los módulos compilados pueden diferir. Se comparan con `caddy list-modules` antes y después;
-  si falta un módulo en uso, la validación falla y se revierte.
+- Los módulos compilados pueden diferir: se comparan con `caddy list-modules` y se bloquea si
+  falta un módulo en uso.
 - El almacenamiento de certificados es compatible; no se fuerza reemisión ni se cambia DNS.
-- El `postinst` oficial **arranca o reinicia** el servicio (`deb-systemd-helper was-enabled` →
-  `start`; en actualización, `try-restart`). Además ejecuta `deb-systemd-helper unmask`, que
-  **deshace un `systemctl mask` administrativo**. Por eso el control fiable no es `mask`, sino
-  **desempaquetar sin configurar** (§6.5) y validar antes de que el `postinst` arranque nada.
+- El `postinst` oficial **deshace un `systemctl mask` administrativo**
+  (`deb-systemd-helper unmask`), hace `enable` y `start` si estaba habilitado y, en
+  actualización, `try-restart`. Por tanto `mask` **no** es un control fiable. El control es
+  **desempaquetar sin configurar** y validar antes de ejecutar el `postinst` (§6.5).
+- Si el paquete estuviera `disabled`, el `postinst` no arrancaría; el procedimiento lo
+  comprueba y arranca explícitamente si hace falta.
 
 ## 5. Precondiciones
 
 1. Autorización específica de ventana, de las operaciones con `sudo` y de la instalación.
-2. `Caddyfile` completo revisado y sin directivas que requieran un módulo ausente.
+2. `Caddyfile` revisado (§6.1) sin directivas no evaluadas ni módulos ausentes.
 3. Copia del paquete antiguo descargada y verificada; sin ella **no se instala**.
-4. Espacio libre ≥ 200 MB en `/root` y `/`.
-5. Ventana de baja actividad: el sitio puede interrumpirse unos segundos.
-6. Confirmación de que no hay `unattended-upgrades` activo que pueda interferir.
-7. Decisión sobre las capacidades de la unidad oficial (§10).
+4. Espacio libre ≥ 200 MB en `/root` y `/`; `du -sh /var/lib/caddy` razonable.
+5. Ventana de baja actividad: el sitio se interrumpe durante la copia, el desempaquetado y la
+   validación (estimado < 2 minutos).
+6. Timers de APT (`apt-daily`, `apt-daily-upgrade`, `unattended-upgrades`) detenidos o
+   verificados inactivos durante la ventana, y sin otro proceso `apt`/`dpkg`.
+7. Decisión sobre capacidades de la unidad (§10) y sobre el ciclo de vida del repo (§10).
 
 ## 6. Procedimiento
 
-> Lo ejecuta el usuario, con `sudo`, en la ventana autorizada. `<TS>` = marca UTC.
-> No se ejecuta nada de esto en esta fase.
+> Lo ejecuta el usuario, con `sudo`, en la ventana autorizada. No se ejecuta nada en esta fase.
+> Todo el procedimiento asume **una sola sesión de shell** con `set -euo pipefail`.
+> Si se abre otra shell, redefinir `TS` y `CASE_DIR` con el valor ya creado.
 
-### 6.1 Baseline (solo lectura)
+### 6.1 Baseline (solo lectura, servicio en marcha)
 
 ```bash
+set -euo pipefail
 TS=$(date -u +%Y%m%dT%H%M%SZ)
-sudo install -d -m 0700 "/root/caddy-upgrade-$TS"
+CASE_DIR="/root/caddy-upgrade-$TS"
+sudo install -d -m 0700 "$CASE_DIR"
 {
+  echo "TS=$TS"
   date -u
   dpkg-query -W -f='${Package} ${Version} ${Architecture} ${Status}\n' caddy
   /usr/bin/caddy version
-  sha256sum /etc/caddy/Caddyfile
-  systemctl is-enabled caddy caddy-api 2>&1
+  sudo sha256sum /etc/caddy/Caddyfile
+  id caddy
+  systemctl is-enabled caddy caddy-api 2>&1 || true
+  systemctl is-active caddy caddy-api 2>&1 || true
   systemctl show caddy -p ActiveState -p SubState -p NRestarts -p FragmentPath -p User -p Group
-  ss -ltnp | grep -E ':(80|443|2019)\b'
+  systemctl show caddy -p MainPID -p ExecMainStartTimestamp
+  sudo ss -ltnp
+  sudo systemctl list-timers 'apt-*' --no-pager || true
   df -h / /root
-} | sudo tee "/root/caddy-upgrade-$TS/baseline.txt"
-```
+  sudo du -sh /var/lib/caddy
+} 2>&1 | sudo tee "$CASE_DIR/baseline.txt" >/dev/null
 
-Además, guardar sin publicar contenido sensible:
-
-```bash
-sudo cp -a /etc/caddy/Caddyfile "/root/caddy-upgrade-$TS/Caddyfile.before"
-sudo sha256sum /usr/bin/caddy | sudo tee "/root/caddy-upgrade-$TS/caddy-binary.sha256"
-/usr/bin/caddy list-modules | sort | sudo tee "/root/caddy-upgrade-$TS/modules.before"
-curl -fsS https://myfinanzas.pp.ua/ | sha256sum | sudo tee "/root/caddy-upgrade-$TS/body.before"
-curl -sS -o /dev/null -w '%{http_code}\n' https://myfinanzas.pp.ua/ | sudo tee "/root/caddy-upgrade-$TS/http.before"
+/usr/bin/caddy list-modules | sort | sudo tee "$CASE_DIR/modules.before" >/dev/null
+curl -fsS https://myfinanzas.pp.ua/ | sha256sum | sudo tee "$CASE_DIR/body.before" >/dev/null
+curl -sS -o /dev/null -w '%{http_code}\n' https://myfinanzas.pp.ua/ | sudo tee "$CASE_DIR/http.before" >/dev/null
 echo | openssl s_client -connect myfinanzas.pp.ua:443 -servername myfinanzas.pp.ua 2>/dev/null \
-  | openssl x509 -noout -subject -issuer -dates -fingerprint -sha256 \
-  | sudo tee "/root/caddy-upgrade-$TS/cert.before"
+  | openssl x509 -noout -subject -issuer -dates -ext subjectAltName -fingerprint -sha256 \
+  | sudo tee "$CASE_DIR/cert.before" >/dev/null
 ```
 
-Comprobar que `body.before` y `http.before` son estables (repetir una vez). Si el baseline no es
-estable, no se inicia la ventana.
-
-### 6.2 Copias de seguridad
+Revisión de directivas del `Caddyfile` (salida local; **no publicar**, puede contener rutas o
+hashes de credenciales):
 
 ```bash
-sudo cp -a /etc/caddy "/root/caddy-upgrade-$TS/etc-caddy"
-sudo cp -a /var/lib/caddy "/root/caddy-upgrade-$TS/var-lib-caddy"
-sudo cp -a /lib/systemd/system/caddy.service "/root/caddy-upgrade-$TS/caddy.service.before"
-sudo cp -a /etc/apt/sources.list.d "/root/caddy-upgrade-$TS/sources.list.d.before"
-sudo cp -a /etc/apt/preferences.d "/root/caddy-upgrade-$TS/preferences.d.before" 2>/dev/null || true
-sudo chmod -R go-rwx "/root/caddy-upgrade-$TS"
+sudo grep -nE 'rewrite|hide|http\.request\.body|php_fastcgi|client_auth|basic_auth|bind |root|reverse_proxy|tls ' \
+  /etc/caddy/Caddyfile | sudo tee "$CASE_DIR/directives.txt"
 ```
 
-`/var/lib/caddy` contiene **claves privadas** de los certificados y estado de la instancia:
-se trata como **secreto**. No se copia al repositorio, no se imprime, no se comparte y no sale
-del VPS salvo decisión expresa. Retención: hasta 30 días después de la validación correcta;
-después se elimina con confirmación del usuario.
+**Condición de parada:** si aparecen `rewrite` (URI terminada en `?`), `{http.request.body}`,
+`hide`, `php_fastcgi` o `client_auth`, **no se continúa** con esta spec: requiere revisión de
+compatibilidad/seguridad específica. Si `id caddy` no incluye `www-data`, anotarlo para la
+validación de permisos.
 
-### 6.3 Descargar y verificar el paquete antiguo (rollback)
+Comprobar que `body.before` y `http.before` son estables (repetir una vez). Si no lo son, no se
+inicia la ventana.
 
-```bash
-sudo sh -c "cd '/root/caddy-upgrade-$TS' && apt-get download caddy=2.6.2-12+deb13u1"
-sudo sh -c "cd '/root/caddy-upgrade-$TS' && sha256sum caddy_2.6.2-12+deb13u1_amd64.deb | tee old-caddy.sha256"
-```
+### 6.2 Repositorio oficial (solo si se aprueba mantenerlo)
 
-Valor de referencia verificado por el agente para ese `.deb` (Debian security pool):
-tamaño **10.110.872 bytes**, SHA-256
-**`f173515859f273c97219cc242d625a64650fefdd136a9570acb1b5f7581c9786`**.
-Si `apt-get download` falla, alternativa pública equivalente:
+Si se elige la alternativa sin repo, saltar a §6.3.
 
 ```bash
-sudo sh -c "cd '/root/caddy-upgrade-$TS' && curl -fsSLO https://security.debian.org/debian-security/pool/updates/main/c/caddy/caddy_2.6.2-12+deb13u1_amd64.deb"
-```
-
-Sin paquete antiguo verificado **no se continúa**: no hay rollback de binario.
-
-### 6.4 Repositorio oficial (solo si se aprueba mantenerlo)
-
-```bash
-sudo apt-get install --yes ca-certificates curl gpg   # solo si faltan; comprobar con command -v
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-  | sudo gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-sudo gpg --show-keys --with-fingerprint /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+sudo install -d -m 0755 /usr/share/keyrings
+if [ -e /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]; then
+  sudo cp -a /usr/share/keyrings/caddy-stable-archive-keyring.gpg "$CASE_DIR/keyring.before"
+fi
+KEY_SRC="$(mktemp)"
+curl -fsSL 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' -o "$KEY_SRC"
+gpg --show-keys --with-fingerprint "$KEY_SRC"
+sudo gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg "$KEY_SRC"
+rm -f "$KEY_SRC"
 printf '%s\n' 'deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main' \
-  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+  | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
 sudo chmod 0644 /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
 sudo apt-get update
 apt-cache policy caddy
 ```
 
-- Se añade **solo** la línea `deb`, no `deb-src` (menos superficie y descarga; desviación
-  justificada del fichero publicado).
 - El fingerprint debe coincidir con `6576 0C51 EDEA 2017 CEA2 CA15 155B 6D79 CA56 EA34`. Si no
   coincide, **abortar** y no instalar.
-- El candidato debe ser `2.11.9` y la fuente `dl.cloudsmith.io`. Si el candidato es otro, se
-  detiene la ventana y se revisa; no se instala una versión no evaluada.
+- Se añade **solo** la línea `deb`, no `deb-src` (menos superficie y descarga; desviación
+  justificada del fichero publicado).
+- El candidato debe ser `2.11.9` desde `dl.cloudsmith.io`. Si es otro, detenerse y revisar.
+- `ca-certificates`, `curl` y `gpg` deben existir antes de la ventana. Si falta alguno, se
+  detiene y se decide; no se instalan paquetes adicionales dentro de la ventana.
 
-Alternativa sin repo permanente: descargar el `.deb` 2.11.9 por HTTPS, verificar el SHA-256 y
-omitir 6.4 y el `apt-mark hold`; el resto del procedimiento no cambia.
-
-### 6.5 Descargar, desempaquetar y validar **sin arrancar** el servicio
-
-```bash
-sudo sh -c "cd '/root/caddy-upgrade-$TS' && apt-get download caddy=2.11.9"
-sudo sh -c "cd '/root/caddy-upgrade-$TS' && sha256sum caddy_2.11.9_linux_amd64.deb | tee new-caddy.sha256"
-```
-
-Debe coincidir con `bbea4aeaadc86b233c168cc33bad9daa1cbce756dc08949b783b45398f8e65cb`.
-Si no coincide, **abortar** (no se ha modificado nada todavía).
+### 6.3 Descargar y verificar paquetes
 
 ```bash
-sudo dpkg --force-confold --unpack "/root/caddy-upgrade-$TS/caddy_2.11.9_linux_amd64.deb"
-/usr/bin/caddy version
-sha256sum /etc/caddy/Caddyfile
-sudo -u caddy env HOME=/var/lib/caddy /usr/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+# Paquete antiguo (rollback)
+sudo sh -c "cd '$CASE_DIR' && apt-get download caddy=2.6.2-12+deb13u1"
+sudo sh -c "cd '$CASE_DIR' && sha256sum caddy_2.6.2-12+deb13u1_amd64.deb | tee old-caddy.sha256"
 ```
 
-- `--unpack` no ejecuta el `postinst`: **Caddy sigue corriendo con el binario antiguo**.
-- La versión del binario en disco debe ser 2.11.9; el `Caddyfile` no debe cambiar.
-- `validate` se ejecuta como `caddy` para detectar problemas de permisos. Debe terminar con
-  `Valid configuration`.
-- Comparar módulos: `/usr/bin/caddy list-modules | sort > .../modules.after` y `diff` con
-  `modules.before`. Si falta un módulo en uso, **revertir** (§7.1).
+Referencia verificada del `.deb` Debian (security pool): **10.110.872 bytes**, SHA-256
+**`f173515859f273c97219cc242d625a64650fefdd136a9570acb1b5f7581c9786`**. Si `apt-get download`
+falla:
 
-Si la validación falla: revertir el binario (§7.1). El servicio no se ha detenido.
+```bash
+sudo sh -c "cd '$CASE_DIR' && curl -fsSLO https://security.debian.org/debian-security/pool/updates/main/c/caddy/caddy_2.6.2-12+deb13u1_amd64.deb"
+```
 
-### 6.6 Configurar el paquete (arranque controlado)
+```bash
+# Paquete nuevo
+if [ -f /etc/apt/sources.list.d/caddy-stable.list ]; then
+  sudo sh -c "cd '$CASE_DIR' && apt-get download caddy=2.11.9"
+else
+  sudo sh -c "cd '$CASE_DIR' && curl -fsSLO https://dl.cloudsmith.io/public/caddy/stable/deb/any-distro/pool/any-version/main/c/ca/caddy_2.11.9/caddy_2.11.9_linux_amd64.deb"
+fi
+sudo sh -c "cd '$CASE_DIR' && sha256sum caddy_2.11.9_linux_amd64.deb | tee new-caddy.sha256"
+sudo sh -c "cd '$CASE_DIR' && stat -c '%s' caddy_2.11.9_linux_amd64.deb"
+```
+
+El tamaño debe ser **18.049.414 bytes** y el SHA-256
+**`bbea4aeaadc86b233c168cc33bad9daa1cbce756dc08949b783b45398f8e65cb`**. Si no coincide, abortar
+sin haber modificado el sistema. Sin paquete antiguo verificado **no se continúa**.
+
+### 6.4 Detener, copiar y verificar
 
 ```bash
 sudo systemctl stop caddy
-sudo systemctl reset-failed caddy
-sudo dpkg --configure caddy
-sudo systemctl daemon-reload
-sudo systemctl show caddy -p ActiveState -p SubState -p NRestarts -p FragmentPath
-sudo systemctl is-enabled caddy caddy-api
+sudo systemctl is-active caddy || true
+sudo cp -a /etc/caddy "$CASE_DIR/etc-caddy"
+sudo cp -a /var/lib/caddy "$CASE_DIR/var-lib-caddy"
+sudo cp -a /lib/systemd/system/caddy.service "$CASE_DIR/caddy.service.before"
+sudo cp -a /etc/apt/sources.list.d "$CASE_DIR/sources.list.d.before"
+sudo cp -a /etc/apt/preferences.d "$CASE_DIR/preferences.d.before" 2>/dev/null || true
+sudo systemctl cat caddy | sudo tee "$CASE_DIR/unit.before" >/dev/null
+sudo chmod -R go-rwx "$CASE_DIR"
+sudo stat -c '%A %U:%G %n' "$CASE_DIR" "$CASE_DIR/etc-caddy" "$CASE_DIR/var-lib-caddy"
 ```
 
-El `postinst` arranca `caddy.service` con el binario nuevo. Comprobar que queda `active
-(running)` y que `caddy-api.service` sigue `disabled`/`inactive`.
+`/var/lib/caddy` contiene **claves privadas** y estado de la instancia: se trata como
+**secreto**. No se copia al repositorio, no se imprime y no sale del VPS. Es un **snapshot de
+rollback local**, no un backup de recuperación: vive en el mismo disco y no está cifrado.
+Retención: hasta 30 días después de la validación correcta; después se elimina con confirmación
+del usuario.
 
-Si no arranca: no insistir con reinicios repetidos (activa el *start limit*); recoger
-`journalctl -u caddy -n 100 --no-pager` y revertir (§7).
+La copia se hace con el servicio detenido para que sea consistente. Si algo falla aquí, basta
+`systemctl start caddy`: aún no se ha modificado nada.
+
+### 6.5 Desempaquetar sin configurar y validar
+
+```bash
+sudo dpkg --force-confold --unpack "$CASE_DIR/caddy_2.11.9_linux_amd64.deb"
+dpkg -l caddy
+dpkg --audit
+/usr/bin/caddy version
+sudo sha256sum /etc/caddy/Caddyfile
+sudo systemctl is-active caddy || true
+```
+
+- `dpkg -l caddy` debe mostrar `iU` (desempaquetado, sin configurar) y `dpkg --audit` sin
+  incidencias.
+- El `Caddyfile` no debe cambiar respecto a `baseline.txt`.
+- El servicio está detenido desde §6.4: no debe haber proceso de Caddy en ejecución.
+- `--unpack` **no ejecuta el `postinst`**: no hay arranque ni reinicio.
+
+```bash
+sudo -u caddy env HOME=/var/lib/caddy /usr/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+/usr/bin/caddy list-modules | sort | sudo tee "$CASE_DIR/modules.after" >/dev/null
+sudo diff -u "$CASE_DIR/modules.before" "$CASE_DIR/modules.after" || true
+```
+
+Debe terminar en `Valid configuration`. Si en el baseline `id caddy` no incluía `www-data` y el
+`postinst` lo añadirá después, validar también con ese grupo para evitar un falso negativo de
+permisos:
+
+```bash
+sudo -u caddy -g www-data env HOME=/var/lib/caddy /usr/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+Si la validación falla o falta un módulo en uso: revertir el binario (§7.1). El sitio sigue
+detenido; no se ha ejecutado el `postinst`.
+
+### 6.6 Unidad, capacidades y arranque
+
+Si se aprueba el mínimo privilegio (§10), crear el *drop-in* **antes** del primer arranque para
+que el `postinst` ya lo aplique:
+
+```bash
+sudo install -d -m 0755 /etc/systemd/system/caddy.service.d
+printf '%s\n' '[Service]' 'AmbientCapabilities=CAP_NET_BIND_SERVICE' \
+  | sudo tee /etc/systemd/system/caddy.service.d/10-local-capabilities.conf >/dev/null
+sudo systemctl daemon-reload
+```
+
+```bash
+sudo dpkg --configure caddy
+dpkg -l caddy
+dpkg --audit
+sudo systemctl daemon-reload
+sudo systemctl is-active caddy || sudo systemctl start caddy
+sudo systemctl show caddy -p ActiveState -p SubState -p NRestarts -p FragmentPath -p MainPID -p AmbientCapabilities
+sudo systemctl is-enabled caddy caddy-api || true
+sudo systemctl is-active caddy-api || true
+```
+
+El `postinst` hace `enable`, `start` y, en actualización, `try-restart`. Si el paquete estaba
+`disabled`, no arranca solo: el `systemctl start` explícito lo cubre. `caddy-api.service` debe
+seguir `disabled`/`inactive`.
+
+Si Caddy no arranca con el *drop-in*, retirarlo (decisión documentada) y aceptar la unidad
+oficial:
+
+```bash
+sudo rm /etc/systemd/system/caddy.service.d/10-local-capabilities.conf
+sudo systemctl daemon-reload
+sudo systemctl reset-failed caddy
+sudo systemctl start caddy
+```
+
+Si no arranca ni con la unidad oficial: no insistir con reinicios (activa el *start limit*);
+recoger `journalctl -u caddy -n 100 --no-pager` y revertir (§7).
 
 ### 6.7 Validación posterior
 
@@ -268,57 +357,91 @@ Si no arranca: no insistir con reinicios repetidos (activa el *start limit*); re
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\t${Status}\n' caddy
 apt-cache policy caddy
 systemctl is-active caddy
-journalctl -u caddy -p warning --since '-15 min' --no-pager | tail -50
-sudo ss -ltnp | grep -E ':(80|443|2019)\b'
+sudo journalctl -u caddy -p warning --since '-15 min' --no-pager | tail -50
+sudo ss -ltnp
 curl -sS -o /dev/null -w 'https %{http_code} verify=%{ssl_verify_result}\n' https://myfinanzas.pp.ua/
 curl -sS -o /dev/null -w 'http  %{http_code} -> %{redirect_url}\n' http://myfinanzas.pp.ua/
 curl -fsS https://myfinanzas.pp.ua/ | sha256sum
 echo | openssl s_client -connect myfinanzas.pp.ua:443 -servername myfinanzas.pp.ua 2>/dev/null \
-  | openssl x509 -noout -subject -issuer -dates -fingerprint -sha256
+  | openssl x509 -noout -subject -issuer -dates -ext subjectAltName -fingerprint -sha256
+sudo systemctl reset-failed caddy
 sudo systemctl restart caddy
 sudo systemctl is-active caddy
+sudo journalctl -u caddy -p err --since '-5 min' --no-pager | tail -30
 ```
 
 Criterios: `caddy version` = 2.11.9; HTTPS 200 con verificación 0; HTTP 308 hacia HTTPS;
 `body` idéntico al baseline; certificado con el **mismo fingerprint**, SAN y fechas (sin
-reemisión); solo 80/443 escuchando en público (sin 2019/3001/18082); reinicio limpio sin
-errores y `NRestarts` coherente.
+reemisión); `dpkg -l` en `ii` y `dpkg --audit` sin incidencias; solo 80/443 en direcciones
+públicas; 2019 solo en `127.0.0.1`/`::1` si está habilitado; 3001/18082 ausentes; reinicio
+limpio sin errores.
+
+Comprobar sin modificar que UFW, SSH y DNS no han cambiado:
+
+```bash
+sudo ufw status verbose
+sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|allowusers) '
+getent ahosts myfinanzas.pp.ua | head
+```
 
 No se prueban puertos de la aplicación (`test.myfinanzas.pp.ua` sigue en NXDOMAIN) ni se
 cambian DNS, UFW o SSH.
 
-### 6.8 Fijar la versión
+### 6.8 Fijar la versión y ciclo de vida
+
+Con el repo añadido:
 
 ```bash
 sudo apt-mark hold caddy
 apt-mark showhold | grep '^caddy$'
 ```
 
-Con el repo añadido, `hold` evita actualizaciones no revisadas. Revisión mensual del repo
-oficial y del Debian Security Tracker; para actualizar se repite esta spec con ventana, QA y
-`unhold` nuevos. Si se eligió la alternativa sin repo (§6.4), este paso es innecesario.
+`hold` evita actualizaciones no revisadas **mientras el repo oficial esté activo**. Revisión
+mensual del repo y del Debian Security Tracker. La versión oficial `2.11.9` es **mayor** que
+cualquier `2.6.2-…` de Debian: un backport Debian no se instalará por comparación de versiones.
+Actualizar exige repetir esta spec con ventana, QA y `unhold` nuevos.
+
+Alternativa sin repo: no hay `hold`; las actualizaciones son manuales y hay que registrar
+explícitamente que Caddy no recibirá parches automáticos.
 
 ## 7. Rollback
 
-### 7.1 Revertir solo el binario (validación fallida, servicio aún en marcha)
+### 7.1 Revertir el binario (validación fallida, servicio ya detenido)
 
 ```bash
-sudo dpkg --force-confold -i "/root/caddy-upgrade-$TS/caddy_2.6.2-12+deb13u1_amd64.deb"
+sudo dpkg --force-confold -i "$CASE_DIR/caddy_2.6.2-12+deb13u1_amd64.deb"
+dpkg -l caddy
+dpkg --audit
 sudo systemctl daemon-reload
+sudo systemctl start caddy
 /usr/bin/caddy version
 systemctl is-active caddy
 ```
 
-El servicio no llegó a detenerse; el `postinst` antiguo hará `try-restart` y dejará el binario
-2.6.2 activo. Verificar sitio y certificado.
+El `postinst` antiguo hará `start` (y `try-restart`); el `start` explícito cubre el caso
+`disabled`.
+Comprobar que `FragmentPath` vuelve a `/usr/lib/systemd/system/caddy.service` y que su contenido
+coincide con `caddy.service.before`:
 
-### 7.2 Revertir tras un arranque fallido
+```bash
+sudo systemctl show caddy -p FragmentPath
+sudo sha256sum /usr/lib/systemd/system/caddy.service "$CASE_DIR/caddy.service.before"
+sudo systemctl cat caddy
+```
+
+Si el hash difiere, restaurar la unidad y recargar:
+
+```bash
+sudo cp -a "$CASE_DIR/caddy.service.before" /usr/lib/systemd/system/caddy.service
+sudo systemctl daemon-reload
+```
+
+### 7.2 Revertir tras un arranque fallido y neutralizar el repo
 
 ```bash
 sudo systemctl stop caddy
 sudo systemctl reset-failed caddy
-sudo apt-mark unhold caddy 2>/dev/null || true
-sudo dpkg --force-confold -i "/root/caddy-upgrade-$TS/caddy_2.6.2-12+deb13u1_amd64.deb"
+sudo dpkg --force-confold -i "$CASE_DIR/caddy_2.6.2-12+deb13u1_amd64.deb"
 sudo systemctl daemon-reload
 sudo systemctl start caddy
 /usr/bin/caddy version
@@ -326,12 +449,24 @@ systemctl is-active caddy
 curl -sS -o /dev/null -w '%{http_code}\n' https://myfinanzas.pp.ua/
 ```
 
-Neutralizar el repo para que un `apt upgrade` posterior no reintroduzca 2.11.9:
+Neutralizar el origen oficial **sin congelar la versión Debian**:
 
 ```bash
-sudo mv /etc/apt/sources.list.d/caddy-stable.list "/root/caddy-upgrade-$TS/caddy-stable.list.disabled"
+sudo mv /etc/apt/sources.list.d/caddy-stable.list "$CASE_DIR/caddy-stable.list.disabled"
 sudo apt-get update
-sudo apt-mark hold caddy
+apt-cache policy caddy
+```
+
+El candidato debe volver a ser Debian `2.6.2-12+deb13u1`. **No dejar `apt-mark hold`** sobre la
+versión Debian: bloquearía futuros DSA de trixie, incluido uno para CVE-2026-77281. Si se
+quiere evitar que un `apt upgrade` reintroduzca el paquete oficial mientras el `.list` siga
+presente, usar un pin negativo del origen en lugar de un hold:
+
+```text
+# /etc/apt/preferences.d/caddy-no-cloudsmith.pref
+Package: caddy
+Pin: origin "dl.cloudsmith.io"
+Pin-Priority: -1
 ```
 
 ### 7.3 Revertir configuración o datos
@@ -341,28 +476,34 @@ fallo y restaurar la copia.
 
 ```bash
 sudo systemctl stop caddy
-sudo mv /etc/caddy "/root/caddy-upgrade-$TS/etc-caddy.failed"
-sudo cp -a "/root/caddy-upgrade-$TS/etc-caddy" /etc/caddy
-sudo mv /var/lib/caddy "/root/caddy-upgrade-$TS/var-lib-caddy.failed"
-sudo cp -a "/root/caddy-upgrade-$TS/var-lib-caddy" /var/lib/caddy
+sudo mv /etc/caddy "$CASE_DIR/etc-caddy.failed"
+sudo cp -a "$CASE_DIR/etc-caddy" /etc/caddy
+sudo mv /var/lib/caddy "$CASE_DIR/var-lib-caddy.failed"
+sudo cp -a "$CASE_DIR/var-lib-caddy" /var/lib/caddy
+sudo chown -R caddy:caddy /var/lib/caddy
+sudo -u caddy env HOME=/var/lib/caddy /usr/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl daemon-reload
 sudo systemctl start caddy
+sudo stat -c '%A %U:%G %n' /etc/caddy /var/lib/caddy
 ```
 
-`cp -a` conserva propietario y permisos (`caddy:caddy`). Verificar TLS y contenido.
+Comprobar que no quedan `.dpkg-dist`/`.dpkg-new` en `/etc/caddy` antes de arrancar.
+`cp -a` conserva propietario y permisos; el `chown` es una salvaguarda.
 
 ### 7.4 Instalación parcial
 
-Si el sistema queda en estado `iU`/`iF` (interrupción entre desempaquetar y configurar):
+Si el sistema queda en `iU`/`iF` (interrupción entre desempaquetar y configurar):
 
 ```bash
 dpkg -l caddy
-sudo dpkg --force-confold -i "/root/caddy-upgrade-$TS/caddy_2.6.2-12+deb13u1_amd64.deb"
+dpkg --audit
+sudo dpkg --force-confold -i "$CASE_DIR/caddy_2.6.2-12+deb13u1_amd64.deb"
 sudo systemctl daemon-reload
 ```
 
-Nunca dejar el paquete en estado `iF`. Si el rollback no funciona, detenerse, no purgar, no
-borrar datos y solicitar decisión.
+Si `dpkg` se niega o el estado `iF` persiste, **detenerse y escalar**. Nunca improvisar
+`--purge`: el `postrm purge` borra `/etc/caddy`, `/var/lib/caddy`, `/var/log/caddy` y ejecuta
+`userdel -r caddy`.
 
 ## 8. Criterios de aceptación
 
@@ -370,21 +511,24 @@ Todos **UNRUN** hasta la ventana autorizada.
 
 | ID | Comprobación | Esperado | Estado |
 | --- | --- | --- | --- |
-| AC-01 | Baseline estable y guardado | HTTP/body/cert/módulos coherentes | UNRUN |
-| AC-02 | Backups de `/etc/caddy`, `/var/lib/caddy`, unidad y fuentes | `0700`, verificables; secretos no expuestos | UNRUN |
-| AC-03 | Paquete antiguo descargado y verificado | SHA-256 `f1735158…` | UNRUN |
-| AC-04 | Repo oficial y clave verificados (si aplica) | Fingerprint `6576 0C51 … EA34`; candidato 2.11.9 | UNRUN |
-| AC-05 | `.deb` 2.11.9 verificado | SHA-256 `bbea4aea…`, 18.049.414 B | UNRUN |
-| AC-06 | `dpkg --unpack` sin arranque | Servicio sigue con binario antiguo y activo | UNRUN |
-| AC-07 | `caddy validate` como `caddy` | Config válida; Caddyfile sin cambios | UNRUN |
-| AC-08 | Módulos compatibles | Sin módulos en uso ausentes | UNRUN |
-| AC-09 | Configurar y arrancar | `caddy version` 2.11.9; `active (running)` | UNRUN |
-| AC-10 | HTTPS y certificado | 200; verify=0; mismo fingerprint/SAN/fechas | UNRUN |
-| AC-11 | HTTP y contenido | 308 a HTTPS; hash del cuerpo idéntico | UNRUN |
-| AC-12 | Puertos y servicios | Solo 80/443 públicos; UFW/SSH/DNS intactos | UNRUN |
-| AC-13 | Reinicio limpio | `systemctl restart` correcto, sin errores | UNRUN |
-| AC-14 | Versión fijada | `apt-mark hold caddy` (si hay repo) | UNRUN |
-| AC-15 | Rollback ensayado | Ver §10: en VM desechable o `UNRUN` declarado | UNRUN |
+| AC-01 | Baseline estable y guardado | HTTP/body/cert/módulos/unidades coherentes | UNRUN |
+| AC-02 | Directivas del Caddyfile revisadas | Sin `rewrite ?`, body, `hide`, `php_fastcgi`, `client_auth` | UNRUN |
+| AC-03 | Copia consistente y permisos | Servicio detenido; `0700`; secretos no expuestos | UNRUN |
+| AC-04 | Paquete antiguo verificado | SHA-256 `f1735158…`, 10.110.872 B | UNRUN |
+| AC-05 | Repo y clave (si aplica) | Fingerprint `6576 0C51 … EA34`; candidato 2.11.9 | UNRUN |
+| AC-06 | `.deb` 2.11.9 verificado | SHA-256 `bbea4aea…`, 18.049.414 B | UNRUN |
+| AC-07 | `unpack` sin arranque | `dpkg -l` en `iU`; sin proceso Caddy; Caddyfile intacto | UNRUN |
+| AC-08 | `validate` como `caddy` | Config válida; sin errores de permisos | UNRUN |
+| AC-09 | Módulos compatibles | Ningún módulo en uso ausente | UNRUN |
+| AC-10 | Configurar y arrancar | `caddy version` 2.11.9; `ii`; `dpkg --audit` limpio; `active` | UNRUN |
+| AC-11 | HTTPS y certificado | 200; verify=0; mismo fingerprint/SAN/fechas | UNRUN |
+| AC-12 | HTTP y contenido | 308 a HTTPS; hash del cuerpo idéntico | UNRUN |
+| AC-13 | Puertos y servicios | Solo 80/443 públicos; 2019 solo loopback; UFW/SSH/DNS sin cambios | UNRUN |
+| AC-14 | Reinicio limpio | `reset-failed` + `restart` correctos, sin errores | UNRUN |
+| AC-15 | Unidad y capacidades | Decisión aplicada; `active` con la configuración elegida | UNRUN |
+| AC-16 | Versión fijada / ciclo de vida | `hold` con repo, o actualización manual declarada | UNRUN |
+| AC-17 | Arranque tras reinicio del VPS | Servicio activo tras reboot | UNRUN (decisión §10) |
+| AC-18 | Rollback ensayado | En VM Debian 13 desechable | UNRUN (decisión §10) |
 
 Los AC de ejecución remota no pueden declararse PASS sin salida real de la ventana.
 
@@ -392,40 +536,48 @@ Los AC de ejecución remota no pueden declararse PASS sin salida real de la vent
 
 | Riesgo | Nivel | Mitigación |
 | --- | --- | --- |
-| 2.11.9 es muy reciente (publicado horas antes) | Medio | Es un seguimiento pequeño de 2.11.8; validar y tener rollback listo; opción de posponer la ventana |
-| `postinst` arranca el servicio y deshace `mask` | Alto | `dpkg --unpack` + validar antes de `--configure`; no usar `mask` como control |
-| Caddyfile incompatible o módulo ausente | Medio | `validate` y `diff` de módulos antes de configurar; rollback de binario sin caída |
-| Pérdida de certificados/claves | Alto | Copia `0700` de `/var/lib/caddy`; prohibido `purge`; no tocar DNS |
+| 2.11.9 es del mismo día y sucede a una versión con regresión | Medio-Alto | Validar, preparar rollback y considerar ensayo en VM o posponer la ventana; si se pospone, CVE-2026-77281 sigue abierto |
+| `postinst` arranca el servicio y deshace `mask` | Alto | `dpkg --unpack` + validar antes de `--configure`; `mask` no se usa como control |
+| Otro `apt`/`dpkg` configura el paquete antes de validar | Alto | Timers de APT detenidos/verificados; comprobar que no hay otro proceso; ventana exclusiva |
+| Caddyfile incompatible o módulo ausente | Medio | Revisión de directivas, `validate` y `diff` de módulos antes de configurar |
+| Pérdida de certificados/claves | Alto | Snapshot `0700` de `/var/lib/caddy`; prohibido purgar; no tocar DNS |
 | Reemplazo del `Caddyfile` | Medio | `--force-confold` y hash antes/después |
 | Rollback imposible | Alto | `.deb` antiguo verificado antes de empezar; si falta, no se instala |
-| Reintroducción por `apt upgrade` | Medio | `apt-mark hold`; repo desactivado en rollback |
-| Capacidades distintas en la unidad oficial | Bajo | Registrar el delta; decisión en §10; verificar arranque |
-| `purge` o `autoremove` accidental | Alto | Prohibido en la ventana; `postrm purge` de ambos paquetes borra `/etc/caddy`, `/var/lib/caddy`, `/var/log/caddy` y el paquete oficial además ejecuta `userdel -r caddy` |
-| Interrupción breve del sitio | Bajo | Ventana de baja actividad; parada < 10 s |
+| `CAP_NET_ADMIN` añadido por la unidad oficial | Medio | *Drop-in* con `CAP_NET_BIND_SERVICE`; probar arranque y revertir si falla |
+| Reintroducción por `apt upgrade` | Medio | `hold` con repo activo; en rollback, desactivar repo o pin negativo |
+| `hold` sobre Debian bloquea futuros DSA | Medio | No dejar hold tras el rollback a Debian |
+| Un backport Debian nunca se instalará por versión menor | Medio | Ciclo de vida documentado; actualizaciones vía repo oficial |
+| `purge` o `autoremove --purge` | Alto | Prohibido; el `postrm purge` oficial borra datos y usuario |
+| Snapshot local no cifrado en el mismo disco | Medio | Tratar como secreto, permisos `0700`, borrado a 30 días |
+| `journalctl`/`baseline` con IPs o rutas | Bajo | No publicar; redactar antes de adjuntar |
+| Interrupción breve del sitio | Bajo | Ventana de baja actividad; parada estimada < 2 min |
+| Reboot no probado | Medio | AC-17 UNRUN hasta que se pruebe; aceptar o programar |
 
 ## 10. Decisiones pendientes
 
-1. **Versión:** aprobar 2.11.9 o posponer la ventana unos días por su novedad.
-2. **Origen:** mantener el repositorio oficial Cloudsmith o instalar solo el `.deb` verificado
-   sin repo permanente.
-3. **Capacidades:** aceptar `CAP_NET_ADMIN` de la unidad oficial o añadir un *drop-in* que
-   conserve `CAP_NET_BIND_SERVICE` (requiere probar que Caddy arranca).
-4. **Rollback:** ¿se ensaya en una VM Debian 13 desechable antes de la ventana? Si no, AC-15
-   queda **UNRUN** y se acepta el riesgo.
-5. **Ventana y `sudo`:** fecha, duración y quién ejecuta cada bloque.
-6. **Retención** de la copia con claves privadas y fecha de borrado.
-7. Confirmar que el `Caddyfile` completo no requiere cambios y que no hay `hide`/`rewrite`/
-   `{http.request.body}` (mitiga también CVE-2026-77281 residual).
+1. **Versión:** aprobar 2.11.9 o posponer la ventana unos días por su novedad (dejando
+   CVE-2026-77281 abierto mientras tanto).
+2. **Origen:** repositorio oficial Cloudsmith con `hold` y revisión mensual, o `.deb` verificado
+   sin repo asumiendo actualizaciones manuales sin parches automáticos.
+3. **Capacidades:** aplicar el *drop-in* con `CAP_NET_BIND_SERVICE` (recomendado) o aceptar
+   `CAP_NET_ADMIN` de la unidad oficial.
+4. **Rollback:** ensayar en VM Debian 13 desechable (AC-18) o aceptar `UNRUN`.
+5. **Reboot:** probar el arranque tras reinicio (AC-17) o aceptar `UNRUN`.
+6. **Ventana y `sudo`:** fecha, duración y quién ejecuta cada bloque; timers de APT detenidos.
+7. **Retención** del snapshot con claves privadas y fecha de borrado.
+8. Confirmar que el `Caddyfile` completo no requiere cambios (§6.1).
 
 ## 11. Evidencia a conservar
 
-- `baseline.txt`, hashes de Caddyfile y binario, `modules.before/after`, `body.before`, `http.before`.
-- `cert.before` y `cert.after` (público, sin claves).
-- Versiones y estado de `dpkg`/`systemd` antes y después.
-- Salida de `validate`, `journalctl` y pruebas HTTP.
+- `baseline.txt`, hashes de Caddyfile y binario, `modules.before/after`, `body.before`,
+  `http.before`, `cert.before`.
+- `directives.txt` (no publicar sin redactar).
+- Versiones y estado de `dpkg`/`systemd` antes y después; `dpkg --audit`.
+- Salida de `validate`, `journalctl` y pruebas HTTP/HTTPS.
 - Confirmación de rollback disponible (hash del `.deb` antiguo).
 
-No se publican claves, contenido de `/var/lib/caddy`, IPs ni el `Caddyfile` completo.
+No se publican claves, contenido de `/var/lib/caddy`, IPs, `journalctl` sin redactar ni el
+`Caddyfile` completo.
 
 ## 12. Fuera de alcance
 

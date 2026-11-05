@@ -761,11 +761,11 @@ aplicación** ni gestiona sus ramas.
 
 | Etapa | Responsable | Entrada | Salida | Host |
 | --- | --- | --- | --- | --- |
-| Selección | `myfinanzas-app` | HEAD de `myfinanzas-app/test` con SHA de 40 caracteres | `release_ref=test`, `release_sha`, manifiesto | Registra el SHA; no gestiona la rama |
+| Selección | `myfinanzas-app` | HEAD de `myfinanzas-app/test` con SHA de 40 caracteres | `release_ref=myfinanzas-app/test`, `release_sha`, manifiesto | Registra el SHA; no gestiona la rama |
 | Construcción | `myfinanzas-app` | SHA seleccionado | Release + seed + manifiestos e IDs inmutables | No reconstruye ni parchea |
 | Validación | `myfinanzas-app` + `vps-infra` | Artefactos y gate Rootless | CI/Rootless `SUCCESS` y validaciones de host | Fase 5; no declara TEST operativo antes |
-| Promoción | `myfinanzas-app` | TEST validado | Merge a `main`; release PROD desde `main` | No promociona ni cambia ramas |
-| Despliegue TEST | `vps-infra` | Release de `test` verificada | Unidad/servicio TEST | Fase 5, autorización separada |
+| Promoción | `myfinanzas-app` | TEST validado | Merge a `myfinanzas-app/main`; release PROD desde `myfinanzas-app/main` | No promociona ni cambia ramas |
+| Despliegue TEST | `vps-infra` | Release de `myfinanzas-app/test` verificada | Unidad/servicio TEST | Fase 5, autorización separada |
 | Despliegue PROD | Futuro `vps-infra` | Release de `main` aprobada | Servicio PROD aislado | Fuera de esta spec |
 
 Reglas:

@@ -10,6 +10,12 @@
 > `09a9935` (PR #44). No se declara adopción íntegra de esa revisión; se preservan
 > las desviaciones locales y los gates del VPS.
 
+> Actualización selectiva 2026-11-05: **AGENT-SIMPLIFICATION-01** adoptado desde
+> `362e0e6` (PR #47) en lo aplicable: preferencia de delegación en trabajo autónomo
+> sustancial, alcance DRAFT del rol funcional, adaptadores finos y campo de modo de
+> ejecución en el paquete. Se conservan la revisión fijada, los gates del VPS, el
+> adaptador de review y sus límites. No se adopta el resto de esa revisión.
+
 ## Origen
 
 Fuente: [agent-project-template](https://github.com/jmartinlabs/agent-project-template),

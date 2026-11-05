@@ -44,11 +44,11 @@ the pending decision or hard dependency and stop.
 2. Mark work blocked only for a real hard dependency; name the prerequisite and its owner. Separate "waiting on user" from technical blockers.
 3. Recompute **ready** work when gates or the look-ahead change: approved and authorized implementation; candidate QA; independent SPEC drafting up to approval; bounded investigations; QA test design; and work packets for approved, authorized DEV. Do not wait for an explicit instruction to prepare ready work that commits no protected decision.
 4. Follow user priorities and the critical path. When work is blocked **or merely waiting**, advance the next independent ready item instead of idling. If nothing useful is ready, report the pending decision or hard dependency and stop; never create artificial work.
-5. Prefer one complete development packet per feature, then independent QA on the candidate. Parallelize only distinct ready work worth the overhead; concurrent edits need disjoint ownership and authorized isolated checkouts.
+5. Delegate substantial ready work to specialists when the client supports it. Prefer one complete development packet per feature, then independent QA on the candidate. Parallelize only distinct ready work worth the overhead; concurrent edits need disjoint ownership and authorized isolated checkouts. Keep one executor per task.
 6. At milestones (approved spec, candidate, QA verdict, PR, task completion, result, blocker) update only changed state and the board's next independent action. Approved spec + DEV authorization → DEV; candidate → independent QA; checks and QA green → publish/update the PR within the authorized scope; merge remains a separate approval. Preparation does not promote a draft or bypass a gate.
 7. End an active run with a short board summary: done, underway, waiting on user, blocked, newly ready, next action. Nothing runs between sessions.
 
-Delegation sizing follows [dynamic agent management](dynamic-agents.md): default to one executor plus required independent QA.
+Delegation sizing follows [dynamic agent management](dynamic-agents.md): one executor per task, substantial autonomous work delegated when supported, plus required independent QA.
 
 ## Bounded investigations
 Start with a falsifiable hypothesis, one discriminating probe and expected evidence. After two comparable attempts without new findings, keep logs and state, and escalate for a new hypothesis or scope decision. This never waives QA, regression checks or urgent safety containment.

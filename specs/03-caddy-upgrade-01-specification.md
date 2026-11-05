@@ -1,8 +1,8 @@
 # 03 — VPS-CADDY-UPGRADE-01: actualización de Caddy a 2.11.9
 
-Status: **DRAFT — correcciones aplicadas; NO listo para ejecución.** El ensayo de rollback
-(AC-18/T-01…T-12) no se ha realizado por falta de entorno aislado equivalente y el riesgo
-residual debe revisarse y autorizarse expresamente antes de tocar el VPS.
+Status: **EJECUTADO (2026-11-05).** Actualización realizada manualmente con autorización;
+resultado en [cierre](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
+AC-17 (arranque tras reboot) y AC-18 (ensayo de rollback) siguen `UNRUN`.
 Fecha: 2026-11-05.
 Contexto: [cierre de auditoría](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md), PR #13 MERGED.
 Contrato host: PR #9, **DRAFT**; no adoptado.

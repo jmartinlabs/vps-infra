@@ -33,7 +33,9 @@ verificación independiente. No autoriza nuevas operaciones, cambios, merges ni 
 | Rollback | — | **no fue necesario** |
 
 La actualización se realizó manualmente con autorización expresa del usuario. El sitio y el
-certificado se conservaron; no se cambió DNS, UFW, SSH, Podman ni `myfinanzas-app`.
+certificado se conservaron. El alcance autorizado era solo Caddy: **no se aportaron evidencias**
+de cambios en DNS, UFW, SSH, Podman ni `myfinanzas-app`, y no se verificaron de forma
+independiente en este cierre.
 
 ## 2. systemd
 
@@ -45,7 +47,6 @@ certificado se conservaron; no se cambió DNS, UFW, SSH, Podman ni `myfinanzas-a
   - `LimitNPROC=512`.
 - Verificación indicada: el proceso de Caddy conserva **solo** `CAP_NET_BIND_SERVICE`; no
   `CAP_NET_ADMIN`.
-- `caddy-api.service` sigue sin uso según la preflight previa.
 
 ## 3. Mantenimiento
 
@@ -68,8 +69,8 @@ Directorio protegido en el VPS:
 /root/caddy-upgrade-20261105T151652Z
 ```
 
-- Contiene los paquetes verificados, la configuración y la copia consistente de los datos de
-  Caddy.
+- Según la evidencia proporcionada, contiene los paquetes verificados, la configuración y la
+  copia consistente de los datos de Caddy. El inventario y la restauración no se han verificado.
 - Permisos: `0700 root:root`.
 - Retención prevista: **hasta 2026-12-05**.
 - **No borrar ni modificar sin autorización expresa.**

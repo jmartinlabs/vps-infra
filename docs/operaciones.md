@@ -1,6 +1,6 @@
 # Operaciones y recuperación · Borrador de procedimientos
 
-> **No ejecutado ni validado en el VPS.** Este documento fija los controles que deberá tener cada procedimiento. La auditoría de solo lectura y cualquier actuación posterior requieren autorizaciones distintas.
+> **Salvo la actualización de Caddy de 2026-11-05 ([cierre](auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md)), no ejecutado ni validado en el VPS.** Este documento fija los controles que deberá tener cada procedimiento. La auditoría de solo lectura y cualquier actuación posterior requieren autorizaciones distintas.
 
 ## Ciclo de cambio controlado
 

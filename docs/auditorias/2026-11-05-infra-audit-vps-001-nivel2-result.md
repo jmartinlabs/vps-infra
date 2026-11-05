@@ -162,7 +162,7 @@ apt-cache policy caddy | sed -E 's#(https?://)[^/@]+@#\1<redacted>@#g'
 systemctl show -p ActiveState -p SubState -p NRestarts -p FragmentPath -p ExecMainStartTimestamp caddy.service
 stat -c '%A %U:%G %n' /etc/ssh/sshd_config.d/00-myfinanzas-hardening.conf
 if [ -r /etc/ssh/sshd_config.d/00-myfinanzas-hardening.conf ]; then
-  grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|UsePAM|X11Forwarding|AllowUsers|AllowGroups|ListenAddress)' /etc/ssh/sshd_config.d/00-myfinanzas-hardening.conf | redact_net
+  grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|UsePAM|X11Forwarding|AllowUsers|AllowGroups|ListenAddress)' /etc/ssh/sshd_config.d/00-myfinanzas-hardening.conf | sed -E 's/^(AllowUsers|AllowGroups) .*/\1 <redacted>/I' | redact_net
 else
   echo "BLOQUEADO: drop-in no legible sin sudo"
 fi
@@ -180,7 +180,7 @@ IPv6, MAC, comentarios, usuarios, `permitopen`/`permitlisten` y valores de
 
 ```bash
 sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|allowusers|allowgroups|maxauthtries|allowtcpforwarding|permitopen|permitlisten|authenticationmethods|maxsessions|maxstartups|x11forwarding|acceptenv|setenv)' | sed -E 's#(/etc/ssh/ssh_host_[a-z0-9_]+_key)#<hostkey-path>#g; s/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser) .*/\1 <redacted>/I; s/^(allowusers|allowgroups|permitopen|permitlisten) .*/\1 <redacted>/I' | redact_net
-sudo ufw status verbose | redact_net
+sudo ufw status verbose | sed -E 's/#.*$/#<comment-redacted>/' | redact_net
 sudo nft list ruleset | sed -E 's/#.*$/#<comment-redacted>/' | redact_net
 ```
 

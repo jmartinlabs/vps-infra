@@ -4,7 +4,9 @@ Specification: [02 — host del entorno TEST de MyFinanzas](02-infra-test-01-hos
 
 Status: **DRAFT — ejecución `UNRUN`; sin ningún `PASS`.** No autoriza DEV, acceso al VPS,
 auditoría, DNS, Caddy, UFW, Podman/Quadlet, despliegue, datos reales ni merge.
-Base: `vps-infra` `main` `70f37e37e8ea1ab05dd65777cf9290ebc708c1a6` (2026-11-04).
+Base: `vps-infra` `main` `b45ffeb9ceaae9b656a5db6e11f90b12d3a72198` (2026-11-05).
+Auditoría y Caddy: [auditoría 2026-11-05](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md)
+y [cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
 Contrato de aplicación: [SPEC34](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md),
 PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head
 `58346e12eb24b9d8ddef6a0be660f0d66654f5ec`, aprobada y mergeada el 2026-11-04.
@@ -35,7 +37,7 @@ Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-inf
 | --- | --- | --- | --- |
 | E0 | Checkout local limpio y diff de la rama | Alcance documental, enlaces, clasificación y ausencia de cambios | Estado del VPS, Caddy, DNS o Podman |
 | E1 | Host de ensayo aislado o runner Linux efímero | Sintaxis de unidad, permisos, seed, backup/restore sintéticos | Debian 13, Caddy, DNS, UFW y disco reales |
-| E2 | VPS TEST real, tras autorización | Usuario, rutas, UFW, unidad, loopback, persistencia y límites | Recuperación ante pérdida física del host |
+| E2 | VPS real auditado el 2026-11-05; TEST no desplegado | Estado actual de SO, SSH, UFW, Caddy 2.11.9, Podman, DNS y disco | Usuario, rutas, unidad TEST, loopback y persistencia de TEST |
 | E3 | Red externa y resolutores públicos | DNS, TLS, cabeceras, cookies y no exposición de puertos | Estado interno del host |
 | E4 | Destino externo de copia aprobado por el usuario | Copia off-VPS y restauración desde ella | Custodia definitiva, SLA o RPO/RTO de producción |
 
@@ -63,6 +65,10 @@ verificados y redactados.
 | `INFRA-TEST-01-HOST-AC15` | Autorización de retirada; inventario previo | Unidad detenida/deshabilitada; Caddy/DNS de TEST retirados; `linger` deshabilitado si procede; datos/copias preservados; raíz intacta; sin borrado sin inventario | `systemctl --user stop/disable`; backup y edición de Caddy; eliminación del registro DNS; `loginctl disable-linger`; `find`/`ls` de inventario; `curl` raíz | E2, E3 | vps-infra / usuario | 8 | Inventario, estado de unidad, Caddy/DNS retirados y raíz intacta | UNRUN |
 | `INFRA-TEST-01-HOST-AC16` | TEST en marcha; umbrales de disco acordados | Dentro de ≤ 5 GB propuestos y márgenes ≥ 20 % libre / ≥ 10 % inodos; 1 GiB/1 CPU/128 pids medidos; sin impacto en otros servicios | `systemctl --user show -p MemoryCurrent,CPUUsageNSec,TasksCurrent`; `podman stats --no-stream`; `df -h`; `df -i`; comparación antes/después | E2 | vps-infra / QA | 6 | Métricas, umbrales y comparación con otros servicios | UNRUN |
 | `INFRA-TEST-01-HOST-AC17` | Revisar host, repo, logs y copias | Solo `FT-1`; sin Excel, bases reales, exportaciones, credenciales, TOTP, cookies, claves ni datos personales; evidencia redactada | `seed verify`; inventario de rutas; `find` de `.xlsx`, `.sqlite`, `.env`, claves y exportaciones; revisión de logs; grep de secretos | E0, E2, E4 | usuario / QA | 5, 6 | Inventario redactado, `seed verify` y ausencia de datos ajenos | UNRUN |
+
+La auditoría 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de backups,
+pero **no** completó Quadlet/cgroup ni el inventario profundo de backups: AC02 sigue `UNRUN`.
+AC10 no puede aprobarse mientras SPEC34 siga en esquema 24 y la app `main` declare 25.
 
 ## 4. Fases y gates de autorización
 
@@ -98,7 +104,7 @@ Todos `UNRUN`; ninguno se convierte en `PASS` por ausencia de error.
 | Seed con directorio `0755` o archivos `0644` | Rechazo `2`; no se corrige el permiso. |
 | Seed con `owner` ya creado | Rechazo `2`; el estado se preserva. |
 | Seed sobre base con movimientos ajenos | Rechazo `2`/`3`; sin reparación automática. |
-| Seed con esquema distinto de 24 | Rechazo; no se migra ni se fuerza. |
+| Seed con esquema distinto del aprobado (hoy 25; SPEC34 dice 24) | Rechazo; no se migra ni se fuerza. |
 | Seed repetido con el mismo manifiesto | `0` sin escrituras. |
 | Seed con la unidad activa o `18082` respondiendo | Rechazo; no se siembra. |
 | Reset sin confirmación explícita | Rechazo; no se archiva nada. |
@@ -248,15 +254,17 @@ claves, bases, importes reales, IPs privadas ni logs crudos.
 | B01 | Spec y test plan sin aprobar | Ninguna fase ejecutable | Aprobación del usuario |
 | B02 | Sin autorización de acceso al host | Fase 1 bloqueada | Autorización de auditoría de solo lectura |
 | B03 | Release y artefacto de seed no construidos | Fases 5–8 bloqueadas | Entrega verificada de `myfinanzas-app` |
-| B04 | E4.9/v25 no mergeados | No se prueba cierre ni v25 | Base congelada en esquema 24; E4.9 fuera |
+| B04 | SPEC34 desactualizada: E4.9 mergeado y `schemaVersion=25`, pero SPEC34 sigue en 24 | AC10 y seed no tienen contrato aprobado contra la base real | Actualizar SPEC34/sucesora en `myfinanzas-app` y aprobar el candidato |
 | B05 | DT6/T-BKP abierto | Backup/restore limitados | Copia externa mínima y decisión |
 | B06 | Flake SQLite B3 sin reproducción Linux | Riesgo de falso FAIL/PASS | Diagnóstico Linux; no ocultar |
 | B07 | Gate Rootless no ejecutado sobre el SHA | Despliegue bloqueado | Run `SUCCESS` sobre el SHA exacto |
-| B08 | Caddy real desconocido | Riesgo para el sitio raíz | Auditoría, backup y `caddy validate` |
-| B09 | DNS real desconocido | Sin TLS ni entorno operativo | Auditoría y autorización del registro `test` |
+| B08 | Caddy 2.11.9 auditado; bloque TEST pendiente | Edición del `Caddyfile` puede afectar al sitio raíz | Backup, `caddy validate`, bloque independiente y rollback |
+| B09 | Apex DNS conocido; `test` NXDOMAIN | Sin TLS ni entorno operativo | Autorización y creación del registro `test` |
 | B10 | Destino externo no aprobado | Activación bloqueada | Decisión del usuario |
-| B11 | Presupuesto de disco no medido | Riesgo de ENOSPC | Medición en fases 1 y 6 |
+| B11 | 35 GB libres y 3 % de inodos medidos | El presupuesto ≤5 GB cabe; revalidar en fase 6 | Medición antes/después |
 | B12 | `mftest`/`linger` no verificados | Unidad no persiste | Provisión y prueba de reboot |
+| B13 | Quadlet/cgroup no revalidados en Debian 13 | Unidad no arranca o no persiste | Preflight rootless y prueba de reboot |
+| B14 | SPEC34 desactualizada (24 vs 25) | Seed/AC10 sin contrato aprobado | Actualizar SPEC34/sucesora en `myfinanzas-app` |
 
 ## 10. Criterios de parada
 
@@ -282,10 +290,10 @@ No se usa `reset-failed`, `chmod`/`chown`, `:U`, borrado de estado ni reintento 
 - Comprobaciones locales ejecutadas: `git diff --check` (exit 0),
   `python3 scripts/check_harness.py` (exit 0) y `./scripts/validate-template` (exit 0).
   No acreditan el VPS, Caddy, DNS ni Podman y no sustituyen la revisión independiente.
-- Comprobaciones de host, DNS, Caddy, seed, backup y restore: **ninguna**; requieren
-  autorización y fases posteriores.
-- AC: **17 / 17 `UNRUN`**; los checks locales no convierten AC01 en `PASS` sin revisión
-  independiente y aprobación.
-- Fases: **0 / 9 autorizadas**.
+- Comprobaciones de host: auditoría de solo lectura 2026-11-05 y Caddy 2.11.9 documentados;
+  seed, backup/restore y TEST desplegado siguen **UNRUN**.
+- AC: **17 / 17 `UNRUN`**; la auditoría no completa AC02 y la deriva SPEC34 24/25 bloquea AC10.
+  Los checks locales no convierten AC01 en `PASS` sin revisión independiente y aprobación.
+- Fases: **0 / 9 autorizadas**; la auditoría de 2026-11-05 cubrió parte de la fase 1, sin declararla completa.
 - Próxima acción independiente: revisión de la spec y del test plan por el coordinador/QA,
-  y decisión sobre las propuestas H1–H6 antes de solicitar la fase 1.
+  decisión sobre H1–H6 y actualización del contrato SPEC34 (24→25) antes de la fase 2.

@@ -103,6 +103,8 @@ class ValidationTests(unittest.TestCase):
   self.assertRule('dynamic-agents')
  def test_packet_applicable_rules(self):
   self.change('templates/agent-work-packet.md','Applicable rules','Extra notes'); self.assertRule('dynamic-agents')
+ def test_packet_execution_mode(self):
+  self.change('templates/agent-work-packet.md','Execution mode','Mode'); self.assertRule('dynamic-agents')
  def test_opencode_agent_removed_only(self):
   self.remove_specialized(); (self.root/'.opencode/agents/review.md').unlink(); self.assertRule('opencode')
  def test_opencode_orphan_plugin(self):
@@ -186,10 +188,11 @@ class ValidationTests(unittest.TestCase):
               'mode: subagent\npermission: read')
   self.assertRule('opencode')
  def test_opencode_specialized_malformed_frontmatter(self):
-  self.change('.opencode/agents/functional.md','---\n\nYou are','\nYou are')
+  self.change('.opencode/agents/functional.md','---\n\nRead [','\nRead [')
   self.assertRule('opencode')
  def test_opencode_specialized_description_required(self):
-  self.change('.opencode/agents/functional.md','description: Native OpenCode functional specialist for approved roadmap and specification work. Read-only by role; returns questions, draft sections and acceptance cases to the coordinator.\n','')
+  p=self.root/'.opencode/agents/functional.md'; s=p.read_text()
+  p.write_text(re.sub(r'(?m)^description: .+$','description:',s))
   self.assertRule('opencode')
  def test_opencode_specialized_packet_token(self):
   self.change('.opencode/agents/implementation.md','## Required packet','## Packet')
@@ -280,6 +283,8 @@ class ValidationTests(unittest.TestCase):
   (self.root/'templates/epic-board.md').unlink(); self.assertRule('structure')
  def test_epic_role_required(self):
   (self.root/'.agents/roles/implementation.md').unlink(); self.assertRule('structure')
+ def test_functional_role_draft_scope(self):
+  self.change('.agents/roles/functional.md','DRAFT specifications','approved specifications'); self.assertRule('epic-scheduling')
  def test_epic_coordinator_wiring(self):
   self.change('.agents/skills/orchestrate/SKILL.md','specs/methodology/epic-orchestration.md','specs/methodology/other.md'); self.assertRule('epic-scheduling')
  def test_epic_approval_gate(self):
@@ -321,6 +326,25 @@ class ValidationTests(unittest.TestCase):
      p.write_text(original)
  def test_execution_mode_scenarios(self):
   self.change('evals/scenarios.json','"id": "execution-','"id": "removed-'); self.assertRule('agent-evals')
+ def test_delegation_preference(self):
+  cases=(
+   ('specs/methodology/dynamic-agents.md','## Delegation preference'),
+   ('specs/methodology/dynamic-agents.md','one executor per task'),
+   ('specs/methodology/dynamic-agents.md','Never create artificial agents'),
+   ('.agents/skills/orchestrate/SKILL.md','Prefer a specialist for substantial'),
+   ('.agents/skills/orchestrate/SKILL.md','one executor per task'),
+   ('.agents/skills/orchestrate/SKILL.md','never invent agents'),
+   ('specs/methodology/epic-orchestration.md','one executor per task'),
+  )
+  for name, token in cases:
+   with self.subTest(name=name, token=token):
+    p=self.root/name; original=p.read_text()
+    self.assertIn(token, original)
+    try:
+     p.write_text(original.replace(token, 'REMOVED'))
+     self.assertRule('delegation-preference')
+    finally:
+     p.write_text(original)
  def test_mermaid_validator_script_required(self):
   (self.root/'scripts/check-mermaid.mjs').unlink(); self.assertRule('structure')
  def test_mermaid_ci_wiring(self):

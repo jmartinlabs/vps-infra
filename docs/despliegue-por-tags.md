@@ -270,5 +270,3 @@ Ninguna fase se deduce de otra. Un merge documental no habilita la siguiente.
 - [Estado actual](estado-actual.md)
 - [Host TEST (PR #9, MERGED `901204c`; spec DRAFT)](https://github.com/jmartinlabs/vps-infra/blob/main/specs/02-infra-test-01-host-specification.md)
 - `myfinanzas-app`: especificación `DEPLOY-TAGS-01`, mantenida en su repositorio.
-- `agent-project-template`: patrón reutilizable de despliegue por tags; no se modifica desde
-  `vps-infra`.

@@ -107,7 +107,7 @@ Todos `UNRUN`; ninguno se convierte en `PASS` por ausencia de error.
 | Seed con directorio `0755` o archivos `0644` | Rechazo `2`; no se corrige el permiso. |
 | Seed con `owner` ya creado | Rechazo `2`; el estado se preserva. |
 | Seed sobre base con movimientos ajenos | Rechazo `2`/`3`; sin reparación automática. |
-| Seed con esquema distinto del aprobado (hoy 25; SPEC34 dice 24) | Rechazo; no se migra ni se fuerza. |
+| Seed con esquema distinto del aprobado (pendiente: `main` 25; SPEC34 dice 24) | Rechazo; no se migra ni se fuerza. |
 | Seed repetido con el mismo manifiesto | `0` sin escrituras. |
 | Seed con la unidad activa o `18082` respondiendo | Rechazo; no se siembra. |
 | Reset sin confirmación explícita | Rechazo; no se archiva nada. |
@@ -142,7 +142,7 @@ abre una segunda spec de aplicación**.
   su sucesora) y se revisa aquí antes de la fase 5. No se acepta una unidad desincronizada.
 - La app debe entregar release y seed verificados antes de la fase 5. Las fases 1–4 pueden
   preparar el host, pero no declaran TEST operativo.
-- Los AC de la app (`INFRA-TEST-01-AC04…AC09`, `AC14`, `AC15`, `AC19`) y los host de §3 se
+- Los AC de la app (`INFRA-TEST-01-AC04…AC09`, `AC12`, `AC14`, `AC15`, `AC17`, `AC19`) y los host de §3 se
   enlazan en la trazabilidad de la [spec](02-infra-test-01-host-specification.md#81-trazabilidad-con-spec34).
   Ningún resultado se hereda.
 - PR #207 consta `MERGED` en `58346e1`; no se infiere permiso

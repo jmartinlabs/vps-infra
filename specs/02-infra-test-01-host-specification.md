@@ -90,7 +90,7 @@ posteriores a la actualización son evidencia del usuario; el agente no accedió
 | DNS apex con A y TTL 14400; sin AAAA/CAA; `test` NXDOMAIN; NS en `uadns.com` | Auditoría | `[CONFIRMADO]` IP pública no documentada aquí. |
 | Directorio `myfinanzas/backups` bajo el home del operador: existe `0700`, sin ficheros regulares visibles a profundidad 2 | Auditoría | `[CONFIRMADO]` Inventario y restore no verificados. |
 | Recuperación de Caddy: `/root/caddy-upgrade-20261105T151652Z` `0700`, retención hasta 2026-12-05 | Cierre Caddy | `[CONFIRMADO]` No es backup de la aplicación TEST. |
-| IP pública, proveedor DNS, destino externo de copia y release/seed de la app | No documentados | `[PENDIENTE]` No se inventan. |
+| IP pública, destino externo de copia y release/seed de la app | No documentados | `[PENDIENTE]` No se inventan. |
 | TEST desplegado | Auditoría | `[CONFIRMADO]` No hay contenedor ni imagen MyFinanzas. |
 | AC-17 (reboot) y AC-18 (rollback) de Caddy | Cierre Caddy | `[PENDIENTE]` `UNRUN`. |
 
@@ -303,7 +303,8 @@ retirada de `reset/` exige inventario y autorización.
 
 - `seed verify` → `0`, sin drift, con `seed_manifest_sha256` registrado.
 - SQL de solo lectura: `PRAGMA integrity_check=ok`, `foreign_key_check` vacío,
-  `schema_version` del candidato aprobado (hoy 25; SPEC34 aún dice 24), conteos e IDs de `FT-1`.
+  `schema_version` del contrato aprobado (pendiente: `main` declara 25 y SPEC34 dice 24),
+  conteos e IDs de `FT-1`.
 - API autenticada y UI: IDs ficticios esperados; sin sesión, `401`.
 - Solo `FT-1`; sin Excel, bases reales, exportaciones ni credenciales.
 - La creación pasó por servicios de la app, no por SQL crudo.
@@ -418,7 +419,8 @@ Condiciones de revisión:
 ### 7.1 DNS
 
 `[CONFIRMADO]` El apex `myfinanzas.pp.ua` tiene A con TTL 14400, sin AAAA ni CAA;
-`test.myfinanzas.pp.ua` responde NXDOMAIN. La IP pública y el proveedor no se documentan aquí.
+`test.myfinanzas.pp.ua` responde NXDOMAIN; el proveedor es `uadns.com` según la auditoría.
+La IP pública no se documenta aquí.
 
 `[PROPUESTA]` Añadir, con autorización del usuario y tras la auditoría:
 
@@ -437,12 +439,14 @@ test.myfinanzas.pp.ua. 300 IN AAAA <IPv6_PUBLICA_VERIFICADA, si existe>
 
 ### 7.2 Caddy y HTTPS
 
-`[CONFIRMADO]` Caddy 2.11.9 está activo, con `hold` y solo `CAP_NET_BIND_SERVICE`. El
-`Caddyfile` actual tiene 68 B; se identificaron el sitio `myfinanzas.pp.ua` y la directiva
-`root`, y no se observó `reverse_proxy`, pero **el contenido completo no se leyó**. La
-validación fue preliminar con 2.6.2 y definitiva con 2.11.9. No se modifica su *drop-in* ni el
-sitio raíz para TEST. Antes de la fase 4 hay que leer el fichero completo, registrar hash/diff
-y validar; no se asume que solo contenga `root`.
+`[CONFIRMADO]` Caddy 2.11.9 está activo, con `hold` y solo `CAP_NET_BIND_SERVICE`; no se
+modifica su *drop-in* ni el sitio raíz para TEST.
+
+`[INFORMADO]` El `Caddyfile` actual tiene 68 B; se identificaron el sitio `myfinanzas.pp.ua`
+y la directiva `root`, y no se observó `reverse_proxy`, pero **el contenido completo no se
+leyó**. La validación fue preliminar con 2.6.2 y definitiva con 2.11.9. Antes de la fase 4 hay
+que leer el fichero completo, registrar hash/diff y validar; no se asume que solo contenga
+`root`.
 
 `[PROPUESTA]` Bloque independiente para `test.myfinanzas.pp.ua`. La ubicación exacta
 (`Caddyfile` principal o fichero importado) se decide en la fase 4, con backup y validación.
@@ -714,8 +718,8 @@ pendiente** junto con el destino externo. Esta revisión no aprueba H1–H6.
 
 `[CONFIRMADO]` El contrato de aplicación es
 [SPEC34](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md),
-PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head
-`58346e12eb24b9d8ddef6a0be660f0d66654f5ec`. La app `main` está en `af34f1a`; E4.9 está
+PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head `8fe839c`, merge
+commit `58346e12eb24b9d8ddef6a0be660f0d66654f5ec`. La app `main` está en `af34f1a`; E4.9 está
 mergeado (`0176ffc`) y el esquema es 25, mientras SPEC34 sigue anclada a 24. Esta spec
 **no abre una segunda spec de aplicación** ni duplica su contenido; la reconciliación de
 SPEC34 corresponde a `myfinanzas-app`.
@@ -729,8 +733,9 @@ SPEC34 corresponde a `myfinanzas-app`.
   desincronizada.
 - **Secuencia:** la app debe entregar release y seed verificados antes de la fase 5 del
   host. Las fases 1–4 del host pueden preparar el terreno, pero no declaran TEST operativo.
-- **Test plans:** el de la app cubre AC04–AC09/AC14/AC15/AC19 de su contrato; este plan
-  cubre los AC host y enlaza la trazabilidad de §8.1. Ningún resultado se hereda.
+- **Test plans:** el de la app cubre sus AC, incluidas AC04–AC09, AC12, AC14, AC15, AC17 y
+  AC19; este plan cubre los AC host y enlaza la trazabilidad de §8.1. Ningún resultado se
+  hereda.
 - **Merge:** la aprobación de SPEC34 no autoriza DEV, release, despliegue ni merge. La
   PR #207 consta `MERGED` en `58346e1`; no
   se infiere permiso operativo.

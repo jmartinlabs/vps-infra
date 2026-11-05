@@ -7,13 +7,11 @@ auditoría, DNS, Caddy, UFW, Podman/Quadlet, despliegue, datos reales ni merge.
 Base: `vps-infra` `main` `b45ffeb9ceaae9b656a5db6e11f90b12d3a72198` (2026-11-05).
 Auditoría y Caddy: [auditoría 2026-11-05](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md)
 y [cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
-Contrato de aplicación: [SPEC34](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md),
-PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), merge commit `58346e1`;
-actualización aprobada el 2026-11-05 en
-[PR #229](https://github.com/jmartinlabs/myfinanzas-app/pull/229) (schema 25/C25, FT-1 v1,
-D7), pendiente de merge. Flujo actual `feature/* → main`: TEST consume una release de un SHA
-inmutable de `myfinanzas-app/main`; PROD futuro, de `main`; no hay rama `test`; el despliegue
-es manual y no automatizado.
+Contrato de integración MyFinanzas ↔ `vps-infra`:
+[SPEC34 §5](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md#5-contrato-de-despliegue-con-vps-infra-solo-interfaz)
+y manifiesto de cada release. `vps-infra` no rastrea PRs de la aplicación. Flujo actual
+`feature/* → main`: TEST consume una release de un SHA inmutable de `myfinanzas-app/main`;
+PROD futuro, de `main`; no hay rama `test`; el despliegue es manual y no automatizado.
 Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-infra/pull/7)
 (CLOSED, no mergeado); no es contrato vigente.
 
@@ -76,7 +74,7 @@ siguen `UNRUN` y no se cubren con el contador de AC host.
 
 La auditoría 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de backups,
 pero **no** completó Quadlet/cgroup ni el inventario profundo de backups: AC02 sigue `UNRUN`.
-AC10 queda pendiente de la release/seed desde `main`; el contrato 25/C25 está aprobado (PR #229).
+AC10 queda pendiente de la release/seed desde `main`; el contrato de integración lo declara MyFinanzas en el manifiesto (hoy 25/C25).
 
 ## 4. Fases y gates de autorización
 
@@ -268,7 +266,7 @@ claves, bases, importes reales, IPs privadas ni logs crudos.
 | B01 | Spec y test plan sin aprobar | Ninguna fase ejecutable | Aprobación del usuario |
 | B02 | Sin autorización para una nueva sesión en el host; fase 1 incompleta (Quadlet/cgroup y backups) | Fase 2 bloqueada | Completar la parte pendiente de la fase 1 con autorización |
 | B03 | Release y artefacto de seed no construidos desde `main` | Fases 5–8 bloqueadas | Entrega verificada de `myfinanzas-app/main` |
-| B15 | SPEC34 actualizada (PR #229) aprobada pero pendiente de merge | Contrato v25 no consolidado en `main` | Merge autorizado de PR #229 |
+| B15 | Contrato de integración pendiente de actualización en MyFinanzas | El esquema/seed no está declarado en el manifiesto | MyFinanzas actualice su SPEC34/test plan y entregue release/seed |
 | B05 | DT6/T-BKP abierto | Backup/restore limitados | Copia externa mínima y decisión |
 | B06 | Flake SQLite B3 sin reproducción Linux | Riesgo de falso FAIL/PASS | Diagnóstico Linux; no ocultar |
 | B07 | Gate Rootless no ejecutado sobre el SHA | Despliegue bloqueado | Run `SUCCESS` sobre el SHA exacto |
@@ -309,4 +307,4 @@ No se usa `reset-failed`, `chmod`/`chown`, `:U`, borrado de estado ni reintento 
   Los checks locales no convierten AC01 en `PASS` sin revisión independiente y aprobación.
 - Fases: **0 / 9 autorizadas**; la auditoría de 2026-11-05 cubrió parte de la fase 1, sin declararla completa.
 - Próxima acción independiente: revisión/aprobación de esta enmienda y de H1–H6; merge de
-  SPEC34 PR #229; selección del SHA de `main` antes de la fase 5.
+  actualización del contrato en MyFinanzas; selección del SHA de `main` antes de la fase 5.

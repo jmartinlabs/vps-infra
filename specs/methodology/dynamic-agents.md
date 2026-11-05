@@ -116,7 +116,8 @@ Coordinate by outcome, blocker or decision, not repeated status reminders. Prefe
 runtime completion/event waits within client limits. A timeout without new evidence is
 not a reason to reread unchanged files or wake a worker. Space CI queries progressively
 while status is unchanged; reset after a meaningful transition or failure. During waits,
-advance independent authorized work or return pending state. Do not add a polling agent
+advance independent ready work that commits no protected decision; return pending state only when
+no such work is ready. Do not add a polling agent
 or service, promise monitoring between turns, or delay attention to new user input.
 
 Use focal checks during development and complete required verification for each stable

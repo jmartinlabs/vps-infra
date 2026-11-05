@@ -9,6 +9,11 @@ siguen siendo la política y el estado del proyecto. Las Skills canónicas viven
 `.opencode/` contiene el adaptador nativo opcional descrito en
 [OPENCODE_ADAPTER](OPENCODE_ADAPTER.md).
 
+Actualización selectiva 2026-11-05: se incorpora **ORCH-PROACTIVE-01** desde
+`agent-project-template` main `09a9935` (PR #44), sin declarar adopción íntegra de esa
+revisión. Cambian la planificación proactiva del coordinador, sus escenarios y guardas;
+no cambian la política local del VPS, los gates ni el workflow de CI.
+
 ## Qué sí se valida automáticamente
 
 `.github/workflows/check-harness.yml` (job `validate`) ejecuta:

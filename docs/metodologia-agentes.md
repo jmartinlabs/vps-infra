@@ -6,6 +6,10 @@
 > y sus validaciones. Validación estática en CI. Comportamiento real de Codex/Claude
 > Code/OpenCode y cualquier acceso al VPS siguen **no verificados**.
 
+> Actualización selectiva 2026-11-05: **ORCH-PROACTIVE-01** adoptado desde main
+> `09a9935` (PR #44). No se declara adopción íntegra de esa revisión; se preservan
+> las desviaciones locales y los gates del VPS.
+
 ## Origen
 
 Fuente: [agent-project-template](https://github.com/jmartinlabs/agent-project-template),

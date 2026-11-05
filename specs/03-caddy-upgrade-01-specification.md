@@ -225,7 +225,7 @@ sudo fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/arch
 pgrep -a 'apt|dpkg|unattended' || true
 ```
 
-`fuser` y `pgrep` no deben mostrar procesos activos. Los timers se restauran en §6.8.
+`fuser` y `pgrep` no deben mostrar procesos activos. Los timers se restauran en §6.9.
 
 ### 6.2 Repositorio oficial (solo si se aprueba mantenerlo)
 
@@ -451,7 +451,7 @@ reinicio limpio sin errores; UFW/SSH/DNS sin diferencias respecto al baseline.
 No se prueban puertos de la aplicación (`test.myfinanzas.pp.ua` sigue en NXDOMAIN) ni se
 cambian DNS, UFW o SSH.
 
-### 6.8 Fijar la versión, restaurar timers y ciclo de vida
+### 6.8 Fijar la versión y ciclo de vida
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
@@ -459,8 +459,6 @@ if [ -f /etc/apt/sources.list.d/caddy-stable.list ]; then
   sudo apt-mark hold caddy
   apt-mark showhold | grep '^caddy$'
 fi
-sudo systemctl start apt-daily.timer apt-daily-upgrade.timer
-systemctl is-active apt-daily.timer apt-daily-upgrade.timer || true
 ```
 
 `hold` evita actualizaciones no revisadas **mientras el repo oficial esté activo**. Revisión
@@ -471,10 +469,23 @@ actual (`2.11.2`) no se instalará por comparación de versiones. Una versión D
 superior** (por ejemplo `2.11.9-1~deb13u1`) sí podría competir; con `hold` no se instalará
 hasta que se autorice. Actualizar exige repetir esta spec con ventana, QA y `unhold` nuevos.
 
-Alternativa sin repo: no se aplica `hold`; los timers de APT se restauran igualmente. Las
-actualizaciones son manuales y hay que registrar explícitamente que Caddy no recibirá parches
-automáticos. Si en el baseline algún timer estaba inactivo, restaurar ese estado en lugar de
-arrancarlo.
+Alternativa sin repo: no se aplica `hold`; las actualizaciones son manuales y hay que registrar
+explícitamente que Caddy no recibirá parches automáticos.
+
+### 6.9 Cierre de la ventana
+
+Ejecutar **siempre**, tanto tras una actualización correcta como tras cualquier rollback:
+
+```bash
+: "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
+if systemctl is-enabled --quiet apt-daily.timer; then sudo systemctl start apt-daily.timer; fi
+if systemctl is-enabled --quiet apt-daily-upgrade.timer; then sudo systemctl start apt-daily-upgrade.timer; fi
+systemctl is-active apt-daily.timer apt-daily-upgrade.timer || true
+```
+
+Comparar con el estado registrado en `baseline.txt`: si un timer estaba inactivo o deshabilitado
+antes de la ventana, restaurar ese estado en lugar de arrancarlo. `unattended-upgrades.service`
+no se arranca a mano: lo dispara `apt-daily-upgrade.timer`.
 
 ## 7. Rollback
 
@@ -494,17 +505,17 @@ if sudo test -e "$CASE_DIR/repo-added"; then
   else
     sudo rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   fi
-  if sudo test -e "$CASE_DIR/caddy-stable.list.before"; then
-    sudo cp -a "$CASE_DIR/caddy-stable.list.before" /etc/apt/sources.list.d/caddy-stable.list
-  fi
 fi
 sudo apt-get update
 apt-cache policy caddy
 ```
 
-El candidato debe volver a ser Debian `2.6.2-12+deb13u1`. **No dejar `apt-mark hold`** sobre la
-versión Debian: bloquearía futuros DSA de trixie, incluido uno para CVE-2026-77281. Si se
-prefiere conservar el `.list`, crear en su lugar un pin negativo y no aplicar `hold`:
+El candidato debe volver a ser Debian `2.6.2-12+deb13u1`. **No se restaura un
+`caddy-stable.list` preexistente**: si lo hubiera, se deja desactivado para que el candidato sea
+Debian y para que un `hold` posterior no congele una versión vulnerable. **No dejar
+`apt-mark hold`** sobre la versión Debian: bloquearía futuros DSA de trixie, incluido uno para
+CVE-2026-77281. Si se prefiere conservar el `.list`, crear en su lugar un pin negativo y no
+aplicar `hold`:
 
 ```text
 # /etc/apt/preferences.d/caddy-no-cloudsmith.pref
@@ -532,16 +543,27 @@ systemctl is-active caddy
 El `postinst` antiguo hará `start` (y `try-restart`); el `start` explícito cubre el caso
 `disabled`. `--force-downgrade` hace explícito el descenso de versión; es inocuo si `dpkg` ya
 lo aceptara. Comprobar `FragmentPath` y que el hash de la unidad coincide con
-`caddy.service.before`. Si no coincide, restaurar la unidad y el *drop-in*:
+`caddy.service.before`.
+
+El *drop-in* creado en §6.6 se retira **siempre**; si existía uno previo, se restaura:
 
 ```bash
-sudo systemctl stop caddy
-sudo cp -a "$CASE_DIR/caddy.service.before" /usr/lib/systemd/system/caddy.service
-sudo cp -a "$CASE_DIR/caddy-api.service.before" /usr/lib/systemd/system/caddy-api.service 2>/dev/null || true
+: "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
 sudo rm -f /etc/systemd/system/caddy.service.d/10-local-capabilities.conf
 if sudo test -e "$CASE_DIR/dropin.before"; then
   sudo cp -a "$CASE_DIR/dropin.before" /etc/systemd/system/caddy.service.d/10-local-capabilities.conf
 fi
+sudo systemctl daemon-reload
+sudo systemctl show caddy -p FragmentPath -p AmbientCapabilities
+```
+
+Si el hash de la unidad no coincide, restaurar también el fichero de unidad:
+
+```bash
+: "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
+sudo systemctl stop caddy
+sudo cp -a "$CASE_DIR/caddy.service.before" /usr/lib/systemd/system/caddy.service
+sudo cp -a "$CASE_DIR/caddy-api.service.before" /usr/lib/systemd/system/caddy-api.service 2>/dev/null || true
 sudo systemctl daemon-reload
 sudo systemctl start caddy
 sudo systemctl restart caddy
@@ -551,6 +573,7 @@ sudo systemctl show caddy -p FragmentPath -p AmbientCapabilities
 Verificación final del rollback (mismos criterios que §6.7, comparados con el baseline):
 
 ```bash
+: "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
 curl -sS -o /dev/null -w 'https %{http_code} verify=%{ssl_verify_result}\n' https://myfinanzas.pp.ua/ | sudo tee "$CASE_DIR/rollback.https" >/dev/null
 curl -sS -o /dev/null -w 'http  %{http_code} -> %{redirect_url}\n' http://myfinanzas.pp.ua/ | sudo tee "$CASE_DIR/rollback.http" >/dev/null
 curl -fsS https://myfinanzas.pp.ua/ | sha256sum | sudo tee "$CASE_DIR/rollback.body" >/dev/null
@@ -562,7 +585,8 @@ sudo diff -u "$CASE_DIR/cert.before" "$CASE_DIR/rollback.cert"
 ```
 
 El rollback solo se considera correcto con HTTPS 200 (`verify=0`), cuerpo y certificado
-idénticos al baseline. Si el sitio no vuelve, detenerse y solicitar decisión.
+idénticos al baseline. Si el sitio no vuelve, detenerse y solicitar decisión. Cerrar la ventana
+en §6.9.
 
 ### 7.3 Revertir configuración o datos
 
@@ -586,7 +610,8 @@ sudo systemctl start caddy
 
 Comprobar que no quedan `.dpkg-dist`/`.dpkg-new` en `/etc/caddy` **antes** de arrancar.
 `cp -a` conserva propietario y permisos originales porque el snapshot no fue alterado con
-`chmod` recursivo; el `chown` es una salvaguarda.
+`chmod` recursivo; el `chown` es una salvaguarda. Verificar HTTP/TLS/cuerpo/certificado como en
+§7.2 y cerrar la ventana en §6.9.
 
 ### 7.4 Instalación parcial
 
@@ -612,6 +637,22 @@ systemctl is-active caddy
 Si `dpkg` se niega o el estado `iF` persiste, **detenerse y escalar**. Nunca improvisar
 `--purge`: el `postrm purge` borra `/etc/caddy`, `/var/lib/caddy`, `/var/log/caddy` y ejecuta
 `userdel -r caddy`.
+
+Verificación de §7.4 (mismos criterios que §7.2):
+
+```bash
+: "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
+curl -sS -o /dev/null -w 'https %{http_code} verify=%{ssl_verify_result}\n' https://myfinanzas.pp.ua/ | sudo tee "$CASE_DIR/rollback.https" >/dev/null
+curl -sS -o /dev/null -w 'http  %{http_code} -> %{redirect_url}\n' http://myfinanzas.pp.ua/ | sudo tee "$CASE_DIR/rollback.http" >/dev/null
+curl -fsS https://myfinanzas.pp.ua/ | sha256sum | sudo tee "$CASE_DIR/rollback.body" >/dev/null
+echo | openssl s_client -connect myfinanzas.pp.ua:443 -servername myfinanzas.pp.ua 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates -ext subjectAltName -fingerprint -sha256 \
+  | sudo tee "$CASE_DIR/rollback.cert" >/dev/null
+sudo diff -u "$CASE_DIR/body.before" "$CASE_DIR/rollback.body"
+sudo diff -u "$CASE_DIR/cert.before" "$CASE_DIR/rollback.cert"
+```
+
+Cerrar la ventana en §6.9.
 
 ## 8. Criterios de aceptación
 
@@ -653,7 +694,7 @@ Los AC de ejecución remota no pueden declararse PASS sin salida real de la vent
 | Rollback imposible | Alto | `.deb` antiguo verificado con `sha256sum -c` antes de empezar; si falta, no se instala |
 | `dpkg` rechaza el descenso de versión | Alto | `--force-downgrade` explícito; ensayo previo en VM (AC-18) |
 | Conflicto de `conffile` | Bajo | Ambos paquetes traen el mismo `Caddyfile`; `--force-confold` y hash antes/después |
-| Timers de APT no restaurados | Medio | Restauración incondicional en §6.8, también sin repo |
+| Timers de APT no restaurados | Medio | Cierre de ventana en §6.9, también tras rollback |
 | `CAP_NET_ADMIN` añadido por la unidad oficial | Medio | *Drop-in* con `CAP_NET_BIND_SERVICE`; probar arranque y revertir si falla |
 | Reintroducción por `apt upgrade` | Medio | `hold` con repo activo; en rollback, desactivar repo o pin negativo |
 | `hold` sobre Debian bloquea futuros DSA | Medio | No dejar hold tras el rollback a Debian |
@@ -690,8 +731,8 @@ Los AC de ejecución remota no pueden declararse PASS sin salida real de la vent
 - Salida de `validate` y de las pruebas HTTP/HTTPS.
 - Confirmación de rollback disponible (hash del `.deb` antiguo).
 
-No se publican claves, contenido de `/var/lib/caddy`, IPs, `journalctl` sin redactar ni el
-`Caddyfile` completo.
+No se publican claves, contenido de `/var/lib/caddy`, IPs, `journalctl`, `baseline.txt`,
+`sshd.*`, `ss.*` ni el `Caddyfile` completo sin redactar.
 
 ## 12. Fuera de alcance
 

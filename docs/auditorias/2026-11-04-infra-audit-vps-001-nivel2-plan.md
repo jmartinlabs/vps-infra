@@ -196,7 +196,7 @@ systemctl show -p ActiveState -p SubState -p NRestarts -p FragmentPath -p DropIn
 ss -ltn | grep -E ':22\b' || true
 ls -l /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>&1
 find /etc/ssh/sshd_config.d -maxdepth 1 -type f -printf '%M %u:%g %p\n' 2>&1
-sed -n '1,200p' /etc/ssh/sshd_config 2>&1 | grep -vE '^[[:space:]]*(#|$)' | sed -E 's/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser)[[:space:]].*/\1 <redacted>/I; s/^(allowusers|allowgroups|denyusers|denygroups|permitopen|permitlisten)[[:space:]].*/\1 <redacted>/I' | redact_net
+sed -n '1,200p' /etc/ssh/sshd_config 2>&1 | grep -vE '^[[:space:]]*(#|$)' | sed -E 's/^[[:space:]]*(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser)[[:space:]].*/\1 <redacted>/I; s/^[[:space:]]*(allowusers|allowgroups|denyusers|denygroups|permitopen|permitlisten)[[:space:]].*/\1 <redacted>/I' | redact_net
 systemctl show -p ActiveState -p SubState -p NRestarts -p FragmentPath fail2ban.service
 systemctl is-enabled fail2ban.service 2>&1
 ls -ld /etc/fail2ban /var/lib/fail2ban 2>&1

@@ -250,6 +250,5 @@ Ninguna fase se deduce de otra. Un merge documental no habilita la siguiente.
 - [Roadmap](roadmap.md)
 - [Estado actual](estado-actual.md)
 - [Host TEST (PR #9, abierto)](https://github.com/jmartinlabs/vps-infra/pull/9)
-- `myfinanzas-app`: especificación `DEPLOY-TAGS-01` (PR de documentación en revisión)
-- `agent-project-template`: patrón reutilizable de despliegue por tags (PR de documentación
-  en revisión)
+- `myfinanzas-app`: [especificación `DEPLOY-TAGS-01`](https://github.com/jmartinlabs/myfinanzas-app/pull/233)
+- `agent-project-template`: [patrón reutilizable de despliegue por tags](https://github.com/jmartinlabs/agent-project-template/pull/48)

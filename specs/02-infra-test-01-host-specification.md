@@ -12,9 +12,11 @@ Auditoría y Caddy: [auditoría 2026-11-05](../docs/auditorias/2026-11-05-infra-
 y [cierre VPS-CADDY-UPGRADE-01](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
 Contrato de aplicación: [SPEC34 — INFRA-TEST-01](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md),
 PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), **MERGED** en `main`
-`58346e12eb24b9d8ddef6a0be660f0d66654f5ec`, aprobada por el usuario el 2026-11-04. Sin
-cambios en `main` de la app `af34f1a` (2026-11-05) en SPEC34, test plan ni RUNBOOK, aunque
-E4.9/esquema 25 ya están en `main`; ver §2.
+`58346e1`, y actualización aprobada el 2026-11-05 en
+[PR #229](https://github.com/jmartinlabs/myfinanzas-app/pull/229) (esquema 25/C25; pendiente
+de merge). Flujo objetivo: `feature/* → test → main`; TEST consume una release de
+`myfinanzas-app/test`; PROD consumirá `main`. El flujo **no está implementado** todavía y
+`main` no se considera lista para producción. `vps-infra` mantiene una sola `main`.
 Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-infra/pull/7)
 (CLOSED, no mergeado); no es contrato vigente ni autorización.
 Test plan: [02 — test plan](02-infra-test-01-host-testplan.md).
@@ -77,8 +79,9 @@ posteriores a la actualización son evidencia del usuario; el agente no accedió
 | Hecho | Evidencia | Estado |
 | --- | --- | --- |
 | `vps-infra` `main` en `b45ffeb` | `git rev-parse` local | `[CONFIRMADO]` Base documental. |
-| SPEC34 aprobada y mergeada en `58346e1`; sin cambios en la app `main` `af34f1a` | PR #207 y `git diff` de SPEC34/test plan/RUNBOOK | `[CONFIRMADO]` Documento vigente, pero **desactualizado** en E4.9/esquema. |
-| App `main` `af34f1a` con E4.9 mergeado (`0176ffc`, PR #200) y `schemaVersion = 25`; SPEC34 sigue diciendo 24 | [main app](https://github.com/jmartinlabs/myfinanzas-app/commit/af34f1a7fd8b4e46e744b767d4ce7b199d419494), [schema](https://github.com/jmartinlabs/myfinanzas-app/blob/af34f1a7fd8b4e46e744b767d4ce7b199d419494/apps/api/src/database-identity.ts), [E4.9](https://github.com/jmartinlabs/myfinanzas-app/commit/0176ffc) | `[CONFIRMADO]` **Deriva de contrato**; requiere actualización/aprobación en `myfinanzas-app` antes de fase 5. |
+| SPEC34 actualizada: esquema 25/C25, FT-1 v1 y D7 aprobados el 2026-11-05 | [PR #229](https://github.com/jmartinlabs/myfinanzas-app/pull/229) (aprobada; pendiente de merge) | `[CONFIRMADO]` Contrato de app vigente para TEST; no autoriza despliegue. |
+| Flujo `feature/* → test → main` | Decisión del usuario 2026-11-05 | `[PROPUESTA]` No implementado; `test` aún no existe y `main` no es producción. |
+| TEST consume SHA inmutable de `myfinanzas-app/test`; PROD futuro, de `main` | Decisión del usuario 2026-11-05 | `[PROPUESTA]` El host no gestiona ramas ni promoción. |
 | PR #7 de `vps-infra` cerrado sin merge | API de GitHub | `[CONFIRMADO]` Solo antecedente histórico. |
 | Debian 13.7, kernel 6.12.113, x86_64 KVM/OpenStack; 2 vCPU, 3,8 GiB RAM, disco 40 GB, 35 GB libres, inodos 3 % | [auditoría](../docs/auditorias/2026-11-05-infra-audit-vps-001-nivel2-result.md) | `[CONFIRMADO]` Sin prueba de carga. |
 | `mfadmin` UID/GID 1001, `sudo`/`users`, `Linger=yes`; `sudo -n` pide contraseña | Auditoría | `[CONFIRMADO]` NOPASSWD no verificado. |
@@ -143,7 +146,10 @@ TEST ni creó usuarios o rutas.
 | `caddy_version` | 2.11.9 desde el repositorio estable oficial Cloudsmith; `apt-mark hold` | `[CONFIRMADO]` [Cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md). |
 | `caddy_caps` | Solo `CAP_NET_BIND_SERVICE`; *drop-in* `99-local-capabilities.conf` | `[CONFIRMADO]` Verificado en el proceso según evidencia del usuario. |
 | `image` | `sha256:<ID inmutable del manifiesto>`; `Pull=never` | `[CONFIRMADO]` SPEC34. |
+| `release_ref` | `myfinanzas-app/test` (TEST); `main` (PROD futuro) | `[PROPUESTA]` Flujo no implementado; el host no gestiona ramas. |
+| `release_sha` | SHA de 40 caracteres seleccionado y registrado | `[CONFIRMADO]` Inmutable; verificado por manifiesto. |
 | `seed_image` | ID inmutable propio, solo tareas efímeras | `[PROPUESTA]` SPEC34 §4.2. |
+| `schema_contract` | Declarado por el manifiesto de la release; hoy `C25-E49-CIERRE-FINANCIERO` | `[CONFIRMADO]` El host no fija el esquema; lo verifica por release. |
 | `resources` | 1 GiB RAM, 1 CPU, 128 pids, tmpfs 64 MiB | `[CONFIRMADO]` SPEC34 y RUNBOOK. |
 | `host_capacity` | 2 vCPU, 3,8 GiB RAM, 35 GB libres, inodos 3 % | `[CONFIRMADO]` Auditoría; sin prueba de carga. |
 | `disk_budget` | ≤ 5 GB para TEST; ≥ 20 % libre y ≥ 10 % de inodos | `[PROPUESTA]` 35 GB libres y 3 % de inodos medidos; confirmar en fase 2. |
@@ -230,7 +236,10 @@ Aquí solo se resume lo que el host consume:
 | `state` | `state/database.sqlite` + `state/auth.key` | SPEC34. |
 | `env` | `NODE_ENV=production`, `APP_ORIGIN`, `DATABASE_PATH`, `AUTH_KEY_PATH`, `API_BIND_HOST` | SPEC34. |
 | `image` | ID inmutable del manifiesto; `Pull=never` | SPEC34. |
+| `release_ref` | `myfinanzas-app/test` para TEST; `main` para PROD futuro | Decisión 2026-11-05; flujo no implementado. |
+| `release_sha` | SHA de 40 caracteres del candidato seleccionado | Registrado por el host; no se infiere de una etiqueta. |
 | `seed_image` | ID inmutable propio; solo tareas efímeras | SPEC34 §4.2. |
+| `schema_contract` | Declarado por el manifiesto; hoy `C25-E49-CIERRE-FINANCIERO` | Se verifica por release; no se fija permanentemente. |
 | `resources` | 1 GiB, 1 CPU, 128 pids, tmpfs 64 MiB | SPEC34. |
 | `backup` | CLI de la misma imagen/UID, `age`, montaje separado; restore a destino nuevo | SPEC34 §3.5. |
 | `rollback` | Solo al par exacto con prueba; si no, bloqueo y preservación | SPEC34. |
@@ -248,7 +257,8 @@ evidencia. Sin el artefacto y la release de la app, las fases 5–8 no son ejecu
 ### 5.1 Artefactos que consume el host
 
 - Paquete de release verificado: `image.oci.tar`, `frontend/`, `manifest.json` y
-  `manifest.sha256`, con ID inmutable y `--expected-commit`.
+  `manifest.sha256`, construido desde el SHA seleccionado de `myfinanzas-app/test` (TEST) con
+  ID inmutable y `--expected-commit`.
 - Artefacto de seed test-only: imagen/CLI, dataset `FT-1`, `seed-manifest.json` y checksums,
   construido desde el mismo SHA y con manifiesto propio.
 - Evidencia Rootless y de compatibilidad de esquema del SHA exacto.
@@ -303,7 +313,7 @@ retirada de `reset/` exige inventario y autorización.
 
 - `seed verify` → `0`, sin drift, con `seed_manifest_sha256` registrado.
 - SQL de solo lectura: `PRAGMA integrity_check=ok`, `foreign_key_check` vacío,
-  `schema_version` del contrato aprobado (pendiente: `main` declara 25 y SPEC34 dice 24),
+  `schema_version`/`schema_contract` declarados por el manifiesto de la release (hoy 25/C25),
   conteos e IDs de `FT-1`.
 - API autenticada y UI: IDs ficticios esperados; sin sesión, `401`.
 - Solo `FT-1`; sin Excel, bases reales, exportaciones ni credenciales.
@@ -399,7 +409,7 @@ Condiciones de revisión:
 
 1. Auditoría de host completada y autorización de provisión.
 2. Usuario `mftest`, `subuid`/`subgid`, `linger`, rutas y permisos verificados.
-3. Release y seed verificados por manifiesto; gate Rootless en `SUCCESS` sobre el SHA.
+3. Release y seed verificados por manifiesto, construidos desde el SHA seleccionado de `myfinanzas-app/test`; gate Rootless en `SUCCESS` sobre ese SHA.
 4. `production-init`, `seed init/apply/verify` y `setup` completados; `seed verify` → `0`.
 5. Copia cifrada local y externa de línea base verificadas.
 6. Caddy preparado y validado, sin publicar aún el sitio si la app no está lista.
@@ -571,8 +581,8 @@ Todos son **documentales** hasta que se ejecuten en la fase indicada del
 
 La auditoría de 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de
 backups, pero **no completó** la revalidación de Quadlet/cgroup ni el inventario profundo de
-backups. Por eso AC02 no se marca `PASS`. AC10 tampoco puede aprobarse mientras SPEC34 siga
-anclada a esquema 24 y la app `main` declare 25.
+backups. Por eso AC02 no se marca `PASS`. AC10 queda pendiente de la release/seed y del flujo
+`test`; el contrato 25/C25 está aprobado, no se fija permanentemente.
 
 | ID | Criterio verificable | Fase |
 | --- | --- | --- |
@@ -584,15 +594,16 @@ anclada a esquema 24 y la app `main` declare 25.
 | `INFRA-TEST-01-HOST-AC06` | Caddy valida un bloque independiente para TEST, sirve HTTPS válido, redirige HTTP→HTTPS, aplica CSP/HSTS corto/noindex/nosniff, proxyfica `/api/*` a `127.0.0.1:18082` sin fallback SPA y sirve el estático desde `current`; el sitio raíz sigue intacto. | 4, 6 |
 | `INFRA-TEST-01-HOST-AC07` | La unidad Quadlet está activa y habilitada al arranque por `linger`, usa imagen inmutable `Pull=never`, `keep-id` 10001, publica `127.0.0.1:18082:3001`, limita 1 GiB/1 CPU/128 pids, rootfs de solo lectura, tmpfs 64 MiB y no referencia la imagen de seed. | 5 |
 | `INFRA-TEST-01-HOST-AC08` | `/api/health` responde `200` `{"ok":true}` en loopback y HTTPS; una ruta protegida sin sesión responde `401`; no hay bypass de autenticación. | 5, 6 |
-| `INFRA-TEST-01-HOST-AC09` | `18082` solo escucha en loopback; `3001`, SQLite y Vite no son accesibles desde fuera; UFW no abre puertos nuevos; los intentos externos fallan y otros servicios no se alteran. | 2, 6 |
+| `INFRA-TEST-01-HOST-AC09` | `18082` solo escucha en loopback; `3001`, SQLite y Vite no son accesibles desde fuera; UFW no abre puertos nuevos; los intentos externos fallan y otros servicios, incluida la futura PROD, no se alteran. | 2, 6 |
 | `INFRA-TEST-01-HOST-AC10` | El host ejecuta el artefacto test-only en el orden `production-init → seed init/apply/verify → setup`; `test-instance.json` `0600`, manifiesto/checksums coinciden, las guardas rechazan origen/ruta/permisos/esquema/propietario/estado incorrectos y el reset archiva sin borrar. | 5 |
 | `INFRA-TEST-01-HOST-AC11` | Copia cifrada local y externa verificadas, con snapshot SQLite coherente y clave de autenticación; checksums origen/destino, retención actual+anterior y ausencia de secretos en Git/logs. | 6 |
 | `INFRA-TEST-01-HOST-AC12` | Restauración aislada a destino nuevo con MFA: health `200`, `401` y `FT-1` visibles; estado activo intacto; fallo preserva origen, copia y destino; RTO registrado. | 7 |
 | `INFRA-TEST-01-HOST-AC13` | Rollback de app sin prueba del par exacto se bloquea y preserva datos; rollback de Caddy desde backup validado deja el sitio raíz intacto; sin downgrade forzado ni sobrescritura del estado activo. | 7 |
-| `INFRA-TEST-01-HOST-AC14` | `myfinanzas.pp.ua` y su DNS/HTTP/HTTPS siguen respondiendo igual antes y después; solo se añadió el registro `test`; no se modificó el bloque raíz de Caddy, UFW ni otros servicios. | 6, 8 |
+| `INFRA-TEST-01-HOST-AC14` | `myfinanzas.pp.ua` y su DNS/HTTP/HTTPS siguen respondiendo igual antes y después; solo se añadió el registro `test`; no se modificó el bloque raíz de Caddy, UFW ni otros servicios, incluida la futura PROD. | 6, 8 |
 | `INFRA-TEST-01-HOST-AC15` | La retirada autorizada detiene la unidad, retira Caddy/DNS de TEST, deshabilita `linger` si procede y preserva datos/copias; el dominio raíz queda intacto y no hay borrado sin inventario. | 8 |
 | `INFRA-TEST-01-HOST-AC16` | TEST respeta el presupuesto de disco acordado y los márgenes de espacio/inodos; memoria, CPU y pids se miden dentro de los límites y sin afectar a otros servicios. | 6 |
 | `INFRA-TEST-01-HOST-AC17` | No hay Excel, bases reales, exportaciones, credenciales, TOTP, cookies, claves ni datos personales en host, repo, logs o copias; solo `FT-1` identificable y evidencia redactada. | 5, 6 |
+| `INFRA-TEST-01-HOST-AC18` | La release TEST se construye desde un SHA inmutable de `myfinanzas-app/test`, registrado con `release_ref`/`release_sha`; no se usa `main` ni una etiqueta móvil; PROD futuro usará `main`; el host no gestiona ramas ni promoción. | 5 |
 
 ### 8.1 Trazabilidad con SPEC34
 
@@ -613,6 +624,7 @@ anclada a esquema 24 y la app `main` declare 25.
 | AC15 | AC19 | Retirada. |
 | AC16 | AC18 | Capacidad y disco. |
 | AC17 | AC16 | Ausencia de datos reales y secretos. |
+| AC18 | — | Selección de release TEST desde `myfinanzas-app/test`; PROD desde `main`; el host no gestiona ramas. |
 
 ## 9. Fases y autorizaciones
 
@@ -628,7 +640,7 @@ protegida. El detalle de método, entorno y evidencia está en el
 | 2 | Provisión de usuario, rutas, permisos, `linger` y UFW | Usuario | Identidad, rutas, UFW y versiones registradas | UNRUN |
 | 3 | DNS `test` | Usuario | Registro A/AAAA y resolución pública; raíz intacta | UNRUN |
 | 4 | Caddy y HTTPS | Usuario | Backup, `caddy validate`, bloque validado, raíz intacta | UNRUN |
-| 5 | Despliegue y seed | Usuario | Release verificada, seed `0`, unidad activa, frontend | UNRUN |
+| 5 | Despliegue y seed | Usuario | Release de `test` verificada, seed `0`, unidad activa, frontend | UNRUN |
 | 6 | Smoke y copias | Usuario | HTTPS/health/401, `FT-1`, límites, copia local/externa | UNRUN |
 | 7 | Restauración y rollback | Usuario | Restore aislado, rollback bloqueado/ensayado | UNRUN |
 | 8 | Retirada | Usuario | Unidad/DNS/Caddy retirados, datos preservados, raíz intacta | UNRUN |
@@ -649,14 +661,16 @@ acredita HTTPS, smoke y copias.
 
 | Dependencia | Estado | Efecto |
 | --- | --- | --- |
-| SPEC34 / PR #207 | Aprobada y mergeada en `58346e1`; sin cambios en `af34f1a`, pero desactualizada en E4.9/esquema | Contrato de app; no autoriza DEV ni deploy. |
-| Contrato de app actualizado (schema 25/E4.9) | `[PENDIENTE]` en `myfinanzas-app` | Sin él, el seed y AC10 se anclan a un esquema obsoleto; bloquea fase 5. |
+| SPEC34 / PR #207 + actualización PR #229 | Aprobada; actualización 2026-11-05 (schema 25/C25, FT-1 v1, D7) pendiente de merge | Contrato de app; no autoriza DEV ni deploy. |
+| Contrato de app actualizado (schema 25/C25) | Aprobado en PR #229; pendiente de merge | Seed/AC10 deben usar el contrato aprobado; no se ancla a 24. |
 | Release, imagen y artefacto de seed | No construidos | Sin ellos, fases 5–8 no ejecutables. |
-| E4.9 / v25 | **Mergeado** (`0176ffc`, PR #200); `main` declara `schemaVersion=25`; SPEC34 sin actualizar | TEST no debe anclarse a 24 sin reconciliar el contrato de app. |
-| E4.5 / DT7 | No apta | Sin históricos ni transición de ejercicio. |
-| E4.7 / E4.10 / E4.11 | DRAFT | Fuera del dataset y del smoke. |
+| E4.9 / v25 | **Mergeado** (`0176ffc`, PR #200); `schemaVersion=25`; actualización SPEC34 aprobada | TEST usa 25/C25; el esquema se declara por release, no se fija para siempre. |
+| E4.5 / DT7 | QA APTO; DT7 abierto; DEV no autorizado | Sin históricos ni transición de ejercicio. |
+| E4.7 / E4.10 / E4.11 | E4.7 integrado; E4.10 SPEC28 ratificada sin DEV; E4.11 borrador | Fuera del dataset y del smoke por D5. |
+| Flujo `feature/* → test → main` | `[PROPUESTA]` no implementado; `test` pendiente | TEST usa SHA de `test`; PROD futuro, `main`; el host no gestiona ramas. |
 | DT6 / T-BKP | Abierto | Afecta a backup/restore; TEST exige mínimo local+externo. |
-| Gate Rootless | Obligatorio por RUNBOOK | Sin `SUCCESS` sobre el SHA exacto no se despliega. |
+| Gate Rootless | Obligatorio por RUNBOOK | Sin `SUCCESS` sobre el SHA de `test` no se despliega TEST. |
+| Promoción TEST → PROD | Responsabilidad de `myfinanzas-app` | El host no promociona ni cambia ramas; PROD tendrá su propio despliegue. |
 | Caddy real | 2.11.9 auditado, `active`, `hold`; `Caddyfile` mínimo | Bloque TEST sujeto a backup, `caddy validate` y rollback. |
 | DNS real | Apex A/TTL 14400 conocido; `test` NXDOMAIN | Sin registro `test` no hay TLS ni entorno operativo. |
 | Flake SQLite **B3** | Sin reproducción Linux | Puede aparecer en el ensayo; no se oculta. |
@@ -669,7 +683,7 @@ acredita HTTPS, smoke y copias.
 | Riesgo | Impacto | Mitigación |
 | --- | --- | --- |
 | Caddy mal editado | Interrupción del sitio raíz | Backup, `caddy validate`, recarga controlada y rollback; Caddy 2.11.9 ya validado. |
-| SPEC34 desactualizada: 24 vs 25 | Seed/schema no conformes | Actualizar/aprobar contrato en `myfinanzas-app` antes de fase 5. |
+| Contrato 25/C25 aprobado pero sin release/seed | Seed/schema no conformes | Construir release/seed desde `test` y verificar el contrato declarado. |
 | `hold` de Caddy sin revisión | Falta de parches | Revisión mensual registrada; `unhold` solo en ventana. |
 | Quadlet/cgroup no revalidado | Unidad no persiste | Preflight rootless y prueba de reboot antes de fase 5. |
 | DNS `test` con proxy/CDN heredado | TLS/routing incorrectos | No copiar el registro raíz sin decisión; verificar A/AAAA. |
@@ -684,6 +698,8 @@ acredita HTTPS, smoke y copias.
 | Flake B3 | Falso FAIL/PASS | Diagnóstico Linux; no ocultar ni reintentar a ciegas. |
 | Login TEST público | Fuerza bruta | MFA, límites de app y `noindex`; allowlist de borde solo con decisión. |
 | Deriva documental con la app | Unidad incoherente | Revisión campo a campo por release y actualización coordinada. |
+| Artefacto de `main` usado en TEST | Versión no validada en test | Registrar `release_ref`/`release_sha`; rechazar si no es `myfinanzas-app/test`. |
+| Configuración TEST aplicada a PROD | Interrupción o fuga entre entornos | Usuarios, unidades, datos, puertos, Caddy y DNS separados; revisión de diff. |
 | Retirada sin inventario | Pérdida de datos/copias | Preservar, inventariar y autorizar antes de borrar. |
 | Auditoría que expone secretos | Fuga de información | Evidencia redactada; no volcar claves, cookies ni bases. |
 
@@ -718,11 +734,12 @@ pendiente** junto con el destino externo. Esta revisión no aprueba H1–H6.
 
 `[CONFIRMADO]` El contrato de aplicación es
 [SPEC34](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md),
-PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head `8fe839c`, merge
-commit `58346e12eb24b9d8ddef6a0be660f0d66654f5ec`. La app `main` está en `af34f1a`; E4.9 está
-mergeado (`0176ffc`) y el esquema es 25, mientras SPEC34 sigue anclada a 24. Esta spec
-**no abre una segunda spec de aplicación** ni duplica su contenido; la reconciliación de
-SPEC34 corresponde a `myfinanzas-app`.
+PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), con la actualización
+aprobada el 2026-11-05 en [PR #229](https://github.com/jmartinlabs/myfinanzas-app/pull/229)
+(schema 25/C25, FT-1 v1, D7). El flujo `feature/* → test → main` es una decisión del usuario;
+TEST consumirá una release de `myfinanzas-app/test` y PROD de `main`. El flujo **no está
+implementado** y `main` no se considera producción. Esta spec **no abre una segunda spec de
+aplicación** ni gestiona sus ramas.
 
 - **Qué posee la app:** release, imagen, frontend, runtime, seed test-only, dataset `FT-1`,
   manifiesto/checksums, `production-init`, `setup`, backup/restore y evidencia Rootless.
@@ -740,6 +757,26 @@ SPEC34 corresponde a `myfinanzas-app`.
   PR #207 consta `MERGED` en `58346e1`; no
   se infiere permiso operativo.
 
+### 11.1 Flujo de versiones, validación y promoción
+
+| Etapa | Responsable | Entrada | Salida | Host |
+| --- | --- | --- | --- | --- |
+| Selección | `myfinanzas-app` | HEAD de `myfinanzas-app/test` con SHA de 40 caracteres | `release_ref=test`, `release_sha`, manifiesto | Registra el SHA; no gestiona la rama |
+| Construcción | `myfinanzas-app` | SHA seleccionado | Release + seed + manifiestos e IDs inmutables | No reconstruye ni parchea |
+| Validación | `myfinanzas-app` + `vps-infra` | Artefactos y gate Rootless | CI/Rootless `SUCCESS` y validaciones de host | Fase 5; no declara TEST operativo antes |
+| Promoción | `myfinanzas-app` | TEST validado | Merge a `main`; release PROD desde `main` | No promociona ni cambia ramas |
+| Despliegue TEST | `vps-infra` | Release de `test` verificada | Unidad/servicio TEST | Fase 5, autorización separada |
+| Despliegue PROD | Futuro `vps-infra` | Release de `main` aprobada | Servicio PROD aislado | Fuera de esta spec |
+
+Reglas:
+
+- Integrar una PR **no despliega** ni en TEST ni en PROD; cada despliegue exige autorización.
+- `vps-infra` mantiene una sola rama `main`; no crea ni gestiona ramas de `myfinanzas-app`.
+- TEST y la futura PROD usan usuarios, unidades, raíces de datos, directorios, puertos de
+  loopback, bloques de Caddy y registros DNS separados. No comparten sockets ni estado.
+- El contrato de esquema/seed viaja en el manifiesto de cada release; el host no fija el
+  esquema 25 de forma permanente ni reutiliza una release de otra rama.
+
 ## 12. Trazabilidad y límites de las afirmaciones
 
 - `[CONFIRMADO]` Los hechos de §2 proceden de la auditoría de solo lectura 2026-11-05 y del
@@ -749,8 +786,11 @@ SPEC34 corresponde a `myfinanzas-app`.
   auditados; Quadlet/cgroup y el inventario de backups siguen pendientes.
 - `[PROPUESTA]` Rutas, usuario `mftest`, puerto `18082`, DNS, Caddy, unidad, copias y
   presupuesto de disco son diseño, no implementación ni estado real.
-- `[PENDIENTE]` La aprobación de esta spec, la actualización del contrato de app (24→25), la
-  provisión y las fases 2–8.
+- `[PENDIENTE]` La aprobación de esta enmienda, el merge de SPEC34 PR #229, la implantación
+  del flujo `test`/`main`, la provisión y las fases 2–8.
+- `[PROPUESTA]` El flujo `feature/* → test → main` es una decisión del usuario, aún no
+  implementada; `main` no se considera producción. `vps-infra` conserva una sola `main` y no
+  despliega por integrar una PR.
 - Ningún `UNRUN` es `PASS` ni `FAIL`. No se hereda evidencia de otras entregas.
 - Las rutas de host citadas son propuestas; no son directorios verificados ni un contrato
   vigente hasta que la fase 1 y la aprobación lo confirmen.

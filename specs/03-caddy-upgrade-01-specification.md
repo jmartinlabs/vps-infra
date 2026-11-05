@@ -503,7 +503,7 @@ apt-mark showhold | grep '^caddy$' || true
 if [ -e /etc/apt/sources.list.d/caddy-stable.list ]; then
   sudo mv /etc/apt/sources.list.d/caddy-stable.list "$CASE_DIR/caddy-stable.list.disabled"
 fi
-if [ -e "$CASE_DIR/keyring.before" ]; then
+if sudo test -e "$CASE_DIR/keyring.before"; then
   sudo cp -a "$CASE_DIR/keyring.before" /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 elif sudo test -e "$CASE_DIR/repo-added"; then
   sudo rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -624,6 +624,11 @@ dpkg -l caddy
 sudo apt-mark unhold caddy 2>/dev/null || true
 if [ -e /etc/apt/sources.list.d/caddy-stable.list ]; then
   sudo mv /etc/apt/sources.list.d/caddy-stable.list "$CASE_DIR/caddy-stable.list.disabled"
+fi
+if sudo test -e "$CASE_DIR/keyring.before"; then
+  sudo cp -a "$CASE_DIR/keyring.before" /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+elif sudo test -e "$CASE_DIR/repo-added"; then
+  sudo rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 fi
 sudo apt-get update
 sudo systemctl stop caddy 2>/dev/null || true

@@ -154,6 +154,8 @@ Otros puntos:
    y riesgo residual pendiente de autorización (§8.1 y §10).
 8. Herramientas presentes: `curl`, `openssl`, `gpg`, `fuser`, `sha256sum`, `dpkg-deb`. Si falta
    alguna, detenerse y decidir antes de la ventana.
+9. Comprobación previa de solo lectura ejecutada o revisada: [03.1 — preflight](03-caddy-upgrade-01-preflight.md).
+   No copia `/var/lib/caddy`; la copia definitiva se hace en la ventana, con Caddy detenido.
 
 ## 6. Procedimiento operativo
 

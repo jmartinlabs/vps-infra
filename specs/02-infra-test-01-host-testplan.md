@@ -11,8 +11,9 @@ Contrato de aplicación: [SPEC34](https://github.com/jmartinlabs/myfinanzas-app/
 PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), merge commit `58346e1`;
 actualización aprobada el 2026-11-05 en
 [PR #229](https://github.com/jmartinlabs/myfinanzas-app/pull/229) (schema 25/C25, FT-1 v1,
-D7), pendiente de merge. Flujo objetivo `feature/* → test → main`: TEST consume una release
-de `myfinanzas-app/test`; PROD consumirá `main`; no implementado todavía.
+D7), pendiente de merge. Flujo actual `feature/* → main`: TEST consume una release de un SHA
+inmutable de `myfinanzas-app/main`; PROD futuro, de `main`; no hay rama `test`; el despliegue
+es manual y no automatizado.
 Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-infra/pull/7)
 (CLOSED, no mergeado); no es contrato vigente.
 
@@ -68,14 +69,14 @@ verificados y redactados.
 | `INFRA-TEST-01-HOST-AC15` | Autorización de retirada; inventario previo | Unidad detenida/deshabilitada; Caddy/DNS de TEST retirados; `linger` deshabilitado si procede; datos/copias preservados; raíz intacta; sin borrado sin inventario | `systemctl --user stop/disable`; backup y edición de Caddy; eliminación del registro DNS; `loginctl disable-linger`; `find`/`ls` de inventario; `curl` raíz | E2, E3 | vps-infra / usuario | 8 | Inventario, estado de unidad, Caddy/DNS retirados y raíz intacta | UNRUN |
 | `INFRA-TEST-01-HOST-AC16` | TEST en marcha; umbrales de disco acordados | Dentro de ≤ 5 GB propuestos y márgenes ≥ 20 % libre / ≥ 10 % inodos; 1 GiB/1 CPU/128 pids medidos; sin impacto en otros servicios | `systemctl --user show -p MemoryCurrent,CPUUsageNSec,TasksCurrent`; `podman stats --no-stream`; `df -h`; `df -i`; comparación antes/después | E2 | vps-infra / QA | 6 | Métricas, umbrales y comparación con otros servicios | UNRUN |
 | `INFRA-TEST-01-HOST-AC17` | Revisar host, repo, logs y copias | Solo `FT-1`; sin Excel, bases reales, exportaciones, credenciales, TOTP, cookies, claves ni datos personales; evidencia redactada | `seed verify`; inventario de rutas; `find` de `.xlsx`, `.sqlite`, `.env`, claves y exportaciones; revisión de logs; grep de secretos | E0, E2, E4 | usuario / QA | 5, 6 | Inventario redactado, `seed verify` y ausencia de datos ajenos | UNRUN |
-| `INFRA-TEST-01-HOST-AC18` | Selección de release TEST desde `myfinanzas-app/test` | SHA de 40 caracteres, `release_ref=myfinanzas-app/test`, `release_sha` registrado; SHA ancestro de `origin/test`; sin `main` ni etiqueta móvil; PROD futuro desde `myfinanzas-app/main`; el host no gestiona ramas ni promoción | `git merge-base --is-ancestor <SHA> origin/test`; `git rev-parse`; manifiesto; `release_ref`/`release_sha`; gate Rootless | E0, E1 | myfinanzas-app / vps-infra / QA | 5 | SHA, rama, manifiesto y gate; sin deploy | UNRUN |
+| `INFRA-TEST-01-HOST-AC18` | Selección de release TEST desde `myfinanzas-app/main` | SHA de 40 caracteres, `release_ref=myfinanzas-app/main`, `release_sha` registrado; SHA ancestro de `origin/main`; sin etiqueta móvil; PROD futuro desde `main`; el host no gestiona ramas | `git merge-base --is-ancestor <SHA> origin/main`; `git rev-parse`; manifiesto; `release_ref`/`release_sha`; gate Rootless | E0, E1 | myfinanzas-app / vps-infra / QA | 5 | SHA, rama, manifiesto y gate; sin deploy | UNRUN |
 
 `AC-17`/`AC-18` del cierre de Caddy son independientes de los AC host `AC17`/`AC18`; todos
 siguen `UNRUN` y no se cubren con el contador de AC host.
 
 La auditoría 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de backups,
 pero **no** completó Quadlet/cgroup ni el inventario profundo de backups: AC02 sigue `UNRUN`.
-AC10 queda pendiente de la release/seed desde `test`; el contrato 25/C25 está aprobado (PR #229).
+AC10 queda pendiente de la release/seed desde `main`; el contrato 25/C25 está aprobado (PR #229).
 
 ## 4. Fases y gates de autorización
 
@@ -89,7 +90,7 @@ habilita las siguientes. Todos los estados empiezan en `UNRUN`.
 | 2 | Provisión del host | Auditoría completada y aprobada | Usuario, rutas, permisos, `linger`, UFW y versiones | UNRUN |
 | 3 | DNS `test` | Auditoría de DNS/proveedor | Registro A/AAAA, resolución y raíz intacta | UNRUN |
 | 4 | Caddy y HTTPS | Backup y ubicación real de Caddy | `caddy validate`, bloque validado y raíz intacta | UNRUN |
-| 5 | Despliegue y seed | Release/seed desde SHA de `myfinanzas-app/test`; gate Rootless; rutas listas | Seed `0`, unidad activa, frontend y ruta preparada | UNRUN |
+| 5 | Despliegue y seed | Release/seed desde SHA de `myfinanzas-app/main`; gate Rootless; rutas listas | Seed `0`, unidad activa, frontend y ruta preparada | UNRUN |
 | 6 | Smoke y copias | TEST operativo | HTTPS/health/401, `FT-1`, límites y copia local/externa | UNRUN |
 | 7 | Restauración y rollback | Copia externa verificada | Restore aislado, rollback bloqueado/ensayado y RTO | UNRUN |
 | 8 | Retirada | Autorización específica e inventario | Unidad/Caddy/DNS retirados, datos preservados, raíz intacta | UNRUN |
@@ -99,9 +100,9 @@ ejecuta al final de la fase 5, cuando la unidad está activa y el seed verificad
 es la que acredita HTTPS, smoke y copias; una ventana 502 entre 4 y 5 no se declara
 operativa.
 
-La selección del SHA, la construcción de release/seed y la promoción TEST→PROD son
-responsabilidad de `myfinanzas-app`. El host solo consume un SHA inmutable de
-`myfinanzas-app/test` en la fase 5; integrar una PR no despliega nada.
+La selección del SHA y la construcción de release/seed son responsabilidad de
+`myfinanzas-app`. El host solo consume un SHA inmutable de `myfinanzas-app/main` en la fase 5;
+integrar una PR no despliega nada; no hay rama `test`.
 
 ## 5. Casos negativos obligatorios
 
@@ -122,7 +123,7 @@ Todos `UNRUN`; ninguno se convierte en `PASS` por ausencia de error.
 | Reset con la unidad respondiendo | Rechazo; no se archiva nada. |
 | Artefacto de seed referenciado por la unidad permanente | Bloqueo de activación. |
 | Imagen por etiqueta móvil | Rechazo; solo ID inmutable. |
-| Release de `main` o de otra rama usada en TEST | Bloqueo; solo SHA de `myfinanzas-app/test`. |
+| Release de una rama distinta de `main` o etiqueta móvil | Bloqueo; solo SHA de `myfinanzas-app/main`. |
 | Cambio de configuración TEST aplicado a PROD u otra aplicación | Bloqueo y reversión; entornos aislados. |
 | Manifiesto alterado o commit distinto | No se carga la imagen. |
 | SHA sin Rootless `SUCCESS` | Bloqueo de despliegue. |
@@ -266,8 +267,7 @@ claves, bases, importes reales, IPs privadas ni logs crudos.
 | --- | --- | --- | --- |
 | B01 | Spec y test plan sin aprobar | Ninguna fase ejecutable | Aprobación del usuario |
 | B02 | Sin autorización para una nueva sesión en el host; fase 1 incompleta (Quadlet/cgroup y backups) | Fase 2 bloqueada | Completar la parte pendiente de la fase 1 con autorización |
-| B03 | Release y artefacto de seed no construidos desde `test` | Fases 5–8 bloqueadas | Entrega verificada de `myfinanzas-app/test` |
-| B14 | Flujo `test`/`main` no implementado; `test` pendiente; `main` no es producción | No hay rama de integración ni promoción | Implantar el flujo en `myfinanzas-app` |
+| B03 | Release y artefacto de seed no construidos desde `main` | Fases 5–8 bloqueadas | Entrega verificada de `myfinanzas-app/main` |
 | B15 | SPEC34 actualizada (PR #229) aprobada pero pendiente de merge | Contrato v25 no consolidado en `main` | Merge autorizado de PR #229 |
 | B05 | DT6/T-BKP abierto | Backup/restore limitados | Copia externa mínima y decisión |
 | B06 | Flake SQLite B3 sin reproducción Linux | Riesgo de falso FAIL/PASS | Diagnóstico Linux; no ocultar |
@@ -305,8 +305,8 @@ No se usa `reset-failed`, `chmod`/`chown`, `:U`, borrado de estado ni reintento 
   en PASS revisado. No acreditan el VPS, Caddy, DNS ni Podman y no sustituyen la QA independiente.
 - Comprobaciones de host: auditoría de solo lectura 2026-11-05 y Caddy 2.11.9 documentados;
   seed, backup/restore y TEST desplegado siguen **UNRUN**.
-- AC: **18 / 18 `UNRUN`**; la auditoría no completa AC02 y AC18 depende del flujo `test`.
+- AC: **18 / 18 `UNRUN`**; la auditoría no completa AC02 y AC18 depende del SHA de `main`.
   Los checks locales no convierten AC01 en `PASS` sin revisión independiente y aprobación.
 - Fases: **0 / 9 autorizadas**; la auditoría de 2026-11-05 cubrió parte de la fase 1, sin declararla completa.
 - Próxima acción independiente: revisión/aprobación de esta enmienda y de H1–H6; merge de
-  SPEC34 PR #229; implantación del flujo `test`/`main` antes de la fase 5.
+  SPEC34 PR #229; selección del SHA de `main` antes de la fase 5.

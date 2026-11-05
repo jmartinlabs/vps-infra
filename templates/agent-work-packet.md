@@ -9,9 +9,10 @@
 - **Start/stop owner and permitted communication route:** UNSET; manual user relay or an explicitly used repository-local Git relay; no verified client control
 - **Instruction entry points / capability check:** UNVERIFIED; confirm canonical rules are readable
 - **Context:** fresh bounded context by default | inherited with concrete reason | unsupported/disclosed
+- **Execution mode:** direct coordinator | foreground subagent | background subagent | manual external; verified client support, reason and coordinator availability
 - **Objective and done criteria:** UNSET
 - **Source documents / links:** UNSET
-- **Spec approval:** approved with source and date | draft (read-only/preparation only) | not applicable
+- **Spec approval:** approved with source and date | draft (documentary editing within the authorized packet; no approval, no code) | not applicable
 - **Hard dependencies:** UNSET; note whether each is satisfied
 - **Read files:** UNSET
 - **Write files and sole ownership:** UNSET

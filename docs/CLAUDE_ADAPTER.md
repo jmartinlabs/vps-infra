@@ -17,7 +17,13 @@ they do not replace canonical rules.
   relay wrapper adds no hook and never reads or publishes automatically.
 - `.claude/agents/` exposes optional task-limited profiles for
   functional, implementation, QA/review and infrastructure work. A profile
-  file is not a running worker or a license to delegate without checks.
+  file is not a running worker or a license to delegate without checks. The
+  profiles are intentionally thin: client tools/model, canonical-role link and
+  minimum loading instructions; detailed responsibilities stay in
+  `.agents/roles/`. The `functional` profile may create and edit only the
+  brainstorming, DRAFT specification and acceptance-criteria files assigned by
+  its packet; it never approves its own spec, implements code or edits the
+  shared board.
 - Manual client communication (identity, states, full return block and status) is the same
   [coordinator communication](../specs/methodology/coordinator-communication.md) contract for Claude Code.
   Only the client name changes: `HANDOFF → CLAUDE CODE`. Nothing is sent to OpenCode automatically.

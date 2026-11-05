@@ -14,6 +14,12 @@ Actualización selectiva 2026-11-05: se incorpora **ORCH-PROACTIVE-01** desde
 revisión. Cambian la planificación proactiva del coordinador, sus escenarios y guardas;
 no cambian la política local del VPS, los gates ni el workflow de CI.
 
+Actualización selectiva 2026-11-05: se incorpora **AGENT-SIMPLIFICATION-01** desde
+`362e0e6` (PR #47) en lo aplicable: preferencia de delegación, alcance DRAFT del rol
+funcional, adaptadores finos y campo de modo de ejecución en el paquete. Se conservan la
+revisión fijada, los gates del VPS y los límites del adaptador de review; no se adopta el
+resto de esa revisión. Detalle en [metodología](metodologia-agentes.md).
+
 ## Qué sí se valida automáticamente
 
 `.github/workflows/check-harness.yml` (job `validate`) ejecuta:

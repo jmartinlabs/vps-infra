@@ -42,5 +42,6 @@ Según el punto de continuidad del usuario (22-10-2026): VPS Aruba Cloud, Debian
 3. Para tareas con Codex, consultar [metodología adaptada](docs/metodologia-agentes.md) y clasificar Quick / Standard / Full. Trabajar en una rama por cambio, conservar trabajo ajeno, probar y revisar el historial y el diff antes de publicar.
 4. Presentar PR; **no hacer merge ni tocar el servidor** sin aprobación aplicable.
 5. Si el trabajo afecta a otra aplicación, coordinar interfaces y dependencias sin apropiarse de su desarrollo.
+6. Delegar el trabajo sustancial y autónomo (specs, dev ya aprobado, investigaciones y QA) a especialistas cuando el cliente lo permita; preferir segundo plano si avanza trabajo independiente autorizado y reservar la ejecución directa para correcciones pequeñas, coordinación y decisiones. Un ejecutor por tarea; concurrencia solo con independencia real, ownership disjunto y aislamiento autorizado. Véase [agentes dinámicos](specs/methodology/dynamic-agents.md).
 
 **No guardar** aquí contraseñas, claves privadas, tokens, secretos de configuración, copias de datos ni registros con información sensible.

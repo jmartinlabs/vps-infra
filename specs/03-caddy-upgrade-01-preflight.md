@@ -38,9 +38,9 @@ de arrancar el servicio (§6.5 del procedimiento principal).
 | P-02 | APT/dpkg libre con detección fail-closed | Cualquier proceso, lock, error del detector, `dpkg --audit` con incidencias o `caddy` en `hold` |
 | P-03 | Paquetes antiguo y nuevo: disponibilidad, tamaño, SHA-256, metadatos | Cualquier discrepancia o descarga fallida |
 | P-04 | `Caddyfile`: hash, directivas, permisos, rutas y validación preliminar con 2.6.2 | No legible por `caddy`, validación fallida o ruta `root` inaccesible |
-| P-05 | `/var/lib/caddy`: existencia, tamaño, propietario, permisos y espacio (sin copiar) | Falta el directorio, propietario/permisos incorrectos o espacio insuficiente |
+| P-05 | `/var/lib/caddy`: existencia, tamaño, propietario, permisos, ruta real de almacenamiento y espacio (sin copiar) | Falta el directorio, propietario/permisos incorrectos, no se localiza el almacenamiento o espacio insuficiente |
 | P-06 | Espacio, inodos y permisos del sistema | Menos de 200 MB libres sobre el tamaño estimado, o inodos escasos |
-| P-07 | HTTP/HTTPS, certificado, cuerpo y puertos | Código inesperado, TLS no válido o puerto público no previsto |
+| P-07 | HTTP/HTTPS, certificado, cuerpo y puertos | HTTPS distinto de 200, `verify` distinto de 0, HTTP sin redirección a HTTPS, certificado con menos de 24 h o listeners 80/443 ausentes |
 | P-08 | Resumen de materiales de recuperación | Cualquier comprobación anterior fallida |
 
 ## 3. Comandos definitivos
@@ -117,7 +117,7 @@ rm -f "$ERR"
 [ "$BUSY" -eq 0 ] || { echo "APT/dpkg ocupado: abortar sin interrumpir"; exit 1; }
 AUDIT=$(sudo dpkg --audit)
 [ -z "$AUDIT" ] || { echo "dpkg --audit detectó problemas:"; echo "$AUDIT"; exit 1; }
-if apt-mark showhold | grep -qx caddy; then echo "caddy está en hold: abortar"; exit 1; fi
+if apt-mark showhold | grep -x caddy >/dev/null; then echo "caddy está en hold: abortar"; exit 1; fi
 apt-mark showhold
 apt-cache policy caddy
 apt-cache madison caddy
@@ -157,9 +157,18 @@ sudo -u caddy test -r /var/lib/caddy || { echo "/var/lib/caddy NO legible por ca
 sudo find /var/lib/caddy -type f | wc -l
 sudo find /var/lib/caddy -maxdepth 4 -printf '%y %m %u:%g\n' | sort | uniq -c
 if sudo test -d /var/lib/caddy/.local/share/caddy; then
-  echo "Estado XDG de Caddy presente"
+  echo "Ruta de almacenamiento por defecto presente"
+  sudo stat -c '%A %U:%G %n' /var/lib/caddy/.local/share/caddy
 else
-  echo "AVISO: no se encontró /var/lib/caddy/.local/share/caddy; confirmar la ruta real antes de la ventana"
+  echo "AVISO: no existe /var/lib/caddy/.local/share/caddy; localizando almacenamiento real"
+  STORAGE_ROOT=$(sudo find /var/lib/caddy -type d -name certificates -printf '%h\n' -quit)
+  if [ -n "$STORAGE_ROOT" ]; then
+    echo "Almacenamiento detectado: $STORAGE_ROOT"
+    sudo stat -c '%A %U:%G %n' "$STORAGE_ROOT"
+  else
+    echo "No se localizó el almacenamiento de Caddy; confirmar la ruta real antes de continuar"
+    exit 1
+  fi
 fi
 CERTS=$(sudo find /var/lib/caddy -path '*certificates*' -type f | wc -l)
 echo "Ficheros bajo certificates/: $CERTS"
@@ -174,19 +183,42 @@ echo "== P-06 espacio y permisos =="
 df -h / /root /var/tmp
 df -i /
 id caddy
-sudo stat -c '%A %U:%G %n' /lib/systemd/system/caddy.service /etc/caddy /var/lib/caddy /var/lib/caddy/.local/share/caddy
+sudo stat -c '%A %U:%G %n' /lib/systemd/system/caddy.service /etc/caddy /var/lib/caddy
 
 echo "== P-07 servicio y sitio (solo lectura) =="
-curl -sS -o /dev/null -w 'https %{http_code} verify=%{ssl_verify_result}\n' https://myfinanzas.pp.ua/ \
-  | sudo tee "$PF/07-https.txt" >/dev/null
-curl -sS -o /dev/null -w 'http %{http_code} -> %{redirect_url}\n' http://myfinanzas.pp.ua/ \
-  | sudo tee "$PF/07-http.txt" >/dev/null
+HTTPS=$(curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}' https://myfinanzas.pp.ua/)
+HTTPS_CODE=${HTTPS% *}
+HTTPS_VERIFY=${HTTPS#* }
+printf 'https %s verify=%s\n' "$HTTPS_CODE" "$HTTPS_VERIFY" | sudo tee "$PF/07-https.txt" >/dev/null
+[ "$HTTPS_CODE" = "200" ] || { echo "HTTPS inesperado: $HTTPS_CODE"; exit 1; }
+[ "$HTTPS_VERIFY" = "0" ] || { echo "Certificado no válido: verify=$HTTPS_VERIFY"; exit 1; }
+
+HTTP=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' http://myfinanzas.pp.ua/)
+HTTP_CODE=${HTTP%% *}
+HTTP_URL=${HTTP#* }
+printf 'http %s -> %s\n' "$HTTP_CODE" "$HTTP_URL" | sudo tee "$PF/07-http.txt" >/dev/null
+case "$HTTP_CODE" in
+  301|302|303|307|308) ;;
+  *) echo "HTTP no redirige a HTTPS: $HTTP_CODE"; exit 1 ;;
+esac
+case "$HTTP_URL" in
+  https://myfinanzas.pp.ua|https://myfinanzas.pp.ua/*) ;;
+  *) echo "Redirección inesperada: $HTTP_URL"; exit 1 ;;
+esac
+
 curl -fsS https://myfinanzas.pp.ua/ | sha256sum | sudo tee "$PF/07-body.sha256" >/dev/null
 echo | openssl s_client -connect myfinanzas.pp.ua:443 -servername myfinanzas.pp.ua 2>/dev/null \
   | openssl x509 -noout -subject -issuer -dates -ext subjectAltName -fingerprint -sha256 \
   | sudo tee "$PF/07-cert.txt" >/dev/null
+echo | openssl s_client -connect myfinanzas.pp.ua:443 -servername myfinanzas.pp.ua 2>/dev/null \
+  | openssl x509 -noout -checkend 86400 >/dev/null \
+  || { echo "El certificado caduca en menos de 24 h"; exit 1; }
 ss -ltn | sudo tee "$PF/07-listen.txt" >/dev/null
+ss -ltn | awk '{print $4}' | grep -E ':80$' >/dev/null || { echo "No hay listener en 80"; exit 1; }
+ss -ltn | awk '{print $4}' | grep -E ':443$' >/dev/null || { echo "No hay listener en 443"; exit 1; }
 sudo ss -ltnp | grep -E ':(80|443|2019)\b' | sudo tee "$PF/07-listen-pids.txt" >/dev/null || true
+
+Si HTTPS no devuelve `200` con `verify=0`, HTTP no redirige a `https://myfinanzas.pp.ua` o faltan los listeners 80/443, el script **aborta**. No se modifica el `Caddyfile` ni se recarga Caddy para corregirlo.
 
 echo "== P-08 resumen =="
 echo "Preflight: $PF"
@@ -263,3 +295,20 @@ Las validaciones estáticas no sustituyen a la ejecución en el VPS ni al ensayo
 - Concurrencia de APT: se detecta, pero puede aparecer durante la ventana.
 - Certificado y exposición real solo se validan en la ventana.
 - AC-17 (arranque tras reboot) pendiente.
+
+## 9. Ejecución desde el Mac
+
+El script es específico de Linux; no se ejecuta en macOS.
+
+1. Extraer el bloque de §3 a `caddy-preflight.sh` en el Mac.
+2. Copiarlo al VPS: `scp caddy-preflight.sh mfadmin@<host>:/var/tmp/caddy-preflight.sh`.
+3. Conectar con `ssh -t mfadmin@<host>`.
+4. En el VPS: `chmod 700 /var/tmp/caddy-preflight.sh`, `sudo -v` y
+   `bash /var/tmp/caddy-preflight.sh`.
+5. Si el script aborta, **no continuar**: anotar el mensaje y revisar la causa.
+6. Revisar la salida y `$PF`. No publicar `01-journal.txt`, la salida de `grep` ni el
+   `Caddyfile`; redactar IPs, rutas internas y datos personales.
+7. Conservar `$PF/old.deb` y `$PF/new.deb` hasta la ventana; el resto puede borrarse con
+   autorización. La copia de datos no existe en la preflight: se hará en la ventana.
+
+La ejecución no detiene, recarga ni reinicia Caddy y no instala ni actualiza paquetes.

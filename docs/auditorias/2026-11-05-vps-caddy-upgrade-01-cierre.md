@@ -33,7 +33,8 @@ verificación independiente. No autoriza nuevas operaciones, cambios, merges ni 
 | Rollback | — | **no fue necesario** |
 
 La actualización se realizó manualmente con autorización expresa del usuario. El sitio y el
-certificado se conservaron. El alcance autorizado era solo Caddy: **no se aportaron evidencias**
+certificado se conservaron. La aceptación específica del riesgo residual de AC-18 no consta
+documentada; AC-18 sigue `UNRUN`. El alcance autorizado era solo Caddy: **no se aportaron evidencias**
 de cambios en DNS, UFW, SSH, Podman ni `myfinanzas-app`, y no se verificaron de forma
 independiente en este cierre.
 

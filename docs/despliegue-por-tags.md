@@ -15,8 +15,8 @@ No repite la especificación del host TEST
 ([PR #9](https://github.com/jmartinlabs/vps-infra/pull/9), MERGED en `901204c`; la spec
 conserva estado DRAFT/pendiente de aprobación), el contrato de integración de esquema/seed
 ([SPEC34 §5](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md#5-contrato-de-despliegue-con-vps-infra-solo-interfaz))
-ni el runbook de la aplicación. Cuando ambos se solapen, prevalece el documento propietario
-de cada materia y este contrato solo añade la interfaz de activación.
+ni el runbook de la aplicación. Cuando se solapen, prevalece el documento propietario de cada
+materia y este contrato solo añade la interfaz de activación.
 
 ## 1. Estado de partida y límites de las afirmaciones
 

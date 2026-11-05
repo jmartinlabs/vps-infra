@@ -582,8 +582,8 @@ Todos son **documentales** hasta que se ejecuten en la fase indicada del
 
 La auditoría de 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de
 backups, pero **no completó** la revalidación de Quadlet/cgroup ni el inventario profundo de
-backups. Por eso AC02 no se marca `PASS`. AC10 queda pendiente de la release/seed y del flujo
-`test`; el contrato 25/C25 está aprobado, no se fija permanentemente.
+backups. Por eso AC02 no se marca `PASS`. AC10 queda pendiente de la release/seed desde
+`main`; el contrato 25/C25 está aprobado, no se fija permanentemente.
 
 | ID | Criterio verificable | Fase |
 | --- | --- | --- |

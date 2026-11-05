@@ -1,7 +1,7 @@
 # Contrato de despliegue por tags · Diseño, sin activación
 
-> **Estado:** diseño aprobado para documentación el **2026-11-05**. **No implementado, no
-> habilitado y no ejecutado.** No autoriza acceso al VPS, cambios de usuarios, rutas,
+> **Estado:** revisado y asumido por `vps-infra` el **2026-11-05** como diseño. **No
+> implementado, no habilitado y no ejecutado.** No autoriza acceso al VPS, cambios de usuarios, rutas,
 > servicios, Caddy, DNS, UFW, Podman/Quadlet, copias, credenciales ni despliegues.
 > Cualquier fase de este contrato exige autorización propia e identificable.
 
@@ -13,9 +13,10 @@ privilegios, las rutas, los servicios, las copias y la recuperación.
 
 No repite la especificación del host TEST
 ([PR #9](https://github.com/jmartinlabs/vps-infra/pull/9), MERGED en `901204c`; la spec
-conserva estado DRAFT/pendiente de aprobación) ni el runbook de la aplicación. Cuando ambos
-se solapen, prevalece el documento propietario de cada materia y este contrato solo añade la
-interfaz de activación.
+conserva estado DRAFT/pendiente de aprobación), el contrato de integración de esquema/seed
+([SPEC34 §5](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md#5-contrato-de-despliegue-con-vps-infra-solo-interfaz))
+ni el runbook de la aplicación. Cuando ambos se solapen, prevalece el documento propietario
+de cada materia y este contrato solo añade la interfaz de activación.
 
 ## 1. Estado de partida y límites de las afirmaciones
 
@@ -113,7 +114,7 @@ Antes de modificar el VPS, el host comprueba y registra:
    detiene. TEST no requiere este paso.
 6. **Aprobación PROD.** Para `prod`, existe una aprobación verificable del Environment
    `production` (run, revisor, SHA y versión) antes de liberar credenciales o activar. TEST
-   no requiere esta aprobación; su habilitación es el interruptor de H5 (§9).
+   no requiere esta aprobación; su habilitación es el interruptor de DEP5 (§9).
 7. **Esquema y datos.** El contrato de esquema del manifiesto es compatible con el estado o
    con la migración expresamente autorizada. TEST exige su marcador y seed verificados; PROD
    exige la autorización de datos reales y la copia previa.
@@ -202,7 +203,7 @@ Excel sin una autorización específica y la validación financiera correspondie
 - **Concurrencia.** Un solo despliegue activo por entorno; el segundo se rechaza. El bloqueo
   se libera al terminar, con éxito o fallo.
 - **Copia y recuperación.** No hay despliegue sin copia válida y plan de recuperación. PROD
-  con datos reales sigue sujeto a DT6/T-BKP y a la autorización de operación.
+  con datos reales sigue sujeto a DT6/T-BKP de MyFinanzas y a la autorización de operación.
 - **Auditoría.** Se registran tag, actor, SHA, digest, aprobación, ejecución, copia, smoke y
   resultado. Los logs no contienen secretos ni datos financieros.
 - **Fallo cerrado.** Permisos, esquema, artefacto, copia o smoke desconocidos bloquean; no se
@@ -221,25 +222,28 @@ tags; no se infiere de una propuesta abierta.
 
 ## 9. Decisiones pendientes antes de implementar
 
+Se usa la nomenclatura **DEP1–DEP10** (*deployment*) para no colisionar con las decisiones
+**H1–H6** de la especificación host de TEST ni con los identificadores **DT** de MyFinanzas.
+
 | ID | Decisión | Recomendación | Bloquea |
 | --- | --- | --- | --- |
-| H1 | ¿Usuarios/UID separados por entorno o una identidad con unidades aisladas? | Separar identidad si la auditoría y la operación lo permiten; no asumirlo | Fase 2 |
-| H2 | Transporte y almacenamiento privado de la release | Almacén privado direccionado por digest, con manifiesto y retención acordada; sin reconstruir en PROD | Fase 1 |
-| H3 | Mecanismo de activación (unidad nueva, drop-in o enlace atómico) | Elegir tras auditar Quadlet y demostrar reversibilidad | Fase 2 |
-| H4 | Principal y vía de ejecución (runner dedicado, SSH restringido u otro) | Mínimos privilegios, sin root, sin comandos arbitrarios; revisar el modelo de amenaza | Fase 2 |
-| H5 | ¿TEST automático o manual al habilitar? | Automático solo tras los gates, con interruptor explícito y estado inicial desactivado | Fase 4 |
-| H6 | Revisores de PROD y separación de funciones | Required reviewers; el autor del tag no aprueba su propia ejecución | Fase 5 |
-| H7 | Destino externo, retención, RPO/RTO y custodia | Política única aprobada; simulacro de restauración antes de PROD | Fases 4–5 |
-| H8 | Cambios de Caddy/DNS para TEST | Aplicar el contrato de la spec 02 del host TEST (en `main`) solo con autorización; no tocar el sitio raíz | Fase 4 |
-| H9 | Rollback automático o manual | Manual y con evidencia; sin restauración automática silenciosa | Fases 4–5 |
-| H10 | Adopción futura de `test` como rama de integración | Solo si se decide; actualizar únicamente la política de origen de tags | Futuro |
+| DEP1 | ¿Usuarios/UID separados por entorno o una identidad con unidades aisladas? | Separar identidad si la auditoría y la operación lo permiten; no asumirlo | Fase 2 |
+| DEP2 | Transporte y almacenamiento privado de la release | Almacén privado direccionado por digest, con manifiesto y retención acordada; sin reconstruir en PROD | Fase 1 |
+| DEP3 | Mecanismo de activación (unidad nueva, drop-in o enlace atómico) | Elegir tras auditar Quadlet y demostrar reversibilidad | Fase 2 |
+| DEP4 | Principal y vía de ejecución (runner dedicado, SSH restringido u otro) | Mínimos privilegios, sin root, sin comandos arbitrarios; revisar el modelo de amenaza | Fase 2 |
+| DEP5 | ¿TEST automático o manual al habilitar? | Automático solo tras los gates, con interruptor explícito y estado inicial desactivado | Fase 4 |
+| DEP6 | Revisores de PROD y separación de funciones | Required reviewers; el autor del tag no aprueba su propia ejecución | Fase 5 |
+| DEP7 | Destino externo, retención, RPO/RTO y custodia | Política única aprobada; simulacro de restauración antes de PROD | Fases 4–5 |
+| DEP8 | Cambios de Caddy/DNS para TEST | Aplicar el contrato de la spec 02 del host TEST (en `main`) solo con autorización; no tocar el sitio raíz | Fase 4 |
+| DEP9 | Rollback automático o manual | Manual y con evidencia; sin restauración automática silenciosa | Fases 4–5 |
+| DEP10 | Adopción futura de `test` como rama de integración | Solo si se decide; actualizar únicamente la política de origen de tags | Futuro |
 
 ## 10. Fases propuestas
 
 | Fase | Objetivo | Salida | Autorización |
 | --- | --- | --- | --- |
 | 0 | Documentar y revisar este contrato | PR revisada; sin cambios operativos | Actual |
-| 1 | Resolver H1–H10 y cerrar la interfaz con la aplicación | Decisiones registradas; sin VPS | Separada |
+| 1 | Resolver DEP1–DEP10 y cerrar la interfaz con la aplicación | Decisiones registradas; sin VPS | Separada |
 | 2 | Preparar host e identidades, rutas, unidades y copias de ensayo | Evidencia de preflight; sin release real | Separada |
 | 3 | Dry-run del contrato con artefactos de ensayo y sin datos reales | Checks negativos y positivos; VPS intacto | Separada |
 | 4 | Habilitar TEST y ejecutar el primer tag de TEST | Smoke, copia y evidencia; PROD intacto | Separada |
@@ -265,5 +269,6 @@ Ninguna fase se deduce de otra. Un merge documental no habilita la siguiente.
 - [Roadmap](roadmap.md)
 - [Estado actual](estado-actual.md)
 - [Host TEST (PR #9, MERGED `901204c`; spec DRAFT)](https://github.com/jmartinlabs/vps-infra/blob/main/specs/02-infra-test-01-host-specification.md)
-- `myfinanzas-app`: [especificación `DEPLOY-TAGS-01`](https://github.com/jmartinlabs/myfinanzas-app/pull/233)
-- `agent-project-template`: [patrón reutilizable de despliegue por tags](https://github.com/jmartinlabs/agent-project-template/pull/48)
+- `myfinanzas-app`: especificación `DEPLOY-TAGS-01`, mantenida en su repositorio.
+- `agent-project-template`: patrón reutilizable de despliegue por tags; no se modifica desde
+  `vps-infra`.

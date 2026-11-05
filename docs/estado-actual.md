@@ -1,13 +1,41 @@
 # Estado actual e inventario por verificar
 
-**Fecha de referencia documental:** 22-10-2026. **No se ha accedido al VPS** para producir este inventario.
+**Fecha de referencia documental:** 22-10-2026. **Actualizado:** 2026-11-05 con auditoría de
+solo lectura (Niveles 1/2 y comprobación final; ver [cierre](auditorias/2026-11-05-infra-audit-vps-001-cierre.md));
+no cubre todos los extremos.
 
 Distinguimos:
 - **Informado por el usuario:** antecedente útil, no verificación técnica actual.
 - **Verificado en GitHub:** consulta del repositorio, no prueba de despliegue.
+- **Observado en el VPS:** auditoría de solo lectura, con fecha y alcance limitados.
 - **Pendiente:** debe comprobarse con autorización expresa de acceso de solo lectura.
 
-## Inventario inicial informado
+## Verificación de solo lectura — 2026-11-05
+
+Evidencia detallada: [Nivel 1](auditorias/2026-11-04-infra-audit-vps-001-nivel1.md),
+[Nivel 2](auditorias/2026-11-05-infra-audit-vps-001-nivel2-result.md) y
+[cierre/evaluación Caddy](auditorias/2026-11-05-infra-audit-vps-001-cierre.md).
+
+| Área | Estado observado | Límite |
+| --- | --- | --- |
+| Sistema | Debian 13.7, kernel 6.12.113, x86_64, KVM/OpenStack | Proveedor Aruba no verificado de forma independiente |
+| Recursos | 2 vCPU, 3,8 GiB RAM visibles, disco `sda` 40 GB; raíz 39 GB con 35 GB libres; inodos al 3 % | Sin prueba de carga |
+| Administración | `mfadmin` UID/GID 1001, grupos `sudo`/`users`, `Linger=yes` | `sudo -n` pidió contraseña; NOPASSWD no verificado para otros comandos |
+| SSH | `PermitRootLogin no`, `PasswordAuthentication no`, `PubkeyAuthentication yes`; drop-in `00-myfinanzas-hardening.conf` | `X11Forwarding yes`, `AllowTcpForwarding yes`, `AuthenticationMethods any`, sin `AllowUsers`; `PermitOpen`/`PermitListen` redactados |
+| Firewall | UFW activo; entrada `deny`; solo 22/80/443 IPv4/IPv6; nftables coherente | Reglas verificadas manualmente por el usuario |
+| Caddy | `2.6.2-12+deb13u1` activo; TLS apex válido; sin actualización Debian pendiente | CVE-2026-77281 abierto en trixie; aplicabilidad condicionada al Caddyfile; cabeceras HSTS/CSP no observadas |
+| Contenedores | Podman 5.4.2 rootless; sin contenedores/volúmenes/pods; imágenes `nginx`/`hello-world` | Quadlet no revalidado; delegación cgroup no confirmada |
+| DNS | Apex con A y TTL 14400; sin AAAA/CAA; `test` NXDOMAIN | Sin cambios de DNS |
+| Backups | `/home/mfadmin/myfinanzas/backups` existe `0700`; sin ficheros regulares visibles a profundidad 2 | Inventario completo y restore no verificados |
+| Despliegue | Sin contenedores ni imagen MyFinanzas; página estática no verificada por completo | Caddyfile completo no leído |
+
+**Pendiente:** confirmar Caddyfile completo/CVE, Quadlet, backups/restore, hardening SSH/Caddy,
+PR #9 DRAFT y autorizaciones de TEST. No se han realizado cambios intencionados en el VPS;
+los efectos incidentales están documentados en Nivel 2 §13.
+
+## Inventario inicial informado — estado a 22-10-2026
+
+Esta tabla es **histórica**. Los datos verificados están en la sección anterior.
 
 | Área | Información recibida | Estado de verificación remota |
 | --- | --- | --- |
@@ -26,17 +54,24 @@ No constan aquí pruebas de que haya reglas de firewall correctas, copias restau
 
 ## MyFinanzas: dependencia externa
 
-Repositorio de aplicación: [josemartin2000/myfinanzas-app](https://github.com/josemartin2000/myfinanzas-app).
+Repositorio de aplicación: [jmartinlabs/myfinanzas-app](https://github.com/jmartinlabs/myfinanzas-app).
 
 Consulta GitHub del 22-10-2026, **no estado congelado ni autorización de despliegue**:
-- Dev 31 integrado; PR [#31](https://github.com/josemartin2000/myfinanzas-app/pull/31) integrada.
-- Spec Dev 32: PR [#29](https://github.com/josemartin2000/myfinanzas-app/pull/29) abierta, aprobación documental comunicada; pendiente de integración.
-- Implementación Dev 32: PR [#30](https://github.com/josemartin2000/myfinanzas-app/pull/30) abierta/Draft, checkpoint 23/24 AC; AC-22 y riesgos de concurrencia/durabilidad pendientes. No equivale a estar preparada para producción.
-- Adopción metodológica PR [#32](https://github.com/josemartin2000/myfinanzas-app/pull/32) y política de aislamiento PR [#33](https://github.com/josemartin2000/myfinanzas-app/pull/33) integradas en la aplicación; **no suponen instalación de `$orchestrate` en `vps-infra`**.
+SPEC34/testplan fue aprobada y mergeada en `main` `58346e1` (PR #207); el resto de esta
+sección conserva el contexto histórico de Dev 31/32 y debe contrastarse antes de coordinar
+una entrega nueva.
+- Dev 31 integrado; PR [#31](https://github.com/jmartinlabs/myfinanzas-app/pull/31) integrada.
+- Spec Dev 32: PR [#29](https://github.com/jmartinlabs/myfinanzas-app/pull/29) abierta, aprobación documental comunicada; pendiente de integración.
+- Implementación Dev 32: PR [#30](https://github.com/jmartinlabs/myfinanzas-app/pull/30) abierta/Draft, checkpoint 23/24 AC; AC-22 y riesgos de concurrencia/durabilidad pendientes. No equivale a estar preparada para producción.
+- Adopción metodológica PR [#32](https://github.com/jmartinlabs/myfinanzas-app/pull/32) y política de aislamiento PR [#33](https://github.com/jmartinlabs/myfinanzas-app/pull/33) integradas en la aplicación; **no suponen instalación de `$orchestrate` en `vps-infra`**.
 
 Antes de coordinar una entrega relacionada, **volver a comprobar** estos enlaces y los criterios vigentes en el repositorio de aplicación.
 
-## Auditoría inicial propuesta — solo lectura, no autorizada todavía
+## Alcance de la auditoría ejecutada — solo lectura
+
+Los resultados verificados están en la sección anterior y en los informes enlazados. SSH y
+UFW/nftables se cerraron con la comprobación manual del usuario; siguen pendientes el
+Caddyfile completo/CVE, Quadlet y backups/restore. El siguiente era el alcance previsto:
 
 Comprobar sin exponer secretos:
 - Identidad del anfitrión, versión de SO, fecha de actualización y estado de reinicio pendiente.

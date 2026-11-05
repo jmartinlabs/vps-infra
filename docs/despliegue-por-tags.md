@@ -64,7 +64,7 @@ real.
 | `release_sha` | SHA de 40 caracteres del commit construido; ancestro del origen autorizado |
 | `release_manifest_sha256` | SHA-256 del manifiesto de release verificado |
 | `image_id` / digest OCI | ID inmutable; nunca una etiqueta mutable |
-| `frontend_sha256` / `frontend_files` | `[PENDIENTE]` El manifiesto actual publica un mapa `frontend_files` ruta→SHA-256, no un único checksum; D2 fija el checksum determinista del conjunto o el campo equivalente |
+| `frontend_sha256` / `frontend_files` | `[PENDIENTE]` El manifiesto actual publica un mapa `frontend_files` ruta→SHA-256, no un único checksum; D2/D3 o una decisión específica del manifiesto fijan el checksum determinista del conjunto o el campo equivalente |
 | `schema_version` / `schema_contract` | Contrato declarado por el código de ese SHA |
 | `seed_manifest_sha256` | Solo TEST; manifiesto del dataset ficticio. `[PENDIENTE]` D11 debe reconciliar el seed con el SHA y el esquema |
 | `qa_reference` | Referencia a la QA independiente del SHA, sin secretos |
@@ -230,7 +230,7 @@ tags; no se infiere de una propuesta abierta.
 | H5 | ¿TEST automático o manual al habilitar? | Automático solo tras los gates, con interruptor explícito y estado inicial desactivado | Fase 4 |
 | H6 | Revisores de PROD y separación de funciones | Required reviewers; el autor del tag no aprueba su propia ejecución | Fase 5 |
 | H7 | Destino externo, retención, RPO/RTO y custodia | Política única aprobada; simulacro de restauración antes de PROD | Fases 4–5 |
-| H8 | Cambios de Caddy/DNS para TEST | Aplicar el contrato del PR #9 solo con autorización; no tocar el sitio raíz | Fase 4 |
+| H8 | Cambios de Caddy/DNS para TEST | Aplicar el contrato de la spec 02 del host TEST (en `main`) solo con autorización; no tocar el sitio raíz | Fase 4 |
 | H9 | Rollback automático o manual | Manual y con evidencia; sin restauración automática silenciosa | Fases 4–5 |
 | H10 | Adopción futura de `test` como rama de integración | Solo si se decide; actualizar únicamente la política de origen de tags | Futuro |
 

@@ -1,6 +1,6 @@
 # Guía visual: Orchestrator y agentes dinámicos — v2.3.1
 
-> **Objetivo:** trabajar con un único coordinador de desarrollo, que distribuye tareas independientes según el estado real del proyecto. No significa que un Skill cree agentes automáticamente ni que los agentes sigan activos fuera de una ejecución de Codex.
+> **Objetivo:** trabajar con un único coordinador de desarrollo, que distribuye tareas independientes según el estado real del proyecto. No significa que un Skill cree agentes automáticamente ni que los agentes sigan activos fuera de una ejecución del cliente.
 
 **Cómo empezar:** [README](../README.md) · [Política de agentes dinámicos](../specs/methodology/dynamic-agents.md) · [Coordinación de épicas](../specs/methodology/epic-orchestration.md) · [Modelos](../specs/methodology/model-selection.md) · [Tablero](../templates/epic-board.md).
 
@@ -35,7 +35,7 @@ flowchart TD
     B -->|No| Z["Registrar bloqueo y pedir decisión concreta"]
     B -->|Sí| C{"¿Se pueden ejecutar independientemente?"}
     C -->|No| S["Ejecutar secuencialmente"]
-    C -->|Sí| D{"¿Codex permite subagentes?"}
+    C -->|Sí| D{"¿El cliente permite subagentes?"}
     D -->|No / desconocido| S
     D -->|Sí| E["Estimar beneficio, coste, colisiones y límite real"]
     E --> F["Crear solo tareas delimitadas útiles"]
@@ -44,7 +44,7 @@ flowchart TD
     G --> A
 ```
 
-**Reglas:** un ejecutor por defecto; delegación adicional solo con beneficio concreto, capacidad real y aislamiento autorizado. Conserva QA independiente cuando sea exigible. La cantidad depende del trabajo y del cliente, no de un límite universal.
+**Reglas:** delegar por defecto el trabajo sustancial y autónomo (specs, dev aprobado, investigaciones y QA) cuando el cliente lo permita; reservar la ejecución directa para correcciones pequeñas, coordinación y decisiones. Preferir segundo plano si está verificado y permite avanzar trabajo independiente. Un ejecutor por tarea; varias tareas solo con independencia real y aislamiento. No crear agentes artificiales. Conserva QA independiente cuando sea exigible. La cantidad depende del trabajo y del cliente, no de un límite universal.
 
 ## 3. Varias épicas sin bloqueo en serie
 
@@ -177,7 +177,7 @@ La selección respeta la [política canónica de modelos](../specs/methodology/m
 | Merge/Deploy automático | No | Requiere aprobación correspondiente |
 | Sesiones Codex independientes antiguas | No gestionadas directamente | Se migran mediante checkpoint/Git |
 
-La documentación de [OpenAI sobre multiagentes en Agents API](https://developers.openai.com/api/docs/guides/agents-api/multi-agent) describe una plataforma que se **configura por separado**. Que exista no prueba que tu Codex Desktop/Web tenga las mismas herramientas activadas.
+La documentación de [OpenAI sobre multiagentes en Agents API](https://developers.openai.com/api/docs/guides/agents-api/multi-agent) describe una plataforma que se **configura por separado**. Que exista no prueba que tu cliente Codex, Claude Code u OpenCode tenga las mismas herramientas activadas.
 
 ## 10. Preguntas frecuentes
 

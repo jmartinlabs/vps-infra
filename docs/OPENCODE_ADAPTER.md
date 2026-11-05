@@ -46,20 +46,24 @@ opencode debug agents | jq -r '.[] | select(.id=="review" or .id=="functional" o
 
 | Agente | Rol canónico | Comportamiento |
 | --- | --- | --- |
-| `functional` | [functional](../.agents/roles/functional.md) | Prepara requisitos, preguntas, borradores y casos de aceptación; lectura por contrato. |
+| `functional` | [functional](../.agents/roles/functional.md) | Crea y edita, dentro del paquete autorizado, brainstorming, especificaciones en borrador (DRAFT) y criterios de aceptación; sin autoaprobación, código ni edición del tablero. |
 | `implementation` | [implementation](../.agents/roles/implementation.md) | Implementa una especificación aprobada y acotada con el ownership del paquete; ejecuta solo las comprobaciones autorizadas. |
-| `infrastructure` | [infrastructure](../.agents/roles/infrastructure.md) | Investigación de solo lectura y preparación segura; ejecutar o mutar exige otro ejecutor autorizado. |
+| `infrastructure` | [infrastructure](../.agents/roles/infrastructure.md) | Adaptador OpenCode: investigación de solo lectura y preparación segura; el rol canónico también cubre cambios acotados y revisados, pero ejecutar o mutar exige otro ejecutor autorizado. |
 
 Estos adaptadores usan las **capacidades por defecto** de OpenCode (OpenCode default)
 para subagentes. No definen una matriz de permisos y no requieren el adaptador de review. El cliente puede
 exponer lectura, búsqueda, edición, shell y delegación; esas capacidades no son un límite
 de ownership ni una autorización. Gobiernan el paquete de trabajo, el rol canónico y las
-políticas del proyecto. `functional` e `infrastructure` son de solo lectura por contrato;
-`implementation` queda acotado por su especificación aprobada y el ownership del paquete.
-Ninguno se autoaprueba, publica ni fusiona. Las preguntas y aprobaciones que necesiten los
+políticas del proyecto. `functional` solo edita los documentos de borrador asignados en su
+paquete; `implementation` queda acotado por su especificación aprobada y el ownership del
+paquete. El adaptador de infraestructura de OpenCode es de solo lectura por contrato: el rol
+canónico también cubre cambios acotados y revisados, pero este adaptador no los ejecuta ni
+los muta. Ninguno se autoaprueba, publica ni fusiona. Las preguntas y aprobaciones que necesiten los
 subagentes vuelven al coordinador; no invocan directamente la herramienta de pregunta al
 usuario. Es una regla de comportamiento, no una denegación técnica bajo los permisos por
-defecto.
+defecto. Cada adaptador especializado es intencionadamente fino: frontmatter del cliente, el
+enlace al rol canónico y las instrucciones mínimas de carga y alcance. Las responsabilidades
+detalladas permanecen en `.agents/roles/`; no se copian en el adaptador.
 
 `review` es un adaptador independiente de auditoría de solo lectura, con su propia matriz
 de permisos. No es un launcher. Cuando el plugin está instalado, `review_query` queda

@@ -18,12 +18,25 @@ spawn further agents unless the coordinator explicitly allows it in a supported 
 ## Selection steps
 
 1. **Inventory ready work** from the trusted checkpoint, approvals, dependencies and test/code evidence. Do not rebuild the whole queue after every action.
-2. **Check necessity.** Default to one executor for a bounded task; assign a complete deliverable, not micro-steps. Bring in a separate reviewer for independent QA when the candidate reaches its gate.
-3. **Size the pool.** Start with one executor. Run work in parallel only when it is disjoint, ready and worth more than the coordination overhead. Respect real client limits and quota. Consequential scope and destructive actions still need explicit approval.
+2. **Delegate when it pays.** Prefer a specialist for substantial, autonomous, bounded work — specification drafting, approved implementation, investigations and QA — when the client supports it. Reserve direct coordinator execution for small corrections, coordination, user decisions and operations where delegation costs more than it saves. Assign a complete deliverable, not micro-steps. Bring in a separate reviewer for independent QA when the candidate reaches its gate.
+3. **Size the pool.** Keep **one executor per task**, not one executor per session. Start additional concurrent tasks only when they are disjoint, ready and worth more than the coordination overhead. Never create agents or work to fill a pool. Respect real client limits and quota. Consequential scope and destructive actions still need explicit approval.
 4. **Write a compact [work packet](../../templates/agent-work-packet.md)** (work-packet template): scope, objective, ownership and isolation, deliverable, acceptance checks, prohibited actions, stop/gate conditions and the **applicable rules** — the few policy rules this task needs, one line each with a source link. Delegates read their role and the packet, not every policy. Link other documents instead of copying them. A delegate that finds a needed rule missing stops and asks the coordinator.
 5. **Start only if supported.** Confirm the client really offers subagents before claiming a worker exists. Otherwise run the same queue sequentially and never pretend a delegate ran. Chats the user opened manually are not attached workers; they contribute only through recorded checkpoints, branches or PRs.
 6. **Supervise at milestones.** Review the candidate diff and test evidence at handoff or on a material blocker, not after every message. Prevent overlapping edits: concurrent writers need disjoint ownership and authorized isolated checkouts, otherwise serialize. Checkouts follow [the local worktree policy](approvals.md#local-worktrees); the packet records responsibilities, not new consent.
 7. **Close or reassign** when a deliverable completes, blocks or becomes redundant. Require the SHA, real PASS/FAIL/UNRUN evidence, blockers and next safe action. Do not auto-create replacement workers.
+
+## Delegation preference
+
+Delegate substantial, autonomous and bounded work whenever the active client supports it and the
+benefit exceeds the coordination cost: specification drafting, approved implementation, bounded
+investigations and QA. Prefer **background** execution when it is verifiably supported and the
+coordinator can advance independent authorized work or does not need the result to continue; use
+**foreground** when the next step depends on the result; reserve **direct** coordinator execution
+for small corrections, coordination, user decisions and operations where delegation does not pay.
+
+Keep **one executor per task**. Several tasks may run concurrently only with real independence,
+disjoint ownership and authorized isolation. Never create artificial agents, duplicate reviewers
+or work merely to fill a pool.
 
 ## Execution mode: direct, foreground, background
 
@@ -31,13 +44,16 @@ Choose the execution mode per task, before dispatch, with the lowest cost that s
 required outcome. Do not create a delegate for a trivial task, and do not defer work in background
 when its result is needed to continue.
 
-- **Direct (coordinator).** Small corrections, low-cost operations, functional decisions that need
-  immediate interaction with the user, consolidation, supervision and brief verifications.
+- **Direct (coordinator).** Small corrections, low-cost operations, coordination, product decisions
+  that need immediate user interaction, consolidation, supervision and brief verifications where
+  delegation costs more than it saves.
 - **Foreground subagent.** The coordinator needs the result immediately, the task is short enough
   for reasonable synchronous delegation, or dependencies prevent useful work until it returns.
 - **Background subagent.** Substantial specification creation or review, autonomous implementation,
   bounded investigations and audits, independent QA once a verifiable candidate exists, and other
-  delimited work that needs no continuous supervision.
+  delimited work that needs no continuous supervision. Prefer this mode when support is verified
+  and the coordinator can advance independent authorized work or does not need the result to
+  continue.
 
 Background requires **verified client support** for non-blocking subagents in the active client (for
 example a `background` option or an equivalent asynchronous task API) and a benefit that justifies
@@ -48,7 +64,7 @@ client or the runtime may stop it. Promise no background persistence after that 
 specific client verifies it.
 
 Parallelism is allowed only for authorized, independent tasks with disjoint ownership and real
-isolation. Keep one executor by default and add delegates only when independence and value exceed
+isolation. Keep one executor per task; add concurrent tasks only when independence and value exceed
 the coordination cost. No universal agent count applies: respect the verified client limit and the
 quota gate.
 
@@ -152,12 +168,14 @@ Record client/version, session/worker ID, runtime-controlled versus external sta
 start/stop owner, communication route, instruction entry points and evidence destination
 in the existing packet. Confirm the worker can read applicable canonical rules and return
 packet ID, candidate, checks and blockers. Client adapters expose the same rules without
-duplicating or weakening them. A repository-local OpenCode `review` subagent is available as
-a read-only audit adapter (see [OpenCode adapter](../../docs/OPENCODE_ADAPTER.md)); it may
-read project files and consult local Git, PR and CI evidence through a validated query
-interface, but it cannot run tests or modify code. It is not a launcher or controller for
-external OpenCode sessions. Verify other instruction
-loading/configuration in the chosen installation. Never assume Claude hooks run elsewhere.
+duplicating or weakening them. A repository-local OpenCode adapter set is available for `review`,
+`functional`, `implementation` and `infrastructure` (see
+[OpenCode adapter](../../docs/OPENCODE_ADAPTER.md)). `review` remains a read-only audit adapter: it
+may read project files and consult local Git, PR and CI evidence through a validated query
+interface, but it cannot run tests or modify code. The specialized adapters use OpenCode's default
+tools under their role and packet contracts. None is a launcher or controller for external OpenCode
+sessions. Verify other instruction loading/configuration in the chosen installation. Never assume
+Claude hooks run elsewhere.
 An optional repository-local Git relay is user-triggered transport only; it does not
 launch, poll, control or replace start/stop ownership.
 
@@ -229,17 +247,18 @@ independent QA still reviews it.
 
 ## Capability boundaries
 This repository holds **instructions and templates**: it provides no universal agent registry,
-always-on scheduler or job queue. No universal agent count is claimed. The only repository-local
-native agent registration with an explicit read-only matrix is the optional OpenCode `review`
-subagent installed by the [OpenCode adapter](../../docs/OPENCODE_ADAPTER.md). The optional
-OpenCode `functional`, `implementation` and `infrastructure` subagents use the client's default
-capabilities; they are native adapters, not always-running workers, and their role contract and
-work packet govern behavior. `review` is a read-only audit surface, not a launcher, scheduler or
-controller for external OpenCode sessions, and it may be removed as a unit. Check what the actual
-client (Codex, Claude Code or another) supports for delegation, non-blocking execution and
-isolation before using it, per execution. API runtimes configured separately do not describe what
-an interactive session can do. Releasing a coordinator turn does not end a running subagent's
-runtime, but nothing keeps running after the active session or client closes.
+always-on scheduler or job queue. No universal agent count is claimed. The repository-local native
+agent registrations are the optional OpenCode adapters (`review`, `functional`, `implementation`
+and `infrastructure`) installed by the [OpenCode adapter](../../docs/OPENCODE_ADAPTER.md). Only
+`review` has an explicit read-only matrix; the specialized adapters use the client's default
+capabilities under their role and packet contracts and are not always-running workers. `review` is
+a read-only audit surface; none of them is a launcher, scheduler or controller for external OpenCode
+sessions. The `review` adapter (agent, plugin and wrapper) may be removed as a unit; specialized
+adapters are independently optional. Check what the actual client (Codex, Claude Code or another)
+supports for delegation, non-blocking execution and isolation before using it, per execution. API
+runtimes configured separately do not describe what an interactive session can do. Releasing a
+coordinator turn does not end a running subagent's runtime, but nothing keeps running after the
+active session or client closes.
 
 ## Result contract
 Each packet returns: packet ID; done/blocked status; changed and read files; commit/revision; real tests and results (passed/failed/unrun); open decisions, collisions or blockers; evidence; next independent action. The coordinator verifies, updates the board and decides on the next packet. No delegate self-approves, merges or edits the board.

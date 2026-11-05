@@ -42,6 +42,7 @@ La topología exacta de loopback/red rootless, propietarios de procesos, socket 
 | Imagen, dependencias, código, tests, migraciones y esquema de MyFinanzas | `myfinanzas-app` |
 | Configuración funcional y datos persistentes propios de cada aplicación | Repositorio de la aplicación + entorno privado del VPS |
 | Contrato entre aplicación y proxy (puerto, healthcheck, rutas, variables no secretas) | Definido conjuntamente, cambios coordinados |
+| Recepción y activación de releases, aislamiento TEST/PROD, copias y recuperación del host | `vps-infra`; contrato en [despliegue por tags](despliegue-por-tags.md) |
 | Desarrollo de futuras webs y servicios | Repositorio independiente por aplicación |
 
 Una tarea transversal debe señalar **qué cambio pertenece a cada repositorio** y la secuencia de integración/despliegue. Evitar duplicar la fuente de verdad.

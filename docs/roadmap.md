@@ -31,7 +31,9 @@ Que una CI esté en verde, que una especificación esté aprobada o que exista u
 - Creación de usuarios rootless adicionales y política exacta de aislamiento por aplicación.
 - Destino externo de backups, coste, retención, RPO/RTO y custodias de claves.
 - Registro de servicios, monitorización y alertas mínimas.
-- Automatización del despliegue y su alcance; no introducirla solo por conveniencia.
+- Automatización del despliegue y su alcance. El
+  [contrato de despliegue por tags](despliegue-por-tags.md) está documentado, pero **no
+  habilitado**; no se introduce automatización sin decisiones, pruebas y autorización.
 - Adopción de `$orchestrate` u otro modelo multiagente **si se demuestra ventaja operacional**.
 
 ## Próxima propuesta al usuario

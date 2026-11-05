@@ -5,12 +5,15 @@ Fecha de ejecución: 2026-11-05.
 Autorización: mensaje explícito del usuario del 2026-11-05, modo 2C, una sesión.
 Base: [Informe Nivel 1](2026-11-04-infra-audit-vps-001-nivel1.md), [Plan Nivel 2](2026-11-04-infra-audit-vps-001-nivel2-plan.md), PR #10 mergeada.
 Contrato host: `specs/02-infra-test-01-host-specification.md`, PR #9, **DRAFT**; no aprobado.
-Contrato de aplicación: SPEC34/PR #207, `myfinanzas-app`; no se modifica.
+Contrato de aplicación: SPEC34/PR #207, `myfinanzas-app`, **MERGED** en `58346e1`; no se
+verificó en esta sesión y no se modifica.
 
 ## 1. Sesión y evidencia
 
 - **Intento previo:** `07:19:48 UTC`, falló antes de conectar porque `-F /dev/null` impedía resolver el alias `mi-vps`. No hubo acceso al VPS.
-- **Sesión efectiva:** inicio `2026-11-05T07:20:22Z`, fin `2026-11-05T07:20:24Z`.
+- **Sesión efectiva:** inicio `2026-11-05T07:20:22Z`, fin `2026-11-05T07:20:24Z`. Es el
+  tiempo de la sesión remota; los `sudo -n` fallaron de inmediato. Las comprobaciones
+  externas se registran aparte.
 - **Comprobaciones externas:** `2026-11-05T07:21:14Z`–`2026-11-05T07:21:31Z`.
 - **Evidencia:** cifrada en una ruta local fuera del repositorio; SHA-256 `afe4c0517774a49b1ada8c998c9ac275296f02d9894045a1eca98749251afa37`; texto plano eliminado; clave en macOS Keychain; retención hasta 2026-12-04.
 
@@ -152,6 +155,9 @@ redact_net() {
 }
 ```
 
+Las direcciones `127.0.0.1`, `0.0.0.0`, `::1` y `::` de la función son excepciones
+intencionales para distinguir loopback/wildcard; no son datos sensibles.
+
 ```bash
 caddy version
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\t${Status}\n' caddy
@@ -202,8 +208,9 @@ Requisitos que deben acordarse antes del despliegue TEST (no modifican `myfinanz
 1. **CLI propuesta, pendiente de confirmar:** `backup-cli create` y `restore` según
    SPEC34/RUNBOOK; la release, el artefacto de seed y los argumentos definitivos de TEST
    aún no están implementados.
-2. **Alcance:** DB+clave, manifiesto, `test-instance.json`, dataset `FT-1`; no incluir
-   sesiones, TOTP ni datos reales.
+2. **Alcance:** datos persistentes y material criptográfico necesario para recuperar la
+   aplicación, más manifiesto/checksums. El estado temporal de autenticación no se considera
+   recuperable, pero debe confirmarse cómo lo trata el restore. Detalle en §12.1.
 3. **Destino externo:** ubicación, custodia, identidad `age`, responsable y autorización de
    restauración; el directorio local actual parece vacío.
 4. **Programación y retención:** quién ejecuta, frecuencia, 7/4/3 o política TEST, RPO/RTO
@@ -214,11 +221,32 @@ Requisitos que deben acordarse antes del despliegue TEST (no modifican `myfinanz
    permisos, transporte y ejecución autorizada.
 7. **Evidencia:** checksums, rutas lógicas, fechas y resultado; sin contenido ni secretos.
 
+### 12.1 Clasificación de datos y secretos
+
+| Categoría | Elementos | Tratamiento |
+| --- | --- | --- |
+| **Datos persistentes necesarios para recuperar** | Base SQLite (`database.sqlite`), `auth.key`, manifiesto/checksums y, si se confirma, `test-instance.json` | Copia cifrada; DB y `auth.key` se conservan y restauran como pareja (`access-key.age` en el paquete). No se copian archivos aislados ni WAL/SHM por separado. Confirmar si `test-instance.json` debe conservarse. |
+| **Estado temporal de autenticación** | Sesiones, desafíos, códigos temporales de recuperación/bootstrap, límites e intentos idempotentes | No es estado durable a conservar. **Puede estar dentro del snapshot SQLite**; que el restore lo invalide/limpie es un comportamiento del procedimiento, no una prueba de que el paquete lo excluya. Confirmar tablas, claves y contrato exacto con la app. |
+| **Secretos de cifrado y recuperación** | Identidad privada `age`, contraseña de la aplicación, secreto TOTP, códigos de recuperación y claves privadas | Custodia separada, fuera del repositorio, del informe y de los logs. No se incluyen en Git ni se publican. `auth.key` **no** va en esta fila: viaja cifrada con la DB; la identidad `age` no viaja con la copia. |
+
+Según la documentación de la aplicación (SPEC34/RUNBOOK, PR #207), el paquete de copia
+incluye `database.age` y `access-key.age`; el destinatario `age` es público y la identidad
+privada se custodia aparte. Queda pendiente confirmar si incluye `test-instance.json`,
+manifiesto/checksums y tablas de autenticación, y cómo las limpia el restore. No se asume que
+el paquete las excluya.
+
+La custodia de la identidad `age` en un solo Keychain local no es suficiente para recuperar
+ante pérdida del equipo: se requiere una copia de recuperación separada, cuya ubicación y
+custodia deben decidirse.
+
 Preguntas para MyFinanzas:
 
 - ¿Comando y argumentos definitivos para TEST?
+- ¿Qué tablas/claves de autenticación incluye el snapshot y cuáles limpia/revoca el restore?
+- ¿La copia incluye `access-key.age`, `test-instance.json` y manifiesto/checksums?
+- ¿Qué códigos son temporales y cuáles son secretos de recuperación de custodia separada?
 - ¿Tamaño esperado y ventana de copia?
-- ¿Destino externo y custodia de la identidad `age`?
+- ¿Destino externo y copia de recuperación de la identidad `age`, contraseña, TOTP y códigos?
 - ¿Retención/RPO/RTO para TEST y criterio de restauración?
 - ¿Quién ejecuta y revisa el restore?
 
@@ -234,3 +262,7 @@ ni backups por falta de `sudo -n`; esos bloqueos deben resolverse con la comprob
 acotada o con ejecución manual del usuario. No se han hecho cambios intencionados en el
 servidor; los efectos incidentales declarados (atime, posible `podman-pause-*`, logs y
 fail2ban por probes) no alteran configuración ni datos. No se ha desplegado nada.
+
+**Este informe no autoriza nuevas sesiones, cambios, merges ni despliegues.** La
+comprobación final de §11 y la coordinación de backups de §12 requieren autorización
+separada.

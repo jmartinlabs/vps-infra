@@ -218,8 +218,6 @@ ss -ltn | awk '{print $4}' | grep -E ':80$' >/dev/null || { echo "No hay listene
 ss -ltn | awk '{print $4}' | grep -E ':443$' >/dev/null || { echo "No hay listener en 443"; exit 1; }
 sudo ss -ltnp | grep -E ':(80|443|2019)\b' | sudo tee "$PF/07-listen-pids.txt" >/dev/null || true
 
-Si HTTPS no devuelve `200` con `verify=0`, HTTP no redirige a `https://myfinanzas.pp.ua` o faltan los listeners 80/443, el script **aborta**. No se modifica el `Caddyfile` ni se recarga Caddy para corregirlo.
-
 echo "== P-08 resumen =="
 echo "Preflight: $PF"
 echo "Paquete antiguo: $PF/old.deb ($OLD_SHA)"
@@ -228,6 +226,10 @@ echo "Datos: solo metadatos; copia definitiva en la ventana (Caddy detenido)"
 echo "Servicio: $(systemctl is-active caddy) / $(systemctl is-enabled caddy 2>&1 || true)"
 echo "Rollback: materiales verificados; downgrade NO ensayado (UNRUN)"
 ```
+
+Si HTTPS no devuelve `200` con `verify=0`, HTTP no redirige a `https://myfinanzas.pp.ua` o
+faltan los listeners 80/443, el script **aborta**. No se modifica el `Caddyfile` ni se recarga
+Caddy para corregirlo.
 
 ### Ruta del sitio y permisos
 

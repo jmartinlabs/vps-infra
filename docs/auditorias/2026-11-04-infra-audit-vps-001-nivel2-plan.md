@@ -15,8 +15,8 @@ específicamente esa elevación; si no, se registran como `BLOQUEADO`.
 
 Efectos incidentales que se declaran y aceptan o se omiten:
 
-- `podman` puede iniciar un proceso `podman-pause-*` transitorio; `podman unshare` crea un
-  namespace de usuario transitorio.
+- `podman` puede iniciar un proceso `podman-pause-*` transitorio. No se ejecutará
+  `podman unshare` ni se creará un namespace de usuario en esta auditoría.
 - Las conexiones TCP/HTTP y `dig` pueden dejar entradas en logs o en fail2ban; no se
   interpretan como exposición ni como cambio de configuración.
 - `systemctl`, `ss`, `find`, `stat` y `loginctl` pueden actualizar atime.
@@ -157,8 +157,7 @@ podman info --format '{{.Host.CgroupManager}}' 2>&1
 cat /proc/self/cgroup
 cat /sys/fs/cgroup/cgroup.controllers 2>&1
 systemctl --user show -p Delegate 2>&1
-podman unshare cat /proc/self/uid_map 2>&1
-podman unshare cat /proc/self/gid_map 2>&1
+podman info --format '{{json .Host.IDMappings}}' 2>&1
 awk -F: '$1=="mfadmin"{print FILENAME":"$1":"$3}' /etc/subuid /etc/subgid 2>&1
 command -v newuidmap newgidmap fuse-overlayfs slirp4netns pasta crun 2>&1
 podman system df
@@ -170,9 +169,9 @@ podman pod ps --format 'table {{.Name}}\t{{.Status}}\t{{.Containers}}'
 ```
 
 `podman info --format '{{json .Host}}' | python3 ...` imprime solo las claves del objeto
-Host; si falla, se registra y no se imprime el JSON completo. `podman unshare` crea un
-namespace de usuario transitorio para leer los mapas; no persiste ni modifica el store. Si
-el usuario no acepta ese efecto, se omite y se marca `NO VERIFICADO`.
+Host; si falla, se registra y no se imprime el JSON completo. Los mapas UID/GID se consultan
+con `podman info --format '{{json .Host.IDMappings}}'` y con `/etc/subuid`/`/etc/subgid`; no
+se crea ningún namespace ni se ejecuta `podman unshare`.
 
 Quadlet, sin leer valores sensibles:
 
@@ -256,12 +255,14 @@ Solo con autorización de red expresa; desde la estación, sin sudo:
 for p in 22 80 443 2019 3001 18082; do
   nc -z -G 4 <VPS_IP> "$p" >/dev/null 2>&1 && echo "$p open" || echo "$p closed/filtered"
 done
-curl -sS -o /dev/null -D - --connect-timeout 5 --max-time 10 https://test.myfinanzas.pp.ua/ | grep -iE '^(HTTP/|location:|server:|strict-transport-security:|content-security-policy:|x-content-type-options:|referrer-policy:)'
+curl -sSI --connect-timeout 5 --max-time 10 https://myfinanzas.pp.ua/ | grep -iE '^(HTTP/|location:|server:|strict-transport-security:|content-security-policy:|x-content-type-options:|referrer-policy:)'
+curl -sSI --connect-timeout 5 --max-time 10 https://test.myfinanzas.pp.ua/ | grep -iE '^(HTTP/|location:|server:|strict-transport-security:|content-security-policy:|x-content-type-options:|referrer-policy:)'
 ```
 
-No se amplía la lista de puertos ni se usa `nmap`. No se consulta `myfinanzas.pp.ua` por
-HTTP/TLS sin autorización específica. Si no se autoriza, la exposición queda
-`NO VERIFICADA`.
+Solo se consulta la raíz `/` con `HEAD`; no se accede a `/api`, rutas autenticadas ni
+contenido de la aplicación. La ausencia de `test.myfinanzas.pp.ua` es un resultado esperado,
+no un fallo. No se amplía la lista de puertos ni se usa `nmap`. Si no se autoriza, la
+exposición queda `NO VERIFICADA`.
 
 ### 3.7 Backups y recuperación
 
@@ -361,9 +362,8 @@ IPs, secretos, claves, cookies, bases ni datos reales.
 | Riesgo | Mitigación |
 | --- | --- |
 | Exposición de secretos en Caddyfile/`sshd -T` | Filtros de redacción; no imprimir valores de `tls`, tokens, `setenv` ni claves |
-| Cambio accidental o efecto incidental | Lista de solo lectura; `sudo -n` solo para lectura; sin reload/restart/UFW; declarados `podman-pause`, namespace de `podman unshare`, atime y logs/fail2ban por probes |
+| Cambio accidental o efecto incidental | Lista de solo lectura; `sudo -n` solo para lectura; sin reload/restart/UFW; declarados `podman-pause`, atime y logs/fail2ban por probes |
 | Caída de SSH/UFW | No se tocan SSH/UFW; consola del proveedor solo con autorización separada |
-| `podman unshare` crea namespace | Efecto transitorio; si no se acepta, se omite y se marca `NO VERIFICADO` |
 | `fail2ban-client` muestra IPs | Filtrar a conteos; no imprimir lista de baneos |
 | DNS/HTTPS interpretado como ataque | Consultas mínimas, sin AXFR/enumeración/escaneo |
 | Backups con contenido | Solo metadatos; prohibido abrir/descifrar/restaurar |

@@ -12,19 +12,24 @@ release, la promoción y la aceptación; este repositorio posee el contrato segu
 privilegios, las rutas, los servicios, las copias y la recuperación.
 
 No repite la especificación del host TEST
-([PR #9](https://github.com/jmartinlabs/vps-infra/pull/9), abierta y no mergeada) ni el
-runbook de la aplicación. Cuando ambos se solapen, prevalece el documento propietario de
-cada materia y este contrato solo añade la interfaz de activación.
+([PR #9](https://github.com/jmartinlabs/vps-infra/pull/9), MERGED en `901204c`; la spec
+conserva estado DRAFT/pendiente de aprobación) ni el runbook de la aplicación. Cuando ambos
+se solapen, prevalece el documento propietario de cada materia y este contrato solo añade la
+interfaz de activación.
 
 ## 1. Estado de partida y límites de las afirmaciones
 
-- `[CONFIRMADO]` El VPS no tiene MyFinanzas desplegada; la página raíz es un placeholder.
-  No hay rama `test` en `myfinanzas-app` y el flujo vigente es `feature/* → main`.
+- `[CONFIRMADO]` El VPS no tiene MyFinanzas desplegada. El contenido del sitio raíz figura
+  como página estática informada, no verificada por completo; no se ha accedido al VPS para
+  este documento. No hay rama `test` en `myfinanzas-app` y el flujo vigente es
+  `feature/* → main`.
 - `[CONFIRMADO]` La release de la aplicación es un paquete privado con `image.oci.tar`,
   `frontend/`, `manifest.json` y `manifest.sha256`; se selecciona por ID/digest inmutable,
   nunca por etiqueta móvil. La aplicación no publica ese paquete como artifact de CI.
-- `[CONFIRMADO]` El host TEST y sus puertos están en el PR #9, pendiente de aprobación y
-  merge. Este documento **no** modifica ese PR ni declara TEST operativo.
+- `[CONFIRMADO]` El host TEST y sus puertos están en
+  [`specs/02-infra-test-01-host-specification.md`](../specs/02-infra-test-01-host-specification.md),
+  integrada por el PR #9 (`901204c`). La spec conserva estado DRAFT/pendiente de aprobación;
+  este documento **no** la modifica ni declara TEST operativo.
 - `[CONFIRMADO]` El PR #9 describe el despliegue TEST como manual. Este contrato prepara la
   activación automática **solo cuando el sistema se habilite expresamente**; mientras no se
   habilite, el procedimiento manual y sus gates siguen vigentes. La habilitación sustituirá
@@ -54,22 +59,25 @@ real.
 | Campo | Regla |
 | --- | --- |
 | `environment` | Exactamente `test` o `prod`; no se infiere del nombre del host ni del tag |
-| `version` | SemVer completo, idéntico al tag y al manifiesto |
+| `version` | SemVer completo, idéntico al tag y al contrato de despliegue. `[PENDIENTE]` El manifiesto actual de `release.py` no declara versión de aplicación; D2/D3 fijan el campo o su derivación |
 | `tag` | `deploy-test-v<semver>` o `deploy-prod-v<semver>`; tag inmutable |
 | `release_sha` | SHA de 40 caracteres del commit construido; ancestro del origen autorizado |
 | `release_manifest_sha256` | SHA-256 del manifiesto de release verificado |
 | `image_id` / digest OCI | ID inmutable; nunca una etiqueta mutable |
-| `frontend_sha256` | Checksum del frontend incluido; viaja con la imagen |
+| `frontend_sha256` / `frontend_files` | `[PENDIENTE]` El manifiesto actual publica un mapa `frontend_files` ruta→SHA-256, no un único checksum; D2 fija el checksum determinista del conjunto o el campo equivalente |
 | `schema_version` / `schema_contract` | Contrato declarado por el código de ese SHA |
-| `seed_manifest_sha256` | Solo TEST; manifiesto del dataset ficticio |
+| `seed_manifest_sha256` | Solo TEST; manifiesto del dataset ficticio. `[PENDIENTE]` D11 debe reconciliar el seed con el SHA y el esquema |
 | `qa_reference` | Referencia a la QA independiente del SHA, sin secretos |
 | `ci_run_id` / `rootless_run_id` | Ejecuciones asociadas al SHA exacto y su resultado |
+| `approval_reference` | Solo PROD; Environment `production`, ejecución, revisor, SHA y versión que autoriza la activación |
 | `backup_plan` / `rollback_pair` | Copia previa exigida y par exacto de vuelta atrás |
 | `smoke_profile` | Conjunto fijo de comprobaciones y valores esperados no secretos |
 
 Los campos que contengan rutas, identificadores de ejecución o referencias de evidencia no
 son secretos. Nunca se envían contraseñas, TOTP, claves `age`, cookies, bases de datos ni
-contenido financiero.
+contenido financiero. Los campos marcados `[PENDIENTE]` se cierran en la Fase 1 junto con
+D2/D3/D11 de la especificación de la aplicación; el host no los inventa ni los deduce de
+texto libre.
 
 ### 3.2 Salida del host
 
@@ -100,15 +108,21 @@ Antes de modificar el VPS, el host comprueba y registra:
    SHA exacto. La referencia de QA está presente y es revisable; el host no la sustituye.
 4. **Artefacto.** El paquete existe, su manifiesto y checksums verifican, el commit esperado
    coincide y el digest es inmutable. Si no coincide, se detiene; no se reconstruye.
-5. **Esquema y datos.** El contrato de esquema del manifiesto es compatible con el estado o
+5. **Promoción PROD.** Para `prod`, la versión, el SHA y el digest coinciden exactamente con
+   los que superaron TEST y su smoke; si falta la evidencia o el artefacto es distinto, se
+   detiene. TEST no requiere este paso.
+6. **Aprobación PROD.** Para `prod`, existe una aprobación verificable del Environment
+   `production` (run, revisor, SHA y versión) antes de liberar credenciales o activar. TEST
+   no requiere esta aprobación; su habilitación es el interruptor de H5 (§9).
+7. **Esquema y datos.** El contrato de esquema del manifiesto es compatible con el estado o
    con la migración expresamente autorizada. TEST exige su marcador y seed verificados; PROD
    exige la autorización de datos reales y la copia previa.
-6. **Copia y recuperación.** Existe una copia válida y una restauración ensayada según la
+8. **Copia y recuperación.** Existe una copia válida y una restauración ensayada según la
    política aplicable. Sin copia o sin plan de recuperación no se activa.
-7. **Host.** Usuario, rutas, permisos, unidad, loopback, Caddy, DNS, disco, memoria y puertos
+9. **Host.** Usuario, rutas, permisos, unidad, loopback, Caddy, DNS, disco, memoria y puertos
    están en el estado esperado. Cualquier desviación detiene el proceso antes de mutar.
-8. **Capacidad.** Hay espacio para release, copia y margen operativo; los límites del
-   contenedor y del host siguen vigentes.
+10. **Capacidad.** Hay espacio para release, copia y margen operativo; los límites del
+    contenedor y del host siguen vigentes.
 
 La comprobación previa es de solo lectura. Un fallo de validación produce
 `blocked_before_mutation` y no cambia servicios, datos, Caddy, DNS ni firewall.
@@ -236,7 +250,8 @@ Ninguna fase se deduce de otra. Un merge documental no habilita la siguiente.
 
 ## 11. Fuera de alcance de este documento
 
-- Crear tags operativos o moverlos; activar workflows de despliegue.
+- Crear tags operativos, moverlos, sobrescribirlos, borrarlos o reutilizarlos; activar
+  workflows de despliegue.
 - Configurar credenciales, accesos SSH, runners o secretos.
 - Cambiar usuarios, rutas, servicios, Caddy, DNS, UFW, Podman/Quadlet o firewall.
 - Desplegar, actualizar, restaurar, reiniciar o retirar nada en el VPS.
@@ -249,6 +264,6 @@ Ninguna fase se deduce de otra. Un merge documental no habilita la siguiente.
 - [Operaciones y recuperación](operaciones.md)
 - [Roadmap](roadmap.md)
 - [Estado actual](estado-actual.md)
-- [Host TEST (PR #9, abierto)](https://github.com/jmartinlabs/vps-infra/pull/9)
+- [Host TEST (PR #9, MERGED `901204c`; spec DRAFT)](https://github.com/jmartinlabs/vps-infra/blob/main/specs/02-infra-test-01-host-specification.md)
 - `myfinanzas-app`: [especificación `DEPLOY-TAGS-01`](https://github.com/jmartinlabs/myfinanzas-app/pull/233)
 - `agent-project-template`: [patrón reutilizable de despliegue por tags](https://github.com/jmartinlabs/agent-project-template/pull/48)

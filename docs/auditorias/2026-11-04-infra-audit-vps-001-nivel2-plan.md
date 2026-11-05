@@ -348,10 +348,13 @@ como `mftest` sin autorización específica.
 - Capacidad: métricas de host y contenedores, con veredicto limitado a capacidad.
 
 Custodia de evidencias: se aplica el estándar de Nivel 1. La salida cruda se cifra
-(AES-256-CBC/PBKDF2 600.000), la clave se custodia en macOS Keychain fuera del repositorio,
-el texto plano se elimina tras verificar el descifrado y la retención se revisa al cerrar la
-fase o a los 30 días. Solo se publica el extracto redactado; no se incluyen IPs, secretos,
-claves, cookies, bases ni datos reales.
+(AES-256-CBC/PBKDF2 600.000), la clave se custodia en macOS Keychain fuera del repositorio y
+el texto plano se elimina tras verificar el descifrado. La evidencia cifrada se conserva
+hasta el **2026-12-04**; esa fecha se revisará su necesidad y se solicitará autorización
+antes de eliminarla. **No se elimina al integrar PR #10.** Durante esta tarea **no se
+descifra, muestra, copia ni elimina** la evidencia; el descifrado de verificación inicial ya
+se realizó una vez y no se repetirá. Solo se publica el extracto redactado; no se incluyen
+IPs, secretos, claves, cookies, bases ni datos reales.
 
 ## 5. Riesgos y mitigaciones
 

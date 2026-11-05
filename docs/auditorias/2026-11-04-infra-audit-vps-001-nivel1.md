@@ -203,8 +203,11 @@ El registro local contiene la salida completa; no se publica. Custodia aplicada:
 - SHA-256 del cifrado: `fae53483c13a9344e281c0033a079c2cb38803847b5952240b969de1212743b1`.
 - SHA-256 del texto plano original: registrado en el metadato local junto al cifrado.
 - Texto plano eliminado tras verificar que el descifrado coincide.
-- Retención: hasta la integración de PR #10 o 30 días, lo que ocurra primero; después se
-  revisa y se elimina. No se publica en GitHub.
+- Retención: conservar hasta el **2026-12-04**, para poder contrastarla durante el Nivel 2.
+  Esa fecha se revisará si sigue siendo necesaria y se solicitará autorización antes de
+  eliminarla. **No se elimina automáticamente al integrar PR #10.** No se publica en GitHub.
+- Durante esta tarea **no se descifra, muestra, copia ni elimina** la evidencia. El
+  descifrado de verificación inicial ya se realizó una vez; no se repetirá.
 
 Este informe omite IP, hostname completo, machine ID, boot ID y cualquier secreto. No
 actualiza `docs/estado-actual.md`; es un resultado parcial de Nivel 1. La revisión

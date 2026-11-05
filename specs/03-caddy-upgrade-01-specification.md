@@ -1,8 +1,8 @@
 # 03 — VPS-CADDY-UPGRADE-01: actualización de Caddy a 2.11.9
 
-Status: **DRAFT — correcciones aplicadas; NO listo para ejecución.** El ensayo de rollback
-(AC-18/T-01…T-12) no se ha realizado por falta de entorno aislado equivalente y el riesgo
-residual debe revisarse y autorizarse expresamente antes de tocar el VPS.
+Status: **EJECUTADO (2026-11-05).** Actualización realizada manualmente con autorización;
+resultado en [cierre](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
+AC-17 (arranque tras reboot) y AC-18 (ensayo de rollback) siguen `UNRUN`.
 Fecha: 2026-11-05.
 Contexto: [cierre de auditoría](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md), PR #13 MERGED.
 Contrato host: PR #9, **DRAFT**; no adoptado.
@@ -874,7 +874,9 @@ Cerrar la ventana en §6.9.
 
 ## 8. Criterios de aceptación
 
-Todos **UNRUN** hasta la ventana autorizada.
+Estado **antes de la ventana** (histórico). El resultado posterior, según evidencia del usuario,
+está en el [cierre](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md); **AC-17** y
+**AC-18** siguen `UNRUN`.
 
 | ID | Comprobación | Esperado | Estado |
 | --- | --- | --- | --- |
@@ -929,9 +931,9 @@ El ensayo usa un dominio local y `tls internal` para no depender de DNS ni de Le
 tanto **no valida** el certificado real de `myfinanzas.pp.ua` (AC-11) ni la exposición pública
 (AC-13). Esas comprobaciones siguen siendo exclusivas de la ventana autorizada.
 
-**Consecuencia del bloqueo:** el rollback no está ensayado y AC-18 sigue abierto. La
-actualización **no se considera lista para ejecución** hasta que se revise y acepte
-expresamente el riesgo residual (§10).
+**Consecuencia:** el rollback no se ensayó y AC-18 sigue abierto. La actualización se ejecutó el
+2026-11-05; el resultado y el estado del riesgo residual se registran en el
+[cierre](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
 
 ### 8.2 Validaciones estáticas ejecutadas (autor)
 
@@ -978,7 +980,10 @@ Las validaciones estáticas no sustituyen al ensayo de ejecución ni a la ventan
 | Interrupción breve del sitio | Bajo | Ventana de baja actividad; parada estimada < 2 min |
 | Reboot no probado | Medio | AC-17 UNRUN hasta que se pruebe; aceptar o programar |
 
-## 10. Decisiones adoptadas y pendientes
+## 10. Decisiones adoptadas y pendientes (histórico de la ventana)
+
+La actualización se ejecutó el 2026-11-05; esta lista conserva el estado previo a la ventana. El
+estado posterior está en el [cierre](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
 
 Adoptadas el 2026-11-05:
 

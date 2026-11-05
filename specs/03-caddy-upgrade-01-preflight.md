@@ -1,6 +1,6 @@
 # 03.1 — VPS-CADDY-UPGRADE-01: comprobación previa
 
-Status: **DRAFT — preflight preparada; no ejecutada en el VPS.**
+Status: **DRAFT — preflight preparada; ejecución no registrada en este documento.**
 Fecha: 2026-11-05.
 Procedimiento principal: [03 — actualización de Caddy](03-caddy-upgrade-01-specification.md).
 

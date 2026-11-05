@@ -256,13 +256,27 @@ interrumpirla**; no se detienen servicios que estén trabajando:
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
 BUSY=0
-if pgrep -a -x apt apt-get dpkg >/dev/null 2>&1; then BUSY=1; fi
-if pgrep -a -f 'unattended-upgr' >/dev/null 2>&1; then BUSY=1; fi
+if pgrep -a -x 'apt|apt-get|dpkg' >/dev/null 2>&1; then
+  BUSY=1
+else
+  rc=$?
+  [ "$rc" -eq 1 ] || { echo "Detector APT falló (rc=$rc): abortar"; exit 1; }
+fi
+if pgrep -a -f 'unattended-upgr' >/dev/null 2>&1; then
+  BUSY=1
+else
+  rc=$?
+  [ "$rc" -eq 1 ] || { echo "Detector unattended falló (rc=$rc): abortar"; exit 1; }
+fi
 if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then BUSY=1; fi
 if systemctl is-active --quiet apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; then BUSY=1; fi
 if sudo systemctl list-jobs | grep -qE 'apt|unattended|dpkg'; then BUSY=1; fi
 if [ "$BUSY" -ne 0 ]; then echo "APT/dpkg ocupado: abortar sin interrumpir"; exit 1; fi
 ```
+
+`pgrep` recibe **un único patrón** ERE con `-x`; si devuelve un código distinto de 0
+(coincidencia) o 1 (sin coincidencias), se aborta. **Un fallo del detector nunca se interpreta
+como sistema libre.**
 
 Si está libre, registrar el estado de los timers y detener **solo los timers**:
 
@@ -404,10 +418,15 @@ La copia se hace con el servicio detenido para que sea consistente. Si algo fall
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
-if pgrep -a -x apt apt-get dpkg >/dev/null 2>&1 \
-  || sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
-  echo "APT/dpkg ocupado: detener sin interrumpir"; exit 1
+BUSY=0
+if pgrep -a -x 'apt|apt-get|dpkg' >/dev/null 2>&1; then
+  BUSY=1
+else
+  rc=$?
+  [ "$rc" -eq 1 ] || { echo "Detector APT falló (rc=$rc): detener"; exit 1; }
 fi
+if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then BUSY=1; fi
+if [ "$BUSY" -ne 0 ]; then echo "APT/dpkg ocupado: detener sin interrumpir"; exit 1; fi
 sudo sh -c "cd '$CASE_DIR' && sha256sum -c new.expected"
 sudo dpkg --force-confdef --force-confold --unpack "$DEB_NEW"
 dpkg -l caddy
@@ -476,10 +495,15 @@ Los *drop-in* preexistentes de ambas unidades quedaron respaldados en §6.4.
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
-if pgrep -a -x apt apt-get dpkg >/dev/null 2>&1 \
-  || sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
-  echo "APT/dpkg ocupado: detener sin interrumpir"; exit 1
+BUSY=0
+if pgrep -a -x 'apt|apt-get|dpkg' >/dev/null 2>&1; then
+  BUSY=1
+else
+  rc=$?
+  [ "$rc" -eq 1 ] || { echo "Detector APT falló (rc=$rc): detener"; exit 1; }
 fi
+if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then BUSY=1; fi
+if [ "$BUSY" -ne 0 ]; then echo "APT/dpkg ocupado: detener sin interrumpir"; exit 1; fi
 sudo dpkg --force-confdef --force-confold --configure caddy
 dpkg -l caddy
 dpkg --audit
@@ -884,8 +908,13 @@ expresamente el riesgo residual (§10).
 | V-05 | Enlaces internos y referencias `§` | **PASS** |
 | V-06 | SHA-256, tamaños y metadatos de ambos `.deb` | **PASS** (descarga pública) |
 | V-07 | `diff` de unidades, `conffile` y scripts `postinst`/`postrm` | **PASS** |
+| V-08 | Detector APT: coincidencia (rc 0), sin coincidencias (rc 1) y error (rc 2) | **PASS** (rc 2 aborta) |
 | T-01…T-12 | Ensayo en VM Debian 13 desechable | **BLOQUEADO / UNRUN** |
 
+V-08 se probó con un doble de `pgrep` que reproduce los códigos 0/1/2: una coincidencia marca
+`BUSY`, la ausencia de coincidencias deja libre y un error **aborta**. La sintaxis
+`pgrep [options] pattern` (un único patrón ERE) se contrastó con la página de manual de
+`procps` 4.0.4 de Debian trixie; el `pgrep` real de Debian no se ejecutó (sin host aislado).
 Las validaciones estáticas no sustituyen al ensayo de ejecución ni a la ventana real.
 
 ## 9. Riesgos y mitigaciones

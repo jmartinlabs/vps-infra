@@ -150,7 +150,8 @@ Otros puntos:
 6. Ninguna operación de `apt`, `dpkg` o `unattended-upgrades` en curso; los timers solo se
    detienen si está libre y se restauran al cerrar (§6.1 y §6.9). Si hay una actualización en
    curso, **abortar sin interrumpirla**.
-7. Ensayo aislado del procedimiento y del rollback completado (§8.1), o bloqueo documentado.
+7. Ensayo aislado del procedimiento y del rollback si existe entorno; si no, bloqueo documentado
+   y riesgo residual pendiente de autorización (§8.1 y §10).
 8. Herramientas presentes: `curl`, `openssl`, `gpg`, `fuser`, `sha256sum`, `dpkg-deb`. Si falta
    alguna, detenerse y decidir antes de la ventana.
 
@@ -190,6 +191,8 @@ DEB_OLD_NAME="caddy_2.6.2-12+deb13u1_amd64.deb"
 DEB_NEW_NAME="caddy_2.11.9_linux_amd64.deb"
 DEB_OLD="$CASE_DIR/$DEB_OLD_NAME"
 DEB_NEW="$CASE_DIR/$DEB_NEW_NAME"
+DL_OLD="$CASE_DIR/dl-old"
+DL_NEW="$CASE_DIR/dl-new"
 sudo install -d -m 0700 "$CASE_DIR"
 sudo cp -a /etc/apt/sources.list.d "$CASE_DIR/sources.list.d.before"
 sudo cp -a /etc/apt/preferences.d "$CASE_DIR/preferences.d.before" 2>/dev/null || true
@@ -205,6 +208,7 @@ sudo cp -a /etc/apt/preferences.d "$CASE_DIR/preferences.d.before" 2>/dev/null |
   systemctl show caddy -p ActiveState -p SubState -p NRestarts -p FragmentPath -p User -p Group
   systemctl show caddy -p MainPID -p ExecMainStartTimestamp -p AmbientCapabilities
   dpkg-query -W -f='${Conffiles}\n' caddy
+  apt-mark showhold
   apt-cache policy caddy
   dpkg --audit || true
   systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer 2>&1 || true
@@ -254,7 +258,7 @@ interrumpirla**; no se detienen servicios que estén trabajando:
 BUSY=0
 if pgrep -a -x apt apt-get dpkg >/dev/null 2>&1; then BUSY=1; fi
 if pgrep -a -f 'unattended-upgr' >/dev/null 2>&1; then BUSY=1; fi
-if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then BUSY=1; fi
+if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then BUSY=1; fi
 if systemctl is-active --quiet apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; then BUSY=1; fi
 if sudo systemctl list-jobs | grep -qE 'apt|unattended|dpkg'; then BUSY=1; fi
 if [ "$BUSY" -ne 0 ]; then echo "APT/dpkg ocupado: abortar sin interrumpir"; exit 1; fi
@@ -301,6 +305,10 @@ sudo chmod 0644 /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/so
 sudo touch "$CASE_DIR/repo-added"
 sudo apt-get update
 apt-cache policy caddy
+[ "$(apt-cache policy caddy | awk '/Candidate:/ {print $2}')" = "2.11.9" ] \
+  || { echo "Candidato distinto de 2.11.9"; exit 1; }
+apt-cache madison caddy | grep 'dl.cloudsmith.io' | grep -q '2.11.9' \
+  || { echo "2.11.9 no procede del repositorio oficial"; exit 1; }
 ```
 
 - El fingerprint se verifica **antes** de instalar la clave en el sistema; si no coincide, el
@@ -314,17 +322,20 @@ apt-cache policy caddy
 #### 6.3 Descargar y verificar paquetes
 
 Se usan nombres y rutas fijos (`$DEB_OLD`, `$DEB_NEW`) y se comprueba que el fichero descargado
-tiene el nombre y los metadatos esperados. Cualquier discrepancia aborta.
+tiene el nombre y los metadatos esperados. `apt-get download` puede nombrar el fichero según el
+índice; se normaliza moviéndolo a `$DEB_OLD`/`$DEB_NEW`. Cualquier discrepancia aborta.
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
-sudo sh -c "cd '$CASE_DIR' && apt-get download caddy=2.6.2-12+deb13u1" \
-  || sudo sh -c "cd '$CASE_DIR' && curl -fsSLO https://security.debian.org/debian-security/pool/updates/main/c/caddy/$DEB_OLD_NAME"
+sudo install -d -m 0700 "$DL_OLD" "$DL_NEW"
+sudo sh -c "cd '$DL_OLD' && apt-get download caddy=2.6.2-12+deb13u1" \
+  || sudo sh -c "cd '$DL_OLD' && curl -fsSLO https://security.debian.org/debian-security/pool/updates/main/c/caddy/$DEB_OLD_NAME"
+sudo sh -c "cd '$DL_OLD' && for f in *.deb; do [ -e \"\$f\" ] && mv -f \"\$f\" '$DEB_OLD'; done"
 sudo test -f "$DEB_OLD" || { echo "No existe $DEB_OLD_NAME"; exit 1; }
 printf '%s  %s\n' 'f173515859f273c97219cc242d625a64650fefdd136a9570acb1b5f7581c9786' "$DEB_OLD_NAME" \
   | sudo tee "$CASE_DIR/old.expected" >/dev/null
 sudo sh -c "cd '$CASE_DIR' && sha256sum -c old.expected"
-sudo sh -c "cd '$CASE_DIR' && stat -c '%s %n' '$DEB_OLD_NAME'"
+[ "$(sudo stat -c %s "$DEB_OLD")" = 10110872 ] || { echo "Tamaño antiguo inesperado"; exit 1; }
 [ "$(sudo dpkg-deb -f "$DEB_OLD" Package)" = caddy ] || { echo "Paquete antiguo inesperado"; exit 1; }
 [ "$(sudo dpkg-deb -f "$DEB_OLD" Version)" = "2.6.2-12+deb13u1" ] || { echo "Versión antigua inesperada"; exit 1; }
 [ "$(sudo dpkg-deb -f "$DEB_OLD" Architecture)" = amd64 ] || { echo "Arquitectura antigua inesperada"; exit 1; }
@@ -334,14 +345,14 @@ Referencia verificada del `.deb` Debian (security pool): **10.110.872 bytes**, S
 **`f173515859f273c97219cc242d625a64650fefdd136a9570acb1b5f7581c9786`**.
 
 ```bash
-: "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
-sudo sh -c "cd '$CASE_DIR' && apt-get download caddy=2.11.9" \
-  || sudo sh -c "cd '$CASE_DIR' && curl -fsSLO https://dl.cloudsmith.io/public/caddy/stable/deb/any-distro/pool/any-version/main/c/ca/caddy_2.11.9/$DEB_NEW_NAME"
+sudo sh -c "cd '$DL_NEW' && apt-get download caddy=2.11.9" \
+  || sudo sh -c "cd '$DL_NEW' && curl -fsSLO https://dl.cloudsmith.io/public/caddy/stable/deb/any-distro/pool/any-version/main/c/ca/caddy_2.11.9/$DEB_NEW_NAME"
+sudo sh -c "cd '$DL_NEW' && for f in *.deb; do [ -e \"\$f\" ] && mv -f \"\$f\" '$DEB_NEW'; done"
 sudo test -f "$DEB_NEW" || { echo "No existe $DEB_NEW_NAME"; exit 1; }
 printf '%s  %s\n' 'bbea4aeaadc86b233c168cc33bad9daa1cbce756dc08949b783b45398f8e65cb' "$DEB_NEW_NAME" \
   | sudo tee "$CASE_DIR/new.expected" >/dev/null
 sudo sh -c "cd '$CASE_DIR' && sha256sum -c new.expected"
-sudo sh -c "cd '$CASE_DIR' && stat -c '%s %n' '$DEB_NEW_NAME'"
+[ "$(sudo stat -c %s "$DEB_NEW")" = 18049414 ] || { echo "Tamaño nuevo inesperado"; exit 1; }
 [ "$(sudo dpkg-deb -f "$DEB_NEW" Package)" = caddy ] || { echo "Paquete nuevo inesperado"; exit 1; }
 [ "$(sudo dpkg-deb -f "$DEB_NEW" Version)" = "2.11.9" ] || { echo "Versión nueva inesperada"; exit 1; }
 [ "$(sudo dpkg-deb -f "$DEB_NEW" Architecture)" = amd64 ] || { echo "Arquitectura nueva inesperada"; exit 1; }
@@ -366,8 +377,11 @@ sudo cp -a /etc/caddy "$CASE_DIR/etc-caddy"
 sudo cp -a /var/lib/caddy "$CASE_DIR/var-lib-caddy"
 sudo cp -a /lib/systemd/system/caddy.service "$CASE_DIR/caddy.service.before"
 sudo cp -a /lib/systemd/system/caddy-api.service "$CASE_DIR/caddy-api.service.before" 2>/dev/null || true
-if [ -e /etc/systemd/system/caddy.service.d/10-local-capabilities.conf ]; then
-  sudo cp -a /etc/systemd/system/caddy.service.d/10-local-capabilities.conf "$CASE_DIR/dropin.before"
+if [ -e /etc/systemd/system/caddy.service.d/99-local-capabilities.conf ]; then
+  sudo cp -a /etc/systemd/system/caddy.service.d/99-local-capabilities.conf "$CASE_DIR/dropin.before"
+fi
+if [ -e /etc/systemd/system/caddy-api.service.d/99-local-capabilities.conf ]; then
+  sudo cp -a /etc/systemd/system/caddy-api.service.d/99-local-capabilities.conf "$CASE_DIR/dropin-api.before"
 fi
 sudo systemctl cat caddy | sudo tee "$CASE_DIR/unit.before" >/dev/null
 sudo chmod 0700 "$CASE_DIR"
@@ -390,6 +404,10 @@ La copia se hace con el servicio detenido para que sea consistente. Si algo fall
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
+if pgrep -a -x apt apt-get dpkg >/dev/null 2>&1 \
+  || sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
+  echo "APT/dpkg ocupado: detener sin interrumpir"; exit 1
+fi
 sudo sh -c "cd '$CASE_DIR' && sha256sum -c new.expected"
 sudo dpkg --force-confdef --force-confold --unpack "$DEB_NEW"
 dpkg -l caddy
@@ -445,12 +463,23 @@ printf '%s\n' \
   'CapabilityBoundingSet=' \
   'CapabilityBoundingSet=CAP_NET_BIND_SERVICE' \
   'LimitNPROC=512' \
-  | sudo tee /etc/systemd/system/caddy.service.d/10-local-capabilities.conf >/dev/null
+  | sudo tee /etc/systemd/system/caddy.service.d/99-local-capabilities.conf >/dev/null
+sudo install -d -m 0755 /etc/systemd/system/caddy-api.service.d
+sudo cp -a /etc/systemd/system/caddy.service.d/99-local-capabilities.conf \
+  /etc/systemd/system/caddy-api.service.d/99-local-capabilities.conf
 sudo systemctl daemon-reload
+sudo systemctl cat caddy | grep -E 'AmbientCapabilities|CapabilityBoundingSet|LimitNPROC'
 ```
+
+Se usa el prefijo `99-` para que sea el último *drop-in* y no lo sobrescriba otro posterior.
+Los *drop-in* preexistentes de ambas unidades quedaron respaldados en §6.4.
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
+if pgrep -a -x apt apt-get dpkg >/dev/null 2>&1 \
+  || sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
+  echo "APT/dpkg ocupado: detener sin interrumpir"; exit 1
+fi
 sudo dpkg --force-confdef --force-confold --configure caddy
 dpkg -l caddy
 dpkg --audit
@@ -491,20 +520,22 @@ valor hex `0x0000000000000400`); `cap_net_admin` (bit 12, `0x00001000`) **no** a
 (`systemctl show caddy -p User` → `caddy`). En `systemctl show`, `CapabilityBoundingSet` y
 `AmbientCapabilities` deben reflejar solo `cap_net_bind_service` (máscara `1024`), nunca
 `cap_net_admin` (`4096`). Si aparece cualquier capacidad no prevista, **no continuar**: retirar
-el *drop-in*, recargar y decidir (§7).
+el *drop-in*, recargar y decidir (§7). Si `caddy-api.service` estuviera activo, repetir la
+verificación sobre su PID; el mismo *drop-in* se aplica a ambas unidades.
 
 Si Caddy no arranca con el *drop-in*, **no se acepta silenciosamente** la unidad con
 `CAP_NET_ADMIN`: retirar el *drop-in*, recargar y revertir (§7.2).
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
-sudo rm /etc/systemd/system/caddy.service.d/10-local-capabilities.conf
+sudo rm -f /etc/systemd/system/caddy.service.d/99-local-capabilities.conf
+sudo rm -f /etc/systemd/system/caddy-api.service.d/99-local-capabilities.conf
 sudo systemctl daemon-reload
 sudo systemctl reset-failed caddy
 ```
 
-Si no arranca ni con la unidad oficial, no insistir con reinicios (activa el *start limit*);
-recoger `journalctl -u caddy -n 100 --no-pager` y revertir (§7).
+Si no arranca, no insistir con reinicios (activa el *start limit*); recoger
+`journalctl -u caddy -n 100 --no-pager` y revertir (§7).
 
 ### Fase 4 — Validación
 
@@ -575,13 +606,20 @@ Restaura el estado exacto registrado antes de la ventana:
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
 for u in apt-daily apt-daily-upgrade; do
-  en=$(sudo cat "$CASE_DIR/timer-$u.enabled" 2>/dev/null || echo disabled)
-  ac=$(sudo cat "$CASE_DIR/timer-$u.active" 2>/dev/null || echo inactive)
-  if [ "$en" = enabled ] && [ "$ac" = active ]; then
-    sudo systemctl start "$u.timer"
-  else
-    sudo systemctl stop "$u.timer" 2>/dev/null || true
+  if ! sudo test -f "$CASE_DIR/timer-$u.enabled" || ! sudo test -f "$CASE_DIR/timer-$u.active"; then
+    echo "Sin estado previo de $u.timer; no se toca"
+    continue
   fi
+  en=$(sudo cat "$CASE_DIR/timer-$u.enabled")
+  ac=$(sudo cat "$CASE_DIR/timer-$u.active")
+  case "$en" in
+    enabled|enabled-runtime)
+      if [ "$ac" = active ]; then sudo systemctl start "$u.timer"; fi
+      ;;
+    *)
+      sudo systemctl stop "$u.timer" 2>/dev/null || true
+      ;;
+  esac
 done
 systemctl is-active apt-daily.timer apt-daily-upgrade.timer || true
 ```
@@ -649,9 +687,13 @@ El *drop-in* creado en §6.6 se retira **siempre**; si existía uno previo, se r
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
-sudo rm -f /etc/systemd/system/caddy.service.d/10-local-capabilities.conf
+sudo rm -f /etc/systemd/system/caddy.service.d/99-local-capabilities.conf
+sudo rm -f /etc/systemd/system/caddy-api.service.d/99-local-capabilities.conf
 if sudo test -e "$CASE_DIR/dropin.before"; then
-  sudo cp -a "$CASE_DIR/dropin.before" /etc/systemd/system/caddy.service.d/10-local-capabilities.conf
+  sudo cp -a "$CASE_DIR/dropin.before" /etc/systemd/system/caddy.service.d/99-local-capabilities.conf
+fi
+if sudo test -e "$CASE_DIR/dropin-api.before"; then
+  sudo cp -a "$CASE_DIR/dropin-api.before" /etc/systemd/system/caddy-api.service.d/99-local-capabilities.conf
 fi
 sudo systemctl daemon-reload
 sudo systemctl restart caddy
@@ -696,10 +738,11 @@ fallo y restaurar la copia.
 
 ```bash
 : "${CASE_DIR:?Ejecuta §6.1 y define CASE_DIR}"
+FAIL_TS=$(date -u +%Y%m%dT%H%M%SZ)
 sudo systemctl stop caddy
-sudo mv /etc/caddy "$CASE_DIR/etc-caddy.failed"
+sudo mv /etc/caddy "$CASE_DIR/etc-caddy.failed-$FAIL_TS"
 sudo cp -a "$CASE_DIR/etc-caddy" /etc/caddy
-sudo mv /var/lib/caddy "$CASE_DIR/var-lib-caddy.failed"
+sudo mv /var/lib/caddy "$CASE_DIR/var-lib-caddy.failed-$FAIL_TS"
 sudo cp -a "$CASE_DIR/var-lib-caddy" /var/lib/caddy
 sudo chown -R caddy:caddy /var/lib/caddy
 sudo stat -c '%A %U:%G %n' /etc/caddy /etc/caddy/Caddyfile /var/lib/caddy
@@ -734,10 +777,19 @@ sudo sh -c "cd '$CASE_DIR' && sha256sum -c old.expected"
 sudo dpkg --force-downgrade --force-confdef --force-confold -i "$DEB_OLD"
 dpkg -l caddy
 dpkg --audit
+sudo rm -f /etc/systemd/system/caddy.service.d/99-local-capabilities.conf
+sudo rm -f /etc/systemd/system/caddy-api.service.d/99-local-capabilities.conf
+if sudo test -e "$CASE_DIR/dropin.before"; then
+  sudo cp -a "$CASE_DIR/dropin.before" /etc/systemd/system/caddy.service.d/99-local-capabilities.conf
+fi
+if sudo test -e "$CASE_DIR/dropin-api.before"; then
+  sudo cp -a "$CASE_DIR/dropin-api.before" /etc/systemd/system/caddy-api.service.d/99-local-capabilities.conf
+fi
 sudo systemctl daemon-reload
 sudo systemctl start caddy
 /usr/bin/caddy version
 systemctl is-active caddy
+sudo systemctl show caddy -p FragmentPath -p AmbientCapabilities
 ```
 
 Si `dpkg` se niega o el estado `iF` persiste, **detenerse y escalar**. Nunca improvisar
@@ -770,7 +822,7 @@ Todos **UNRUN** hasta la ventana autorizada.
 | AC-02 | Directivas del Caddyfile revisadas | Sin `rewrite ?`, body, `hide`, `php_fastcgi`, `client_auth` | UNRUN |
 | AC-03 | Copia consistente y permisos | Servicio detenido; `CASE_DIR` `0700`; secretos no expuestos | UNRUN |
 | AC-04 | Paquete antiguo verificado | SHA-256 `f1735158…`, 10.110.872 B | UNRUN |
-| AC-05 | Repo y clave (si aplica) | Fingerprint verificado antes de instalar; candidato 2.11.9 | UNRUN |
+| AC-05 | Repo y clave | Fingerprint verificado antes de instalar; candidato 2.11.9 | UNRUN |
 | AC-06 | `.deb` 2.11.9 verificado | SHA-256 `bbea4aea…`, 18.049.414 B | UNRUN |
 | AC-07 | `unpack` sin arranque | `dpkg -l` en `iU`; sin proceso Caddy; Caddyfile intacto | UNRUN |
 | AC-08 | `validate` como `caddy` | Config válida; sin errores de permisos | UNRUN |
@@ -810,7 +862,7 @@ exista un entorno aislado Debian 13 equivalente.
 | T-08 | Arranque y HTTP local | Servicio `active`; 200 en el sitio de prueba | UNRUN |
 | T-09 | Rollback | `caddy version` 2.6.2; servicio activo; sitio y datos intactos | UNRUN |
 | T-10 | Repo y `hold` tras rollback | Lista desactivada; sin `hold` sobre Debian | UNRUN |
-| T-11 | Timers de APT | Estado previo restaurado | UNRUN |
+| T-11 | Timers de APT | Estado previo restaurado; si no se registró, no se tocan | UNRUN |
 | T-12 | Estado final | `dpkg --audit` limpio; sin restos `.dpkg-dist` | UNRUN |
 
 El ensayo usa un dominio local y `tls internal` para no depender de DNS ni de Let's Encrypt; por
@@ -821,7 +873,7 @@ tanto **no valida** el certificado real de `myfinanzas.pp.ua` (AC-11) ni la expo
 actualización **no se considera lista para ejecución** hasta que se revise y acepte
 expresamente el riesgo residual (§10).
 
-### 8.2 Validaciones estáticas ejecutadas
+### 8.2 Validaciones estáticas ejecutadas (autor)
 
 | ID | Validación | Resultado |
 | --- | --- | --- |

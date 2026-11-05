@@ -196,7 +196,7 @@ systemctl show -p ActiveState -p SubState -p NRestarts -p FragmentPath -p DropIn
 ss -ltn | grep -E ':22\b' || true
 ls -l /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>&1
 find /etc/ssh/sshd_config.d -maxdepth 1 -type f -printf '%M %u:%g %p\n' 2>&1
-sed -n '1,200p' /etc/ssh/sshd_config 2>&1 | grep -vE '^[[:space:]]*(#|$)' | sed -E 's/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser) .*/\1 <redacted>/I'
+sed -n '1,200p' /etc/ssh/sshd_config 2>&1 | grep -vE '^[[:space:]]*(#|$)' | sed -E 's/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser)[[:space:]].*/\1 <redacted>/I; s/^(allowusers|allowgroups|denyusers|denygroups|permitopen|permitlisten)[[:space:]].*/\1 <redacted>/I' | redact_net
 systemctl show -p ActiveState -p SubState -p NRestarts -p FragmentPath fail2ban.service
 systemctl is-enabled fail2ban.service 2>&1
 ls -ld /etc/fail2ban /var/lib/fail2ban 2>&1
@@ -205,7 +205,7 @@ ls -ld /etc/fail2ban /var/lib/fail2ban 2>&1
 Con autorización de `sudo -n`:
 
 ```bash
-sudo -n sshd -T | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|pubkeyauthentication|permitemptypasswords|usepam|x11forwarding|allowusers|allowgroups|denyusers|denygroups|maxauthtries|logingracetime|clientaliveinterval|clientalivecountmax|authorizedkeysfile|hostkey|banner|gatewayports|permittunnel|permituserenvironment|allowtcpforwarding|permitopen|permitlisten|forcecommand|chrootdirectory|authenticationmethods|maxsessions|maxstartups|pubkeyacceptedalgorithms|hostbasedauthentication|ignoreuserknownhosts|gssapiauthentication|kerberosauthentication|usedns|revokedkeys|trustedusercakeys|authorizedkeyscommand|authorizedkeyscommanduser|acceptenv|setenv)' | sed -E 's#(/etc/ssh/ssh_host_[a-z0-9_]+_key)#<hostkey-path>#g; s/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser) .*/\1 <redacted>/I; s/^(allowusers|allowgroups|permitopen|permitlisten) .*/\1 <redacted>/I' | redact_net
+sudo -n sshd -T | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|pubkeyauthentication|permitemptypasswords|usepam|x11forwarding|allowusers|allowgroups|denyusers|denygroups|maxauthtries|logingracetime|clientaliveinterval|clientalivecountmax|authorizedkeysfile|hostkey|banner|gatewayports|permittunnel|permituserenvironment|allowtcpforwarding|permitopen|permitlisten|forcecommand|chrootdirectory|authenticationmethods|maxsessions|maxstartups|pubkeyacceptedalgorithms|hostbasedauthentication|ignoreuserknownhosts|gssapiauthentication|kerberosauthentication|usedns|revokedkeys|trustedusercakeys|authorizedkeyscommand|authorizedkeyscommanduser|acceptenv|setenv)' | sed -E 's#(/etc/ssh/ssh_host_[a-z0-9_]+_key)#<hostkey-path>#g; s/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser)[[:space:]].*/\1 <redacted>/I; s/^(allowusers|allowgroups|denyusers|denygroups|permitopen|permitlisten)[[:space:]].*/\1 <redacted>/I' | redact_net
 sudo -n fail2ban-client status
 sudo -n fail2ban-client status sshd 2>&1 | grep -E 'Currently banned|Total banned'
 ```

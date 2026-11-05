@@ -81,7 +81,8 @@ sudo -n nft list ruleset
 ```
 
 Filtrado local obligatorio: conservar `127.0.0.1`, `0.0.0.0`, `::1` y `::`; redactar el
-resto de IPv4/IPv6, MAC y comentarios con IPs. No se ejecutan `ufw allow/deny/delete/reset`,
+resto de IPv4/IPv6, MAC y comentarios con IPs. Se usa la función `redact_net` definida en
+el informe de Nivel 2 (§11.1). No se ejecutan `ufw allow/deny/delete/reset`,
 `nft add/delete/flush` ni `iptables` de cambio.
 
 Evidencia: política por defecto, reglas de entrada/salida, puertos permitidos, loopback,
@@ -209,9 +210,10 @@ sudo -n fail2ban-client status
 sudo -n fail2ban-client status sshd 2>&1 | grep -E 'Currently banned|Total banned'
 ```
 
-Aplicar `redact_net` de Nivel 1 a `listenaddress`, `allowusers`, `permitopen` y
-`permitlisten`. `fail2ban-client status` solo devuelve jails; la consulta de `sshd` se
-filtra a conteos, sin lista de IPs. No se ejecutan `fail2ban-client set/unban` ni `reload`.
+Aplicar `redact_net` del informe de Nivel 2 (§11.1) a `listenaddress`, `allowusers`,
+`permitopen` y `permitlisten`. `fail2ban-client status` solo devuelve jails; la consulta de
+`sshd` se filtra a conteos, sin lista de IPs. No se ejecutan `fail2ban-client set/unban` ni
+`reload`.
 
 `sshd -T` es configuración derivada de archivos; puede no coincidir con el demonio en
 ejecución. Se compara el `mtime` de los archivos con `ExecMainStartTimestamp` y se clasifica

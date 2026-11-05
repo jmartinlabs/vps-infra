@@ -132,6 +132,26 @@ Objetivo: cerrar solo SSH, firewall y versión/origen de Caddy, sin repetir Nive
 
 ### 11.1 Sin privilegios (agente, futura sesión autorizada)
 
+Definir antes de usar las salidas que puedan contener direcciones:
+
+```bash
+redact_net() {
+  perl -pe '
+    s/\b127\.0\.0\.1\b/__LOOP4__/g;
+    s/\b0\.0\.0\.0\b/__ANY4__/g;
+    s/(?<![0-9A-Fa-f:])::1(?![0-9A-Fa-f:])/__LOOP6__/g;
+    s/(?<![0-9A-Fa-f:])::(?![0-9A-Fa-f:])/__ANY6__/g;
+    s/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/<ip>/g;
+    s/\b([0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f:]*\b/<ipv6>/g;
+    s/\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/<mac>/g;
+    s/__LOOP4__/127.0.0.1/g;
+    s/__ANY4__/0.0.0.0/g;
+    s/__LOOP6__/::1/g;
+    s/__ANY6__/::/g
+  '
+}
+```
+
 ```bash
 caddy version
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\t${Status}\n' caddy
@@ -142,11 +162,11 @@ apt-cache policy caddy | sed -E 's#(https?://)[^/@]+@#\1<redacted>@#g'
 systemctl show -p ActiveState -p SubState -p NRestarts -p FragmentPath -p ExecMainStartTimestamp caddy.service
 stat -c '%A %U:%G %n' /etc/ssh/sshd_config.d/00-myfinanzas-hardening.conf
 if [ -r /etc/ssh/sshd_config.d/00-myfinanzas-hardening.conf ]; then
-  grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|UsePAM|X11Forwarding|AllowUsers|AllowGroups|ListenAddress)' /etc/ssh/sshd_config.d/00-myfinanzas-hardening.conf | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g'
+  grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|UsePAM|X11Forwarding|AllowUsers|AllowGroups|ListenAddress)' /etc/ssh/sshd_config.d/00-myfinanzas-hardening.conf | redact_net
 else
   echo "BLOQUEADO: drop-in no legible sin sudo"
 fi
-ss -ltn
+ss -ltn | redact_net
 ```
 
 `ss -ltn` es solo contexto de sockets; no acredita UFW/nftables. `ss -ltnp` y las consultas
@@ -154,13 +174,14 @@ de unidades ya se hicieron en Nivel 2 y no se repiten en esta comprobación acot
 
 ### 11.2 Manual, con `sudo` por el usuario
 
-El usuario ejecuta estos comandos localmente; la salida no se publica sin redactar IPs,
-usuarios y valores de `setenv`/`acceptenv`.
+El usuario ejecuta estos comandos localmente; la salida no se publica sin redactar IPv4,
+IPv6, MAC, comentarios, usuarios, `permitopen`/`permitlisten` y valores de
+`setenv`/`acceptenv`. Se reutiliza `redact_net` de §11.1.
 
 ```bash
-sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|allowusers|allowgroups|maxauthtries|allowtcpforwarding|permitopen|permitlisten|authenticationmethods|maxsessions|maxstartups|x11forwarding|acceptenv|setenv)' | sed -E 's#(/etc/ssh/ssh_host_[a-z0-9_]+_key)#<hostkey-path>#g; s/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser) .*/\1 <redacted>/I; s/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g'
-sudo ufw status verbose | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g'
-sudo nft list ruleset | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g'
+sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|allowusers|allowgroups|maxauthtries|allowtcpforwarding|permitopen|permitlisten|authenticationmethods|maxsessions|maxstartups|x11forwarding|acceptenv|setenv)' | sed -E 's#(/etc/ssh/ssh_host_[a-z0-9_]+_key)#<hostkey-path>#g; s/^(setenv|acceptenv|authorizedkeyscommand|authorizedkeyscommanduser) .*/\1 <redacted>/I; s/^(allowusers|allowgroups|permitopen|permitlisten) .*/\1 <redacted>/I' | redact_net
+sudo ufw status verbose | redact_net
+sudo nft list ruleset | sed -E 's/#.*$/#<comment-redacted>/' | redact_net
 ```
 
 El agente **no ejecutará ninguno de estos tres comandos**: todos requieren elevación y el

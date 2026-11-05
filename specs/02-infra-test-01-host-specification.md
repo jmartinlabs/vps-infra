@@ -78,16 +78,16 @@ posteriores a la actualización son evidencia del usuario; el agente no accedió
 | --- | --- | --- |
 | `vps-infra` `main` en `b45ffeb` | `git rev-parse` local | `[CONFIRMADO]` Base documental. |
 | SPEC34 aprobada y mergeada en `58346e1`; sin cambios en la app `main` `af34f1a` | PR #207 y `git diff` de SPEC34/test plan/RUNBOOK | `[CONFIRMADO]` Documento vigente, pero **desactualizado** en E4.9/esquema. |
-| App `main` `af34f1a` con E4.9 mergeado (`0176ffc`, PR #200) y `schemaVersion = 25`; SPEC34 sigue diciendo 24 | `git rev-parse`, `database-identity.ts`, tablero de la app | `[CONFIRMADO]` **Deriva de contrato**; requiere actualización/aprobación en `myfinanzas-app` antes de fase 5. |
+| App `main` `af34f1a` con E4.9 mergeado (`0176ffc`, PR #200) y `schemaVersion = 25`; SPEC34 sigue diciendo 24 | [main app](https://github.com/jmartinlabs/myfinanzas-app/commit/af34f1a7fd8b4e46e744b767d4ce7b199d419494), [schema](https://github.com/jmartinlabs/myfinanzas-app/blob/af34f1a7fd8b4e46e744b767d4ce7b199d419494/apps/api/src/database-identity.ts), [E4.9](https://github.com/jmartinlabs/myfinanzas-app/commit/0176ffc) | `[CONFIRMADO]` **Deriva de contrato**; requiere actualización/aprobación en `myfinanzas-app` antes de fase 5. |
 | PR #7 de `vps-infra` cerrado sin merge | API de GitHub | `[CONFIRMADO]` Solo antecedente histórico. |
 | Debian 13.7, kernel 6.12.113, x86_64 KVM/OpenStack; 2 vCPU, 3,8 GiB RAM, disco 40 GB, 35 GB libres, inodos 3 % | [auditoría](../docs/auditorias/2026-11-05-infra-audit-vps-001-nivel2-result.md) | `[CONFIRMADO]` Sin prueba de carga. |
 | `mfadmin` UID/GID 1001, `sudo`/`users`, `Linger=yes`; `sudo -n` pide contraseña | Auditoría | `[CONFIRMADO]` NOPASSWD no verificado. |
-| SSH: root y contraseñas deshabilitados, clave pública; `X11Forwarding yes`, `AllowTcpForwarding yes`, `AuthenticationMethods any`, sin `AllowUsers` | Auditoría | `[CONFIRMADO]` Hardening pendiente. |
-| UFW activo, entrada `deny`, solo 22/80/443 IPv4/IPv6; nftables coherente | Auditoría | `[CONFIRMADO]` Reglas revisadas manualmente. |
+| SSH: root y contraseñas deshabilitados, clave pública; `X11Forwarding yes`, `AllowTcpForwarding yes`, `AuthenticationMethods any`, sin `AllowUsers` | Comprobación manual del usuario, 2026-11-05 | `[CONFIRMADO]` Hardening pendiente. |
+| UFW activo, entrada `deny`, solo 22/80/443 IPv4/IPv6; nftables coherente | Comprobación manual del usuario, 2026-11-05 | `[CONFIRMADO]` Reglas revisadas manualmente. |
 | Caddy **2.11.9** (Cloudsmith), `active`/`enabled`, HTTPS 200 verify 0, HTTP 308, solo `CAP_NET_BIND_SERVICE`, `apt-mark hold` | [cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md) | `[CONFIRMADO]` Evidencia del usuario posterior a la actualización. |
-| `Caddyfile` de 68 B, solo directiva `root`; validado con 2.6.2 y 2.11.9 | Preflight y cierre Caddy | `[CONFIRMADO]` Sin bloque TEST todavía. |
+| `Caddyfile` de 68 B: sitio `myfinanzas.pp.ua` y directiva `root` identificados; no se observó `reverse_proxy`; **contenido completo no leído**. Validación preliminar con 2.6.2 y definitiva con 2.11.9 | Auditoría, preflight y cierre Caddy | `[INFORMADO]` No asumir que solo contiene `root`; leerlo completo antes de la fase 4. |
 | Podman 5.4.2 rootless; sin contenedores/volúmenes/pods; imágenes `nginx`/`hello-world` | Auditoría | `[CONFIRMADO]` Quadlet y delegación cgroup sin revalidar. |
-| DNS apex con A y TTL 14400; sin AAAA/CAA; `test` NXDOMAIN | Auditoría | `[CONFIRMADO]` Proveedor e IP pública no documentados aquí. |
+| DNS apex con A y TTL 14400; sin AAAA/CAA; `test` NXDOMAIN; NS en `uadns.com` | Auditoría | `[CONFIRMADO]` IP pública no documentada aquí. |
 | Directorio `myfinanzas/backups` bajo el home del operador: existe `0700`, sin ficheros regulares visibles a profundidad 2 | Auditoría | `[CONFIRMADO]` Inventario y restore no verificados. |
 | Recuperación de Caddy: `/root/caddy-upgrade-20261105T151652Z` `0700`, retención hasta 2026-12-05 | Cierre Caddy | `[CONFIRMADO]` No es backup de la aplicación TEST. |
 | IP pública, proveedor DNS, destino externo de copia y release/seed de la app | No documentados | `[PENDIENTE]` No se inventan. |
@@ -438,8 +438,11 @@ test.myfinanzas.pp.ua. 300 IN AAAA <IPv6_PUBLICA_VERIFICADA, si existe>
 ### 7.2 Caddy y HTTPS
 
 `[CONFIRMADO]` Caddy 2.11.9 está activo, con `hold` y solo `CAP_NET_BIND_SERVICE`. El
-`Caddyfile` actual tiene 68 B y solo la directiva `root`; fue validado con 2.6.2 y 2.11.9.
-No se modifica su *drop-in* ni el sitio raíz para TEST.
+`Caddyfile` actual tiene 68 B; se identificaron el sitio `myfinanzas.pp.ua` y la directiva
+`root`, y no se observó `reverse_proxy`, pero **el contenido completo no se leyó**. La
+validación fue preliminar con 2.6.2 y definitiva con 2.11.9. No se modifica su *drop-in* ni el
+sitio raíz para TEST. Antes de la fase 4 hay que leer el fichero completo, registrar hash/diff
+y validar; no se asume que solo contenga `root`.
 
 `[PROPUESTA]` Bloque independiente para `test.myfinanzas.pp.ua`. La ubicación exacta
 (`Caddyfile` principal o fichero importado) se decide en la fase 4, con backup y validación.
@@ -510,8 +513,8 @@ para 18082, 3001 ni 2019. TEST no está desplegado.
 
 `[CONFIRMADO]` Existe una recuperación de Caddy en
 `/root/caddy-upgrade-20261105T151652Z` (`0700`, retención hasta 2026-12-05): paquetes,
-configuración y datos de Caddy. **No es un backup de MyFinanzas TEST** y no se borra ni
-modifica sin autorización.
+configuración y datos de Caddy. **No es un backup de MyFinanzas TEST**, su inventario y
+restauración no se han verificado y no se borra ni modifica sin autorización.
 
 `[PROPUESTA]` Antes de habilitar Caddy:
 
@@ -539,8 +542,8 @@ modifica sin autorización.
 - Rollback de aplicación solo al par exacto release/imagen/esquema con prueba reproducible.
   Sin prueba, se bloquea y se preserva el estado; no se fuerza un downgrade de esquema ni se
   reemplaza el estado activo por una copia.
-- Rollback de Caddy desde el backup validado, con `caddy validate`, recarga y comprobación
-  del sitio raíz.
+- Rollback de Caddy desde la copia existente, con `caddy validate`, recarga y comprobación
+  del sitio raíz. La copia no se ha restaurado ni ensayado; AC-18 sigue `UNRUN`.
 - Si no hay par compatible, se decide entre una release compatible o una reconstrucción de
   TEST con estado nuevo, con autorización específica.
 - El rollback no borra copias ni datos; no usa `reset-failed`, `chmod`/`chown` ni `:U` para

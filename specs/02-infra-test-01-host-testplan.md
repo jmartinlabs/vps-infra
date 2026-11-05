@@ -8,8 +8,8 @@ Base: `vps-infra` `main` `b45ffeb9ceaae9b656a5db6e11f90b12d3a72198` (2026-11-05)
 Auditoría y Caddy: [auditoría 2026-11-05](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md)
 y [cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
 Contrato de aplicación: [SPEC34](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md),
-PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head
-`58346e12eb24b9d8ddef6a0be660f0d66654f5ec`, aprobada y mergeada el 2026-11-04.
+PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head `8fe839c`, merge
+commit `58346e12eb24b9d8ddef6a0be660f0d66654f5ec`, aprobada y mergeada el 2026-11-04.
 Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-infra/pull/7)
 (CLOSED, no mergeado); no es contrato vigente.
 
@@ -65,6 +65,9 @@ verificados y redactados.
 | `INFRA-TEST-01-HOST-AC15` | Autorización de retirada; inventario previo | Unidad detenida/deshabilitada; Caddy/DNS de TEST retirados; `linger` deshabilitado si procede; datos/copias preservados; raíz intacta; sin borrado sin inventario | `systemctl --user stop/disable`; backup y edición de Caddy; eliminación del registro DNS; `loginctl disable-linger`; `find`/`ls` de inventario; `curl` raíz | E2, E3 | vps-infra / usuario | 8 | Inventario, estado de unidad, Caddy/DNS retirados y raíz intacta | UNRUN |
 | `INFRA-TEST-01-HOST-AC16` | TEST en marcha; umbrales de disco acordados | Dentro de ≤ 5 GB propuestos y márgenes ≥ 20 % libre / ≥ 10 % inodos; 1 GiB/1 CPU/128 pids medidos; sin impacto en otros servicios | `systemctl --user show -p MemoryCurrent,CPUUsageNSec,TasksCurrent`; `podman stats --no-stream`; `df -h`; `df -i`; comparación antes/después | E2 | vps-infra / QA | 6 | Métricas, umbrales y comparación con otros servicios | UNRUN |
 | `INFRA-TEST-01-HOST-AC17` | Revisar host, repo, logs y copias | Solo `FT-1`; sin Excel, bases reales, exportaciones, credenciales, TOTP, cookies, claves ni datos personales; evidencia redactada | `seed verify`; inventario de rutas; `find` de `.xlsx`, `.sqlite`, `.env`, claves y exportaciones; revisión de logs; grep de secretos | E0, E2, E4 | usuario / QA | 5, 6 | Inventario redactado, `seed verify` y ausencia de datos ajenos | UNRUN |
+
+`AC-17`/`AC-18` del cierre de Caddy son independientes de `INFRA-TEST-01-HOST-AC17`; ambos
+siguen `UNRUN` y no se cubren con el contador de AC host.
 
 La auditoría 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de backups,
 pero **no** completó Quadlet/cgroup ni el inventario profundo de backups: AC02 sigue `UNRUN`.
@@ -127,8 +130,8 @@ Todos `UNRUN`; ninguno se convierte en `PASS` por ausencia de error.
 
 `[CONFIRMADO]` El contrato de aplicación vive en
 [SPEC34](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md),
-PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head
-`58346e12eb24b9d8ddef6a0be660f0d66654f5ec`, aprobada y mergeada el 2026-11-04. Este test plan **no
+PR [#207](https://github.com/jmartinlabs/myfinanzas-app/pull/207), head `8fe839c`, merge
+commit `58346e12eb24b9d8ddef6a0be660f0d66654f5ec`, aprobada y mergeada el 2026-11-04. Este test plan **no
 abre una segunda spec de aplicación**.
 
 - La app posee release, imagen, frontend, runtime, seed test-only, dataset `FT-1`,
@@ -252,7 +255,7 @@ claves, bases, importes reales, IPs privadas ni logs crudos.
 | ID | Bloqueo | Efecto | Desbloqueo |
 | --- | --- | --- | --- |
 | B01 | Spec y test plan sin aprobar | Ninguna fase ejecutable | Aprobación del usuario |
-| B02 | Sin autorización de acceso al host | Fase 1 bloqueada | Autorización de auditoría de solo lectura |
+| B02 | Sin autorización para una nueva sesión en el host; fase 1 incompleta (Quadlet/cgroup y backups) | Fase 2 bloqueada | Completar la parte pendiente de la fase 1 con autorización |
 | B03 | Release y artefacto de seed no construidos | Fases 5–8 bloqueadas | Entrega verificada de `myfinanzas-app` |
 | B04 | SPEC34 desactualizada: E4.9 mergeado y `schemaVersion=25`, pero SPEC34 sigue en 24 | AC10 y seed no tienen contrato aprobado contra la base real | Actualizar SPEC34/sucesora en `myfinanzas-app` y aprobar el candidato |
 | B05 | DT6/T-BKP abierto | Backup/restore limitados | Copia externa mínima y decisión |
@@ -264,7 +267,6 @@ claves, bases, importes reales, IPs privadas ni logs crudos.
 | B11 | 35 GB libres y 3 % de inodos medidos | El presupuesto ≤5 GB cabe; revalidar en fase 6 | Medición antes/después |
 | B12 | `mftest`/`linger` no verificados | Unidad no persiste | Provisión y prueba de reboot |
 | B13 | Quadlet/cgroup no revalidados en Debian 13 | Unidad no arranca o no persiste | Preflight rootless y prueba de reboot |
-| B14 | SPEC34 desactualizada (24 vs 25) | Seed/AC10 sin contrato aprobado | Actualizar SPEC34/sucesora en `myfinanzas-app` |
 
 ## 10. Criterios de parada
 
@@ -287,13 +289,14 @@ No se usa `reset-failed`, `chmod`/`chown`, `:U`, borrado de estado ni reintento 
 
 - Documentos creados: spec 02 y este test plan. Sin código, sin `infra/`, sin cambios en el
   VPS.
-- Comprobaciones locales ejecutadas: `git diff --check` (exit 0),
-  `python3 scripts/check_harness.py` (exit 0) y `./scripts/validate-template` (exit 0).
-  No acreditan el VPS, Caddy, DNS ni Podman y no sustituyen la revisión independiente.
+- Comprobaciones locales reportadas por el desarrollador: `git diff --check`,
+  `python3 scripts/check_harness.py` y `./scripts/validate-template` con exit 0; CI `validate`
+  en PASS revisado. No acreditan el VPS, Caddy, DNS ni Podman y no sustituyen la QA independiente.
 - Comprobaciones de host: auditoría de solo lectura 2026-11-05 y Caddy 2.11.9 documentados;
   seed, backup/restore y TEST desplegado siguen **UNRUN**.
 - AC: **17 / 17 `UNRUN`**; la auditoría no completa AC02 y la deriva SPEC34 24/25 bloquea AC10.
   Los checks locales no convierten AC01 en `PASS` sin revisión independiente y aprobación.
 - Fases: **0 / 9 autorizadas**; la auditoría de 2026-11-05 cubrió parte de la fase 1, sin declararla completa.
 - Próxima acción independiente: revisión de la spec y del test plan por el coordinador/QA,
-  decisión sobre H1–H6 y actualización del contrato SPEC34 (24→25) antes de la fase 2.
+  decisión sobre H1–H6 y actualización del contrato SPEC34 (24→25) antes de la fase 5; puede
+  prepararse en paralelo.

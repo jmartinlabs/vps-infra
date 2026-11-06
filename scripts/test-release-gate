@@ -79,16 +79,22 @@ class Fixture:
             if path.is_file()
         }
 
-        blob = b'{"architecture":"amd64","os":"linux"}'
-        blob_digest = sha256(blob)
+        self.oci_config = b'{"architecture":"amd64","os":"linux"}'
+        self.oci_layer = b"fixture-layer"
+        self.oci_config_digest = sha256(self.oci_config)
+        self.oci_layer_digest = sha256(self.oci_layer)
+        oci_manifest = self.default_oci_manifest()
+        oci_manifest_bytes = json.dumps(oci_manifest, sort_keys=True).encode()
+        oci_manifest_digest = sha256(oci_manifest_bytes)
         index = json.dumps(
             {
                 "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
                 "manifests": [
                     {
                         "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                        "digest": f"sha256:{blob_digest}",
-                        "size": len(blob),
+                        "digest": f"sha256:{oci_manifest_digest}",
+                        "size": len(oci_manifest_bytes),
                     }
                 ],
             },
@@ -98,7 +104,15 @@ class Fixture:
         with tarfile.open(oci_path, "w") as archive:
             add_bytes(archive, "oci-layout", b'{"imageLayoutVersion":"1.0.0"}')
             add_bytes(archive, "index.json", index)
-            add_bytes(archive, f"blobs/sha256/{blob_digest}", blob)
+            add_bytes(
+                archive, f"blobs/sha256/{self.oci_config_digest}", self.oci_config
+            )
+            add_bytes(
+                archive, f"blobs/sha256/{self.oci_layer_digest}", self.oci_layer
+            )
+            add_bytes(
+                archive, f"blobs/sha256/{oci_manifest_digest}", oci_manifest_bytes
+            )
 
         self.manifest = {
             "format": 1,
@@ -110,7 +124,7 @@ class Fixture:
                     "authentication": "argon2id-aesgcm-totp-session-v1",
                 },
             },
-            "oci_manifest_digest": f"sha256:{blob_digest}",
+            "oci_manifest_digest": f"sha256:{oci_manifest_digest}",
             "oci_archive_sha256": sha256_file(oci_path),
             "frontend_files": frontend,
         }
@@ -156,6 +170,64 @@ class Fixture:
         self.write_request()
         self.write_state()
         self.write_evidence()
+
+    def default_oci_manifest(self) -> dict:
+        return {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": f"sha256:{self.oci_config_digest}",
+                "size": len(self.oci_config),
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                    "digest": f"sha256:{self.oci_layer_digest}",
+                    "size": len(self.oci_layer),
+                }
+            ],
+        }
+
+    def rebuild_oci(self, mutate=None) -> None:
+        oci_manifest = self.default_oci_manifest()
+        if mutate is not None:
+            mutate(oci_manifest)
+        oci_manifest_bytes = json.dumps(oci_manifest, sort_keys=True).encode()
+        oci_manifest_digest = sha256(oci_manifest_bytes)
+        index = json.dumps(
+            {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [
+                    {
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "digest": f"sha256:{oci_manifest_digest}",
+                        "size": len(oci_manifest_bytes),
+                    }
+                ],
+            },
+            sort_keys=True,
+        ).encode()
+        oci_path = self.release / "image.oci.tar"
+        with tarfile.open(oci_path, "w") as archive:
+            add_bytes(archive, "oci-layout", b'{"imageLayoutVersion":"1.0.0"}')
+            add_bytes(archive, "index.json", index)
+            add_bytes(
+                archive, f"blobs/sha256/{self.oci_config_digest}", self.oci_config
+            )
+            add_bytes(
+                archive, f"blobs/sha256/{self.oci_layer_digest}", self.oci_layer
+            )
+            add_bytes(
+                archive, f"blobs/sha256/{oci_manifest_digest}", oci_manifest_bytes
+            )
+        self.manifest["oci_manifest_digest"] = f"sha256:{oci_manifest_digest}"
+        self.manifest["oci_archive_sha256"] = sha256_file(oci_path)
+        self.write_manifest()
+        self.request["manifest_sha256"] = self.manifest_sha
+        self.request["artifact_ref"] = self.manifest["oci_manifest_digest"]
+        self.write_request()
 
     def write_manifest(self) -> None:
         write_json(self.release / "manifest.json", self.manifest)
@@ -368,6 +440,32 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "MANIFEST_NOT_FOUND")
 
+    def test_oci_manifest_structure_missing_layers(self) -> None:
+        self.fx.rebuild_oci(lambda document: document.pop("layers", None))
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "OCI_MANIFEST_STRUCTURE")
+
+    def test_oci_descriptor_missing(self) -> None:
+        self.fx.rebuild_oci(
+            lambda document: document["config"].update(
+                {"digest": "sha256:" + "f" * 64}
+            )
+        )
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "OCI_DESCRIPTOR_MISSING")
+
+    def test_oci_descriptor_size_mismatch(self) -> None:
+        self.fx.rebuild_oci(
+            lambda document: document["layers"][0].update(
+                {"size": document["layers"][0]["size"] + 1}
+            )
+        )
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "OCI_DESCRIPTOR_SIZE_MISMATCH")
+
     def test_release_extra_file(self) -> None:
         (self.fx.release / "extra.txt").write_text("extra\n")
         completed, payload = self.fx.run()
@@ -409,6 +507,26 @@ class ReleaseGateTests(unittest.TestCase):
         completed, payload = self.fx.run(request=request)
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "SEED_HASH_MISMATCH")
+
+    def test_seed_schema_mismatch(self) -> None:
+        seed = json.loads(self.fx.seed.read_text(encoding="utf-8"))
+        seed["schema"] = 26
+        write_json(self.fx.seed, seed)
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = sha256_file(self.fx.seed)
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_SCHEMA_MISMATCH")
+
+    def test_seed_schema_missing(self) -> None:
+        seed = json.loads(self.fx.seed.read_text(encoding="utf-8"))
+        seed.pop("schema")
+        write_json(self.fx.seed, seed)
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = sha256_file(self.fx.seed)
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_SCHEMA_INVALID")
 
     def test_prod_seed_not_allowed(self) -> None:
         request = self.fx.prod_request()

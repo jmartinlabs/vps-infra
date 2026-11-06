@@ -60,8 +60,11 @@ verificados.
 - SHA de 40 caracteres, hash de manifiesto y digest OCI.
 - Integridad de `manifest.json`, `manifest.sha256`, `image.oci.tar`, `index.json`, blobs OCI y
   `frontend_files`.
+- Estructura mínima del manifiesto OCI: `schemaVersion`, `config`, `layers` y descriptores con
+  digest, tamaño y blob presentes.
 - `inputs.contracts` presente; el gate no fija una versión de esquema.
-- Seed obligatorio en TEST, hash verificado y `commit` coherente si está declarado.
+- Seed obligatorio en TEST, hash verificado, `commit` coherente si está declarado y `schema`
+  coincidente con `inputs.contracts.schema`.
 - Rutas relativas seguras y rechazo de symlinks en el paquete.
 - Estado simulado: bloqueo de entorno, versión ya activa y par de rollback.
 - Evidencia simulada: CI, Rootless, QA, ascendencia y aprobación PROD; cada fallo produce un
@@ -73,10 +76,11 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 42 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
-manifiesto, OCI, frontend, seed, aprobación, evidencia simulada, rutas inseguras, symlinks,
-entradas extra, estado ausente/incompleto/bloqueado, rollback y modo `apply`. También
-comprueban que el CLI no modifica el estado simulado.
+Los 47 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
+manifiesto, estructura e integridad OCI, frontend, seed, incompatibilidad de esquema
+seed/release, aprobación, evidencia simulada, rutas inseguras, symlinks, entradas extra,
+estado ausente/incompleto/bloqueado, rollback y modo `apply`. También comprueban que el CLI
+no modifica el estado simulado.
 
 ## Límites para una activación real
 

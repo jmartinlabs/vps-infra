@@ -129,6 +129,10 @@ def no_duplicates(pairs):
     return value
 
 
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -494,6 +498,36 @@ def check_manifest(request: dict, release_dir: Path) -> dict:
     return manifest
 
 
+def check_oci_descriptor(descriptor: dict, blob_sizes: dict, label: str) -> None:
+    if not isinstance(descriptor, dict):
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", f"OCI {label} descriptor must be an object"
+        )
+    digest = descriptor.get("digest")
+    size = descriptor.get("size")
+    media_type = descriptor.get("mediaType")
+    if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", f"OCI {label} digest is invalid"
+        )
+    if type(size) is not int or size < 0:
+        raise GateBlocked("OCI_MANIFEST_STRUCTURE", f"OCI {label} size is invalid")
+    if not isinstance(media_type, str) or not media_type:
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", f"OCI {label} mediaType is invalid"
+        )
+    blob = digest.split(":", 1)[1]
+    if blob not in blob_sizes:
+        raise GateBlocked(
+            "OCI_DESCRIPTOR_MISSING", f"OCI {label} blob is missing: {digest}"
+        )
+    if blob_sizes[blob] != size:
+        raise GateBlocked(
+            "OCI_DESCRIPTOR_SIZE_MISMATCH",
+            f"OCI {label} descriptor size does not match its blob",
+        )
+
+
 def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
     archive_path = regular_file(
         release_dir / "image.oci.tar", "OCI_ARCHIVE_NOT_FOUND", "image.oci.tar"
@@ -502,11 +536,14 @@ def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
         raise GateBlocked(
             "OCI_ARCHIVE_HASH_MISMATCH", "image.oci.tar does not match its manifest hash"
         )
+    expected_manifest = manifest["oci_manifest_digest"].split(":", 1)[1]
     try:
         with tarfile.open(archive_path, mode="r:*") as archive:
             names = set()
             index_data = None
+            manifest_data = None
             blob_names = set()
+            blob_sizes = {}
             for member in archive:
                 name = member.name
                 if name.startswith("./"):
@@ -541,11 +578,28 @@ def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
                             "OCI_MEMBER_UNSAFE", f"invalid OCI blob name: {name}"
                         )
                     handle = archive.extractfile(member)
-                    if handle is None or sha256_stream(handle) != expected:
+                    if handle is None:
+                        raise GateBlocked(
+                            "OCI_BLOB_HASH_MISMATCH", f"OCI blob is unreadable: {name}"
+                        )
+                    if expected == expected_manifest:
+                        if member.size > MAX_JSON_BYTES:
+                            raise GateBlocked(
+                                "OCI_MANIFEST_INVALID", "OCI image manifest is too large"
+                            )
+                        data = handle.read()
+                        if sha256_bytes(data) != expected:
+                            raise GateBlocked(
+                                "OCI_BLOB_HASH_MISMATCH",
+                                f"OCI blob hash mismatch: {name}",
+                            )
+                        manifest_data = data
+                    elif sha256_stream(handle) != expected:
                         raise GateBlocked(
                             "OCI_BLOB_HASH_MISMATCH", f"OCI blob hash mismatch: {name}"
                         )
                     blob_names.add(expected)
+                    blob_sizes[expected] = member.size
     except GateBlocked:
         raise
     except (OSError, tarfile.TarError) as exc:
@@ -567,11 +621,45 @@ def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
         raise GateBlocked(
             "OCI_DIGEST_MISMATCH", "OCI index digest does not match manifest"
         )
-    expected_blob = manifest["oci_manifest_digest"].split(":", 1)[1]
-    if expected_blob not in blob_names:
+    if expected_manifest not in blob_names:
         raise GateBlocked(
             "OCI_DIGEST_MISMATCH", "OCI digest blob is missing from image.oci.tar"
         )
+    if type(first.get("size")) is not int or first["size"] != blob_sizes[expected_manifest]:
+        raise GateBlocked(
+            "OCI_INDEX_INVALID", "OCI index descriptor size does not match its blob"
+        )
+    if manifest_data is None:
+        raise GateBlocked("OCI_MANIFEST_MISSING", "OCI image manifest is missing")
+    try:
+        oci_manifest = json.loads(manifest_data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise GateBlocked(
+            "OCI_MANIFEST_INVALID", f"OCI image manifest is invalid: {exc}"
+        ) from exc
+    if not isinstance(oci_manifest, dict):
+        raise GateBlocked("OCI_MANIFEST_INVALID", "OCI image manifest must be an object")
+    if oci_manifest.get("schemaVersion") != 2:
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", "OCI image manifest schemaVersion must be 2"
+        )
+    if oci_manifest.get("mediaType") not in (
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    ):
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", "OCI image manifest mediaType is invalid"
+        )
+    config = oci_manifest.get("config")
+    layers = oci_manifest.get("layers")
+    if not isinstance(config, dict) or not isinstance(layers, list) or not layers:
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE",
+            "OCI image manifest requires config and a non-empty layers list",
+        )
+    check_oci_descriptor(config, blob_sizes, "config")
+    for position, layer in enumerate(layers):
+        check_oci_descriptor(layer, blob_sizes, f"layers[{position}]")
 
 
 def check_frontend(release_dir: Path, manifest: dict) -> None:
@@ -617,7 +705,7 @@ def check_frontend(release_dir: Path, manifest: dict) -> None:
         )
 
 
-def check_seed(request: dict, seed_path) -> None:
+def check_seed(request: dict, seed_path, manifest) -> None:
     environment = request["environment"]
     seed_hash = request["seed_manifest_sha256"]
     if environment == "prod":
@@ -636,6 +724,18 @@ def check_seed(request: dict, seed_path) -> None:
         raise GateBlocked(
             "SEED_COMMIT_MISMATCH", "seed manifest commit does not match release_sha"
         )
+    if manifest is not None:
+        release_schema = manifest["inputs"]["contracts"]["schema"]
+        seed_schema = seed.get("schema")
+        if type(seed_schema) is not int or seed_schema <= 0:
+            raise GateBlocked(
+                "SEED_SCHEMA_INVALID", "seed manifest schema must be a positive integer"
+            )
+        if seed_schema != release_schema:
+            raise GateBlocked(
+                "SEED_SCHEMA_MISMATCH",
+                f"seed schema {seed_schema} does not match release schema {release_schema}",
+            )
 
 
 def check_state(request: dict, state_path, report: Report) -> None:
@@ -955,10 +1055,10 @@ def main(argv=None) -> int:
                     report.local_block(check_id, exc.code, exc.message)
 
     try:
-        check_seed(request, args.seed_manifest)
+        check_seed(request, args.seed_manifest, manifest)
         report.local_ok(
             "seed.manifest",
-            "seed manifest hash is verified"
+            "seed manifest hash and schema are verified"
             if request["environment"] == "test"
             else "no seed is carried by PROD",
         )

@@ -724,18 +724,22 @@ def check_seed(request: dict, seed_path, manifest) -> None:
         raise GateBlocked(
             "SEED_COMMIT_MISMATCH", "seed manifest commit does not match release_sha"
         )
-    if manifest is not None:
-        release_schema = manifest["inputs"]["contracts"]["schema"]
-        seed_schema = seed.get("schema")
-        if type(seed_schema) is not int or seed_schema <= 0:
-            raise GateBlocked(
-                "SEED_SCHEMA_INVALID", "seed manifest schema must be a positive integer"
-            )
-        if seed_schema != release_schema:
-            raise GateBlocked(
-                "SEED_SCHEMA_MISMATCH",
-                f"seed schema {seed_schema} does not match release schema {release_schema}",
-            )
+    if manifest is None:
+        raise GateBlocked(
+            "SEED_SCHEMA_UNVERIFIED",
+            "release manifest is unavailable; seed schema compatibility is not verified",
+        )
+    release_schema = manifest["inputs"]["contracts"]["schema"]
+    seed_schema = seed.get("schema")
+    if type(seed_schema) is not int or seed_schema <= 0:
+        raise GateBlocked(
+            "SEED_SCHEMA_INVALID", "seed manifest schema must be a positive integer"
+        )
+    if seed_schema != release_schema:
+        raise GateBlocked(
+            "SEED_SCHEMA_MISMATCH",
+            f"seed schema {seed_schema} does not match release schema {release_schema}",
+        )
 
 
 def check_state(request: dict, state_path, report: Report) -> None:

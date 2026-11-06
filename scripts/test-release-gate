@@ -472,6 +472,13 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "RELEASE_EXTRA_ENTRY")
 
+    def test_seed_schema_unverified_without_valid_manifest(self) -> None:
+        (self.fx.release / "manifest.json").write_text("{invalid\n", encoding="utf-8")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_SCHEMA_UNVERIFIED")
+        self.assertNotIn("seed.manifest", payload["verification"]["local"])
+
     def test_release_extra_symlink(self) -> None:
         try:
             (self.fx.release / "extra-link").symlink_to("manifest.json")

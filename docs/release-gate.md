@@ -64,7 +64,8 @@ verificados.
   digest, tamaño y blob presentes.
 - `inputs.contracts` presente; el gate no fija una versión de esquema.
 - Seed obligatorio en TEST, hash verificado, `commit` coherente si está declarado y `schema`
-  coincidente con `inputs.contracts.schema`.
+  coincidente con `inputs.contracts.schema`. Si el manifiesto de release no está disponible o
+  no es válido, la compatibilidad de esquema queda bloqueada, no marcada como PASS.
 - Rutas relativas seguras y rechazo de symlinks en el paquete.
 - Estado simulado: bloqueo de entorno, versión ya activa y par de rollback.
 - Evidencia simulada: CI, Rootless, QA, ascendencia y aprobación PROD; cada fallo produce un
@@ -76,11 +77,11 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 47 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
-manifiesto, estructura e integridad OCI, frontend, seed, incompatibilidad de esquema
-seed/release, aprobación, evidencia simulada, rutas inseguras, symlinks, entradas extra,
-estado ausente/incompleto/bloqueado, rollback y modo `apply`. También comprueban que el CLI
-no modifica el estado simulado.
+Los 48 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
+manifiesto, estructura e integridad OCI, frontend, seed, incompatibilidad o no verificación
+del esquema seed/release, aprobación, evidencia simulada, rutas inseguras, symlinks, entradas
+extra, estado ausente/incompleto/bloqueado, rollback y modo `apply`. También comprueban que el
+CLI no modifica el estado simulado.
 
 ## Límites para una activación real
 

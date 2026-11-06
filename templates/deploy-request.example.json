@@ -1,0 +1,20 @@
+{
+  "request_version": 1,
+  "environment": "test",
+  "version": "0.1.0",
+  "tag": "deploy-test-v0.1.0",
+  "release_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "artifact_ref": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "actor": "release-bot",
+  "seed_manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "evidence": {
+    "ci_run_id": 1001,
+    "rootless_run_id": 1002,
+    "qa_reference": "qa://example/sha"
+  },
+  "approval": null,
+  "backup_plan": "example plan reference",
+  "rollback_pair": null,
+  "smoke_profile": "test-v1"
+}

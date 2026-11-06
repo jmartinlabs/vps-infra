@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jmartinlabs/vps-infra/schemas/deploy-request.v1.json",
+  "title": "vps-infra deployment request v1",
+  "description": "Minimal interface between an application release and the vps-infra release gate. The release manifest and bundle remain authoritative for artifact fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request_version",
+    "environment",
+    "version",
+    "tag",
+    "release_sha",
+    "manifest_sha256",
+    "artifact_ref",
+    "actor",
+    "seed_manifest_sha256",
+    "evidence",
+    "approval",
+    "backup_plan",
+    "rollback_pair",
+    "smoke_profile"
+  ],
+  "properties": {
+    "request_version": {
+      "const": 1
+    },
+    "environment": {
+      "enum": ["test", "prod"]
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "tag": {
+      "type": "string",
+      "pattern": "^deploy-(test|prod)-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "release_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifact_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "actor": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+    },
+    "seed_manifest_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ci_run_id", "rootless_run_id", "qa_reference"],
+      "properties": {
+        "ci_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rootless_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "qa_reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      }
+    },
+    "approval": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["environment", "run_id", "reviewer", "sha", "version"],
+          "properties": {
+            "environment": {
+              "const": "production"
+            },
+            "run_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reviewer": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+            },
+            "sha": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+            }
+          }
+        }
+      ]
+    },
+    "backup_plan": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "rollback_pair": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["previous_release_sha", "previous_manifest_sha256"],
+          "properties": {
+            "previous_release_sha": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "previous_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    },
+    "smoke_profile": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    }
+  }
+}

@@ -20,6 +20,7 @@ Administrar y evolucionar el VPS de Aruba Cloud para alojar **MyFinanzas** y fut
 | [docs/roadmap.md](docs/roadmap.md) | Prioridades, dependencias y condiciones de aceptación |
 | [docs/operaciones.md](docs/operaciones.md) | Guías de actuación **pendientes de validar**, recuperación y cambios |
 | [docs/despliegue-por-tags.md](docs/despliegue-por-tags.md) | Contrato de recepción y activación de releases por tag; **diseño, sin activación** |
+| [docs/release-gate.md](docs/release-gate.md) | Gate local de validación de releases; **solo dry-run, sin host** |
 | [docs/metodologia-agentes.md](docs/metodologia-agentes.md) | Adopción del harness (skills, roles, modos) y desviaciones locales |
 | [CLAUDE.md](CLAUDE.md) | Punto de entrada para Claude Code, siguiendo AGENTS.md |
 | [docs/harness.md](docs/harness.md) | Compatibilidad Codex/Claude/OpenCode y límites de validación automatizada |

@@ -25,6 +25,7 @@ jobs:
       - run: python3 scripts/check_harness.py
       - run: ./scripts/validate-template
       - run: ./scripts/test-validator
+      - run: ./scripts/test-release-gate
       - run: python3 scripts/eval-agent-behavior --self-test
       - run: python3 scripts/test-agent-usage
       - run: python3 scripts/test-auto-agent-usage

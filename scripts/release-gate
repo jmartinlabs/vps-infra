@@ -1,0 +1,1103 @@
+#!/usr/bin/env python3
+"""Local dry-run gate for the vps-infra release contract.
+
+The gate validates a deployment request and a release bundle without network
+access, host mutation or execution of application code. External evidence
+(GitHub CI, Rootless, QA, Git ancestry, PROD approval and host state) is only
+simulated from fixtures and is reported separately from local verification.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
+
+EXIT_OK = 0
+EXIT_BLOCKED = 2
+EXIT_FAILED = 3
+
+SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+TAG = re.compile(r"^deploy-(test|prod)-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
+HASH = re.compile(r"^[0-9a-f]{64}$")
+DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
+ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
+SMOKE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+SECRET_KEY = re.compile(
+    r"(password|passwd|secret|token|credential|cookie|totp|private[_-]?key|auth[_-]?key|api[_-]?key)",
+    re.I,
+)
+
+TOP_KEYS = {
+    "request_version",
+    "environment",
+    "version",
+    "tag",
+    "release_sha",
+    "manifest_sha256",
+    "artifact_ref",
+    "actor",
+    "seed_manifest_sha256",
+    "evidence",
+    "approval",
+    "backup_plan",
+    "rollback_pair",
+    "smoke_profile",
+}
+EVIDENCE_KEYS = {"ci_run_id", "rootless_run_id", "qa_reference"}
+APPROVAL_KEYS = {"environment", "run_id", "reviewer", "sha", "version"}
+ROLLBACK_KEYS = {"previous_release_sha", "previous_manifest_sha256"}
+STATE_KEYS = {"environment", "installed", "lock"}
+INSTALLED_KEYS = {"version", "release_sha", "manifest_sha256"}
+EXTERNAL_EVIDENCE_KEYS = {"ci", "rootless", "qa", "ancestry", "approval"}
+RELEASE_TOP_LEVEL = {"manifest.json", "manifest.sha256", "image.oci.tar", "frontend"}
+
+MAX_JSON_BYTES = 2_000_000
+MAX_TEXT = 2048
+MAX_FRONTEND_FILES = 10_000
+
+
+class GateBlocked(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class Report:
+    def __init__(self) -> None:
+        self.checks: list[dict] = []
+        self.blockers: list[dict] = []
+        self.local: list[str] = []
+        self.simulated: list[str] = []
+        self.skipped: list[str] = []
+
+    def local_ok(self, check: str, detail: str = "") -> None:
+        self.checks.append(
+            {"id": check, "status": "pass", "source": "local", "detail": detail}
+        )
+        self.local.append(check)
+
+    def local_block(self, check: str, code: str, message: str) -> None:
+        self.checks.append(
+            {"id": check, "status": "blocked", "source": "local", "detail": message}
+        )
+        self.blockers.append({"check": check, "code": code, "message": message})
+
+    def sim_ok(self, check: str, detail: str = "") -> None:
+        self.checks.append(
+            {
+                "id": check,
+                "status": "simulated_pass",
+                "source": "fixture",
+                "detail": detail,
+            }
+        )
+        self.simulated.append(check)
+
+    def sim_block(self, check: str, code: str, message: str) -> None:
+        self.checks.append(
+            {
+                "id": check,
+                "status": "simulated_blocked",
+                "source": "fixture",
+                "detail": message,
+            }
+        )
+        self.simulated.append(check)
+        self.blockers.append({"check": check, "code": code, "message": message})
+
+    def skip(self, check: str, reason: str) -> None:
+        self.checks.append(
+            {"id": check, "status": "skipped", "source": "local", "detail": reason}
+        )
+        self.skipped.append(check)
+
+
+def no_duplicates(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise GateBlocked("JSON_DUPLICATE_KEY", f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_stream(handle) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def regular_file(path, code: str, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise GateBlocked(code, f"{label} is a symlink")
+    if not candidate.is_file():
+        raise GateBlocked(code, f"{label} is missing")
+    return candidate
+
+
+def load_json_file(path, code: str, label: str) -> dict:
+    candidate = regular_file(path, code, label)
+    if candidate.stat().st_size > MAX_JSON_BYTES:
+        raise GateBlocked(code, f"{label} is too large")
+    try:
+        data = json.loads(
+            candidate.read_text(encoding="utf-8"), object_pairs_hook=no_duplicates
+        )
+    except GateBlocked:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise GateBlocked(code, f"{label} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise GateBlocked(code, f"{label} must be a JSON object")
+    return data
+
+
+def require_text(value, code: str, label: str, limit: int = MAX_TEXT) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > limit
+        or any(ord(character) < 0x20 for character in value)
+    ):
+        raise GateBlocked(code, f"{label} must be a non-empty single-line string")
+    return value
+
+
+def require_int(value, code: str, label: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise GateBlocked(code, f"{label} must be a positive integer")
+    return value
+
+
+def safe_relative(value: str, code: str = "PATH_UNSAFE") -> PurePosixPath:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or "\x00" in value
+    ):
+        raise GateBlocked(code, "path must be a non-empty relative POSIX path")
+    pure = PurePosixPath(value)
+    if pure.is_absolute() or ".." in pure.parts or str(pure) != value:
+        raise GateBlocked(code, f"unsafe relative path: {value}")
+    return pure
+
+
+def safe_child(root: Path, relative: str, code: str = "PATH_UNSAFE") -> Path:
+    pure = safe_relative(relative, code)
+    candidate = root.joinpath(*pure.parts)
+    if candidate.is_symlink():
+        raise GateBlocked(code, f"symlink is not allowed: {relative}")
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise GateBlocked(code, f"path escapes its root: {relative}")
+    return candidate
+
+
+def check_release_tree(release_dir: Path) -> None:
+    try:
+        entries = list(release_dir.iterdir())
+    except OSError as exc:
+        raise GateBlocked("RELEASE_DIR_INVALID", f"cannot list release directory: {exc}") from exc
+    for entry in entries:
+        if entry.is_symlink():
+            raise GateBlocked("RELEASE_SYMLINK", f"symlink in release bundle: {entry.name}")
+    names = {entry.name for entry in entries}
+    unexpected = sorted(names - RELEASE_TOP_LEVEL)
+    if unexpected:
+        raise GateBlocked(
+            "RELEASE_EXTRA_ENTRY",
+            f"unexpected release entries: {', '.join(unexpected)}",
+        )
+    for entry in entries:
+        if entry.name == "frontend":
+            if not entry.is_dir():
+                raise GateBlocked("RELEASE_ENTRY_INVALID", "frontend must be a directory")
+        elif not entry.is_file():
+            raise GateBlocked(
+                "RELEASE_ENTRY_INVALID", f"release entry is not a file: {entry.name}"
+            )
+    for current, directories, files in os.walk(release_dir, followlinks=False):
+        current_path = Path(current)
+        for directory in directories:
+            candidate = current_path / directory
+            if candidate.is_symlink():
+                raise GateBlocked(
+                    "RELEASE_SYMLINK", f"symlink in release bundle: {candidate}"
+                )
+        for filename in files:
+            candidate = current_path / filename
+            if candidate.is_symlink():
+                raise GateBlocked(
+                    "RELEASE_SYMLINK", f"symlink in release bundle: {candidate}"
+                )
+            if not candidate.is_file():
+                raise GateBlocked(
+                    "RELEASE_ENTRY_INVALID", f"special file in release bundle: {candidate}"
+                )
+
+
+def scan_secrets(value, path: str = "$") -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if SECRET_KEY.search(key):
+                raise GateBlocked(
+                    "REQUEST_SECRET_FIELD", f"secret-like field is not allowed: {path}.{key}"
+                )
+            scan_secrets(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            scan_secrets(item, f"{path}[{index}]")
+    elif isinstance(value, str) and "-----BEGIN " in value:
+        raise GateBlocked(
+            "REQUEST_SECRET_FIELD", f"private material is not allowed at {path}"
+        )
+
+
+def validate_request(request: dict) -> None:
+    scan_secrets(request)
+    unknown = sorted(set(request) - TOP_KEYS)
+    if unknown:
+        raise GateBlocked(
+            "REQUEST_UNKNOWN_FIELD", f"unknown request fields: {', '.join(unknown)}"
+        )
+    missing = sorted(TOP_KEYS - set(request))
+    if missing:
+        raise GateBlocked(
+            "REQUEST_MISSING_FIELD", f"missing request fields: {', '.join(missing)}"
+        )
+    if type(request["request_version"]) is not int or request["request_version"] != 1:
+        raise GateBlocked("REQUEST_VERSION_INVALID", "request_version must be 1")
+
+    environment = request["environment"]
+    if environment not in ("test", "prod"):
+        raise GateBlocked("ENVIRONMENT_INVALID", "environment must be test or prod")
+
+    version = request["version"]
+    if not isinstance(version, str) or not SEMVER.fullmatch(version):
+        raise GateBlocked("VERSION_INVALID", "version must be stable SemVer x.y.z")
+
+    tag = request["tag"]
+    if not isinstance(tag, str):
+        raise GateBlocked("TAG_FORMAT", "tag must be a string")
+    match = TAG.fullmatch(tag)
+    if not match:
+        raise GateBlocked("TAG_FORMAT", "tag must match deploy-(test|prod)-vX.Y.Z")
+    if match.group(1) != environment:
+        raise GateBlocked(
+            "TAG_ENVIRONMENT_MISMATCH", "tag environment does not match environment"
+        )
+    if f"{match.group(2)}.{match.group(3)}.{match.group(4)}" != version:
+        raise GateBlocked("TAG_VERSION_MISMATCH", "tag version does not match version")
+
+    if not isinstance(request["release_sha"], str) or not SHA.fullmatch(
+        request["release_sha"]
+    ):
+        raise GateBlocked("RELEASE_SHA_FORMAT", "release_sha must be 40 lowercase hex")
+    if not isinstance(request["manifest_sha256"], str) or not HASH.fullmatch(
+        request["manifest_sha256"]
+    ):
+        raise GateBlocked(
+            "MANIFEST_HASH_FORMAT", "manifest_sha256 must be 64 lowercase hex"
+        )
+    if not isinstance(request["artifact_ref"], str) or not DIGEST.fullmatch(
+        request["artifact_ref"]
+    ):
+        raise GateBlocked(
+            "ARTIFACT_REF_FORMAT", "artifact_ref must be sha256:<64 hex>"
+        )
+
+    actor = request["actor"]
+    if not isinstance(actor, str) or not ACTOR.fullmatch(actor):
+        raise GateBlocked("ACTOR_INVALID", "actor must be a valid GitHub login")
+
+    evidence = request["evidence"]
+    if not isinstance(evidence, dict) or set(evidence) != EVIDENCE_KEYS:
+        raise GateBlocked(
+            "EVIDENCE_INVALID",
+            "evidence must contain exactly ci_run_id, rootless_run_id and qa_reference",
+        )
+    require_int(evidence["ci_run_id"], "EVIDENCE_INVALID", "ci_run_id")
+    require_int(evidence["rootless_run_id"], "EVIDENCE_INVALID", "rootless_run_id")
+    require_text(evidence["qa_reference"], "EVIDENCE_INVALID", "qa_reference")
+
+    seed_hash = request["seed_manifest_sha256"]
+    if environment == "test":
+        if not isinstance(seed_hash, str) or not HASH.fullmatch(seed_hash):
+            raise GateBlocked(
+                "SEED_REQUIRED", "TEST requires seed_manifest_sha256 (64 hex)"
+            )
+    elif seed_hash is not None:
+        raise GateBlocked("SEED_NOT_ALLOWED", "PROD must not carry a seed manifest")
+
+    approval = request["approval"]
+    if environment == "test":
+        if approval is not None:
+            raise GateBlocked("APPROVAL_NOT_ALLOWED", "TEST must not carry PROD approval")
+    else:
+        if not isinstance(approval, dict):
+            raise GateBlocked("APPROVAL_REQUIRED", "PROD requires approval")
+        if set(approval) != APPROVAL_KEYS:
+            raise GateBlocked(
+                "APPROVAL_INVALID", "approval must contain exactly its five fields"
+            )
+        if approval["environment"] != "production":
+            raise GateBlocked(
+                "APPROVAL_ENVIRONMENT", "approval environment must be production"
+            )
+        require_int(approval["run_id"], "APPROVAL_INVALID", "approval.run_id")
+        reviewer = approval["reviewer"]
+        if not isinstance(reviewer, str) or not ACTOR.fullmatch(reviewer):
+            raise GateBlocked("APPROVAL_INVALID", "approval.reviewer is invalid")
+        if approval["sha"] != request["release_sha"]:
+            raise GateBlocked("APPROVAL_SHA_MISMATCH", "approval sha does not match")
+        if approval["version"] != version:
+            raise GateBlocked(
+                "APPROVAL_VERSION_MISMATCH", "approval version does not match"
+            )
+        if reviewer == actor:
+            raise GateBlocked(
+                "APPROVAL_SELF_REVIEW", "tag author cannot approve their own execution"
+            )
+
+    require_text(request["backup_plan"], "BACKUP_PLAN_INVALID", "backup_plan")
+    rollback = request["rollback_pair"]
+    if rollback is not None:
+        if not isinstance(rollback, dict) or set(rollback) != ROLLBACK_KEYS:
+            raise GateBlocked(
+                "ROLLBACK_PAIR_INVALID", "rollback_pair must contain exactly its two fields"
+            )
+        if not isinstance(rollback["previous_release_sha"], str) or not SHA.fullmatch(
+            rollback["previous_release_sha"]
+        ):
+            raise GateBlocked(
+                "ROLLBACK_PAIR_INVALID", "rollback_pair.previous_release_sha is invalid"
+            )
+        if not isinstance(
+            rollback["previous_manifest_sha256"], str
+        ) or not HASH.fullmatch(rollback["previous_manifest_sha256"]):
+            raise GateBlocked(
+                "ROLLBACK_PAIR_INVALID",
+                "rollback_pair.previous_manifest_sha256 is invalid",
+            )
+
+    smoke = request["smoke_profile"]
+    if not isinstance(smoke, str) or not SMOKE.fullmatch(smoke):
+        raise GateBlocked("SMOKE_PROFILE_INVALID", "smoke_profile is invalid")
+
+
+def check_manifest(request: dict, release_dir: Path) -> dict:
+    manifest_path = regular_file(
+        release_dir / "manifest.json", "MANIFEST_NOT_FOUND", "manifest.json"
+    )
+    actual_hash = sha256_file(manifest_path)
+    if actual_hash != request["manifest_sha256"]:
+        raise GateBlocked(
+            "MANIFEST_HASH_MISMATCH", "manifest.json does not match manifest_sha256"
+        )
+
+    manifest_sha_path = regular_file(
+        release_dir / "manifest.sha256",
+        "MANIFEST_SHA256_FILE_MISSING",
+        "manifest.sha256",
+    )
+    try:
+        declared = manifest_sha_path.read_text(encoding="utf-8").split()
+    except (OSError, UnicodeError) as exc:
+        raise GateBlocked(
+            "MANIFEST_SHA256_FILE_MISSING", f"manifest.sha256 cannot be read: {exc}"
+        ) from exc
+    if declared != [actual_hash]:
+        raise GateBlocked(
+            "MANIFEST_SHA256_MISMATCH", "manifest.sha256 does not match manifest.json"
+        )
+
+    manifest = load_json_file(
+        manifest_path, "MANIFEST_JSON_INVALID", "manifest.json"
+    )
+    if manifest.get("format") != 1:
+        raise GateBlocked("MANIFEST_FORMAT_INVALID", "manifest format must be 1")
+    inputs = manifest.get("inputs")
+    if not isinstance(inputs, dict):
+        raise GateBlocked("MANIFEST_INPUTS_INVALID", "manifest inputs must be an object")
+    if inputs.get("source") != request["release_sha"]:
+        raise GateBlocked(
+            "MANIFEST_SOURCE_MISMATCH", "manifest inputs.source does not match release_sha"
+        )
+    contracts = inputs.get("contracts")
+    if not isinstance(contracts, dict):
+        raise GateBlocked(
+            "MANIFEST_CONTRACTS_INVALID", "manifest inputs.contracts must be an object"
+        )
+    if type(contracts.get("schema")) is not int or contracts["schema"] <= 0:
+        raise GateBlocked(
+            "MANIFEST_CONTRACTS_INVALID", "manifest schema contract is invalid"
+        )
+    for key in ("data", "authentication"):
+        if not isinstance(contracts.get(key), str) or not contracts[key]:
+            raise GateBlocked(
+                "MANIFEST_CONTRACTS_INVALID", f"manifest {key} contract is invalid"
+            )
+
+    oci_hash = manifest.get("oci_archive_sha256")
+    if not isinstance(oci_hash, str) or not HASH.fullmatch(oci_hash):
+        raise GateBlocked(
+            "MANIFEST_OCI_HASH_INVALID", "manifest oci_archive_sha256 is invalid"
+        )
+    oci_digest = manifest.get("oci_manifest_digest")
+    if not isinstance(oci_digest, str) or not DIGEST.fullmatch(oci_digest):
+        raise GateBlocked(
+            "MANIFEST_OCI_DIGEST_INVALID", "manifest oci_manifest_digest is invalid"
+        )
+    if oci_digest != request["artifact_ref"]:
+        raise GateBlocked(
+            "ARTIFACT_REF_MISMATCH", "artifact_ref does not match manifest digest"
+        )
+
+    frontend = manifest.get("frontend_files")
+    if not isinstance(frontend, dict) or not frontend:
+        raise GateBlocked(
+            "FRONTEND_MANIFEST_INVALID", "manifest frontend_files must be a non-empty object"
+        )
+    if len(frontend) > MAX_FRONTEND_FILES:
+        raise GateBlocked(
+            "FRONTEND_MANIFEST_INVALID", "manifest frontend_files is too large"
+        )
+    for relative, digest in frontend.items():
+        safe_relative(relative, "FRONTEND_PATH_UNSAFE")
+        if not isinstance(digest, str) or not HASH.fullmatch(digest):
+            raise GateBlocked(
+                "FRONTEND_MANIFEST_INVALID", f"invalid frontend hash for {relative}"
+            )
+    if "index.html" not in frontend:
+        raise GateBlocked(
+            "FRONTEND_INDEX_MISSING", "manifest frontend_files must contain index.html"
+        )
+    return manifest
+
+
+def check_oci_descriptor(descriptor: dict, blob_sizes: dict, label: str) -> None:
+    if not isinstance(descriptor, dict):
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", f"OCI {label} descriptor must be an object"
+        )
+    digest = descriptor.get("digest")
+    size = descriptor.get("size")
+    media_type = descriptor.get("mediaType")
+    if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", f"OCI {label} digest is invalid"
+        )
+    if type(size) is not int or size < 0:
+        raise GateBlocked("OCI_MANIFEST_STRUCTURE", f"OCI {label} size is invalid")
+    if not isinstance(media_type, str) or not media_type:
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", f"OCI {label} mediaType is invalid"
+        )
+    blob = digest.split(":", 1)[1]
+    if blob not in blob_sizes:
+        raise GateBlocked(
+            "OCI_DESCRIPTOR_MISSING", f"OCI {label} blob is missing: {digest}"
+        )
+    if blob_sizes[blob] != size:
+        raise GateBlocked(
+            "OCI_DESCRIPTOR_SIZE_MISMATCH",
+            f"OCI {label} descriptor size does not match its blob",
+        )
+
+
+def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
+    archive_path = regular_file(
+        release_dir / "image.oci.tar", "OCI_ARCHIVE_NOT_FOUND", "image.oci.tar"
+    )
+    if sha256_file(archive_path) != manifest["oci_archive_sha256"]:
+        raise GateBlocked(
+            "OCI_ARCHIVE_HASH_MISMATCH", "image.oci.tar does not match its manifest hash"
+        )
+    expected_manifest = manifest["oci_manifest_digest"].split(":", 1)[1]
+    try:
+        with tarfile.open(archive_path, mode="r:*") as archive:
+            names = set()
+            index_data = None
+            manifest_data = None
+            blob_names = set()
+            blob_sizes = {}
+            for member in archive:
+                name = member.name
+                if name.startswith("./"):
+                    name = name[2:]
+                if name in ("", "."):
+                    continue
+                if member.isdir():
+                    if name.rstrip("/"):
+                        safe_relative(name.rstrip("/"), "OCI_MEMBER_UNSAFE")
+                    continue
+                safe_relative(name, "OCI_MEMBER_UNSAFE")
+                if name in names:
+                    raise GateBlocked(
+                        "OCI_MEMBER_UNSAFE", f"duplicate OCI member: {name}"
+                    )
+                names.add(name)
+                if not member.isfile():
+                    raise GateBlocked(
+                        "OCI_MEMBER_UNSAFE", f"non-file OCI member: {name}"
+                    )
+                if name == "index.json":
+                    if member.size > MAX_JSON_BYTES:
+                        raise GateBlocked(
+                            "OCI_INDEX_INVALID", "OCI index.json is too large"
+                        )
+                    handle = archive.extractfile(member)
+                    index_data = handle.read() if handle else b""
+                elif name.startswith("blobs/sha256/"):
+                    expected = name.rsplit("/", 1)[-1]
+                    if not HASH.fullmatch(expected):
+                        raise GateBlocked(
+                            "OCI_MEMBER_UNSAFE", f"invalid OCI blob name: {name}"
+                        )
+                    handle = archive.extractfile(member)
+                    if handle is None:
+                        raise GateBlocked(
+                            "OCI_BLOB_HASH_MISMATCH", f"OCI blob is unreadable: {name}"
+                        )
+                    if expected == expected_manifest:
+                        if member.size > MAX_JSON_BYTES:
+                            raise GateBlocked(
+                                "OCI_MANIFEST_INVALID", "OCI image manifest is too large"
+                            )
+                        data = handle.read()
+                        if sha256_bytes(data) != expected:
+                            raise GateBlocked(
+                                "OCI_BLOB_HASH_MISMATCH",
+                                f"OCI blob hash mismatch: {name}",
+                            )
+                        manifest_data = data
+                    elif sha256_stream(handle) != expected:
+                        raise GateBlocked(
+                            "OCI_BLOB_HASH_MISMATCH", f"OCI blob hash mismatch: {name}"
+                        )
+                    blob_names.add(expected)
+                    blob_sizes[expected] = member.size
+    except GateBlocked:
+        raise
+    except (OSError, tarfile.TarError) as exc:
+        raise GateBlocked("OCI_ARCHIVE_INVALID", f"image.oci.tar is invalid: {exc}") from exc
+
+    if "oci-layout" not in names:
+        raise GateBlocked("OCI_LAYOUT_MISSING", "image.oci.tar lacks oci-layout")
+    if index_data is None:
+        raise GateBlocked("OCI_INDEX_MISSING", "image.oci.tar lacks index.json")
+    try:
+        index = json.loads(index_data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise GateBlocked("OCI_INDEX_INVALID", f"OCI index.json is invalid: {exc}") from exc
+    manifests = index.get("manifests") if isinstance(index, dict) else None
+    if not isinstance(manifests, list) or not manifests:
+        raise GateBlocked("OCI_INDEX_INVALID", "OCI index must declare manifests")
+    first = manifests[0]
+    if not isinstance(first, dict) or first.get("digest") != manifest["oci_manifest_digest"]:
+        raise GateBlocked(
+            "OCI_DIGEST_MISMATCH", "OCI index digest does not match manifest"
+        )
+    if expected_manifest not in blob_names:
+        raise GateBlocked(
+            "OCI_DIGEST_MISMATCH", "OCI digest blob is missing from image.oci.tar"
+        )
+    if type(first.get("size")) is not int or first["size"] != blob_sizes[expected_manifest]:
+        raise GateBlocked(
+            "OCI_INDEX_INVALID", "OCI index descriptor size does not match its blob"
+        )
+    if manifest_data is None:
+        raise GateBlocked("OCI_MANIFEST_MISSING", "OCI image manifest is missing")
+    try:
+        oci_manifest = json.loads(manifest_data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise GateBlocked(
+            "OCI_MANIFEST_INVALID", f"OCI image manifest is invalid: {exc}"
+        ) from exc
+    if not isinstance(oci_manifest, dict):
+        raise GateBlocked("OCI_MANIFEST_INVALID", "OCI image manifest must be an object")
+    if oci_manifest.get("schemaVersion") != 2:
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", "OCI image manifest schemaVersion must be 2"
+        )
+    if oci_manifest.get("mediaType") not in (
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    ):
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE", "OCI image manifest mediaType is invalid"
+        )
+    config = oci_manifest.get("config")
+    layers = oci_manifest.get("layers")
+    if not isinstance(config, dict) or not isinstance(layers, list) or not layers:
+        raise GateBlocked(
+            "OCI_MANIFEST_STRUCTURE",
+            "OCI image manifest requires config and a non-empty layers list",
+        )
+    check_oci_descriptor(config, blob_sizes, "config")
+    for position, layer in enumerate(layers):
+        check_oci_descriptor(layer, blob_sizes, f"layers[{position}]")
+
+
+def check_frontend(release_dir: Path, manifest: dict) -> None:
+    frontend_root = release_dir / "frontend"
+    if frontend_root.is_symlink() or not frontend_root.is_dir():
+        raise GateBlocked("FRONTEND_DIR_MISSING", "frontend/ is missing or unsafe")
+    expected = manifest["frontend_files"]
+    actual = {}
+    for current, directories, files in os.walk(frontend_root, followlinks=False):
+        current_path = Path(current)
+        for directory in directories:
+            candidate = current_path / directory
+            if candidate.is_symlink():
+                raise GateBlocked(
+                    "FRONTEND_SYMLINK", f"symlink in frontend/: {candidate}"
+                )
+        for filename in files:
+            candidate = current_path / filename
+            if candidate.is_symlink():
+                raise GateBlocked(
+                    "FRONTEND_SYMLINK", f"symlink in frontend/: {candidate}"
+                )
+            relative = candidate.relative_to(frontend_root).as_posix()
+            safe_relative(relative, "FRONTEND_PATH_UNSAFE")
+            actual[relative] = sha256_file(candidate)
+    if actual != expected:
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        changed = sorted(
+            key for key in set(expected) & set(actual) if expected[key] != actual[key]
+        )
+        detail = []
+        if missing:
+            detail.append(f"missing={missing}")
+        if extra:
+            detail.append(f"extra={extra}")
+        if changed:
+            detail.append(f"changed={changed}")
+        raise GateBlocked(
+            "FRONTEND_MISMATCH",
+            "frontend/ does not match manifest frontend_files"
+            + (f" ({'; '.join(detail)})" if detail else ""),
+        )
+
+
+def check_seed(request: dict, seed_path, manifest) -> None:
+    environment = request["environment"]
+    seed_hash = request["seed_manifest_sha256"]
+    if environment == "prod":
+        if seed_path is not None:
+            raise GateBlocked("SEED_NOT_ALLOWED", "PROD must not carry a seed file")
+        return
+    if seed_path is None:
+        raise GateBlocked("SEED_FILE_REQUIRED", "TEST requires --seed-manifest")
+    seed_file = regular_file(seed_path, "SEED_FILE_REQUIRED", "seed manifest")
+    if sha256_file(seed_file) != seed_hash:
+        raise GateBlocked(
+            "SEED_HASH_MISMATCH", "seed manifest does not match seed_manifest_sha256"
+        )
+    seed = load_json_file(seed_file, "SEED_JSON_INVALID", "seed manifest")
+    if "commit" in seed and seed["commit"] != request["release_sha"]:
+        raise GateBlocked(
+            "SEED_COMMIT_MISMATCH", "seed manifest commit does not match release_sha"
+        )
+    if manifest is None:
+        raise GateBlocked(
+            "SEED_SCHEMA_UNVERIFIED",
+            "release manifest is unavailable; seed schema compatibility is not verified",
+        )
+    release_schema = manifest["inputs"]["contracts"]["schema"]
+    seed_schema = seed.get("schema")
+    if type(seed_schema) is not int or seed_schema <= 0:
+        raise GateBlocked(
+            "SEED_SCHEMA_INVALID", "seed manifest schema must be a positive integer"
+        )
+    if seed_schema != release_schema:
+        raise GateBlocked(
+            "SEED_SCHEMA_MISMATCH",
+            f"seed schema {seed_schema} does not match release schema {release_schema}",
+        )
+
+
+def check_state(request: dict, state_path, report: Report) -> None:
+    if state_path is None:
+        raise GateBlocked(
+            "STATE_NOT_SIMULATED",
+            "dry-run requires a --state fixture; host state is not verified",
+        )
+    state = load_json_file(state_path, "STATE_INVALID", "state fixture")
+    if set(state) != STATE_KEYS:
+        raise GateBlocked(
+            "STATE_INVALID",
+            "state fixture must contain exactly environment, installed and lock",
+        )
+    if state.get("environment") != request["environment"]:
+        raise GateBlocked(
+            "STATE_ENVIRONMENT_MISMATCH", "state fixture environment does not match"
+        )
+    if state.get("lock") is not None:
+        raise GateBlocked("ENVIRONMENT_LOCKED", "environment already has an active lock")
+
+    installed = state.get("installed")
+    rollback = request["rollback_pair"]
+    if installed is None:
+        if rollback is not None:
+            raise GateBlocked(
+                "ROLLBACK_PAIR_UNEXPECTED",
+                "no installed release exists for the declared rollback pair",
+            )
+    else:
+        if not isinstance(installed, dict) or set(installed) != INSTALLED_KEYS:
+            raise GateBlocked("STATE_INVALID", "installed state is invalid")
+        if not isinstance(installed.get("version"), str) or not SEMVER.fullmatch(
+            installed["version"]
+        ):
+            raise GateBlocked("STATE_INVALID", "installed version is invalid")
+        if not isinstance(installed.get("release_sha"), str) or not SHA.fullmatch(
+            installed["release_sha"]
+        ):
+            raise GateBlocked("STATE_INVALID", "installed release_sha is invalid")
+        if not isinstance(
+            installed.get("manifest_sha256"), str
+        ) or not HASH.fullmatch(installed["manifest_sha256"]):
+            raise GateBlocked("STATE_INVALID", "installed manifest hash is invalid")
+        if installed["version"] == request["version"]:
+            raise GateBlocked(
+                "VERSION_ALREADY_ACTIVE", "the requested version is already installed"
+            )
+        if rollback is None:
+            raise GateBlocked(
+                "ROLLBACK_PAIR_REQUIRED",
+                "an installed release requires a matching rollback_pair",
+            )
+        if (
+            rollback["previous_release_sha"] != installed["release_sha"]
+            or rollback["previous_manifest_sha256"] != installed["manifest_sha256"]
+        ):
+            raise GateBlocked(
+                "ROLLBACK_PAIR_MISMATCH",
+                "rollback_pair does not match the installed release",
+            )
+    report.sim_ok("host.state", "simulated from --state fixture")
+
+
+def external_item(evidence: dict, name: str, report: Report) -> dict:
+    item = evidence.get(name)
+    if not isinstance(item, dict):
+        raise GateBlocked("EVIDENCE_INVALID", f"evidence.{name} must be an object")
+    return item
+
+
+def check_evidence(request: dict, evidence_path, report: Report) -> None:
+    if evidence_path is None:
+        raise GateBlocked(
+            "EVIDENCE_NOT_SIMULATED",
+            "dry-run requires an --evidence fixture; external gates are not verified",
+        )
+    evidence = load_json_file(evidence_path, "EVIDENCE_INVALID", "evidence fixture")
+    unknown = sorted(set(evidence) - EXTERNAL_EVIDENCE_KEYS)
+    if unknown:
+        raise GateBlocked(
+            "EVIDENCE_INVALID", f"unknown evidence fields: {', '.join(unknown)}"
+        )
+    release_sha = request["release_sha"]
+    for name, error_code in (
+        ("ci", "CI_NOT_SUCCESS"),
+        ("rootless", "ROOTLESS_NOT_SUCCESS"),
+        ("qa", "QA_NOT_SUCCESS"),
+    ):
+        item = external_item(evidence, name, report)
+        if item.get("status") != "success":
+            report.sim_block(
+                f"evidence.{name}", error_code, f"simulated {name} evidence is not success"
+            )
+            continue
+        if item.get("sha") != release_sha:
+            report.sim_block(
+                f"evidence.{name}",
+                f"{name.upper()}_SHA_MISMATCH",
+                f"simulated {name} evidence does not match release_sha",
+            )
+            continue
+        report.sim_ok(f"evidence.{name}", "simulated fixture; not verified on GitHub")
+
+    ancestry = external_item(evidence, "ancestry", report)
+    if ancestry.get("origin") != "main":
+        report.sim_block(
+            "evidence.ancestry", "ANCESTRY_INVALID", "simulated ancestry origin must be main"
+        )
+    elif ancestry.get("sha") != release_sha:
+        report.sim_block(
+            "evidence.ancestry",
+            "ANCESTRY_SHA_MISMATCH",
+            "simulated ancestry sha does not match release_sha",
+        )
+    elif ancestry.get("ancestor") is not True:
+        report.sim_block(
+            "evidence.ancestry",
+            "ANCESTRY_NOT_VERIFIED",
+            "simulated ancestry says the SHA is not an ancestor",
+        )
+    else:
+        report.sim_ok("evidence.ancestry", "simulated fixture; Git was not queried")
+
+    if request["environment"] == "prod":
+        approval = external_item(evidence, "approval", report)
+        if approval.get("verified") is not True:
+            report.sim_block(
+                "evidence.approval",
+                "APPROVAL_EVIDENCE_INVALID",
+                "simulated approval is not verified",
+            )
+        elif approval.get("sha") != release_sha:
+            report.sim_block(
+                "evidence.approval",
+                "APPROVAL_EVIDENCE_MISMATCH",
+                "simulated approval sha does not match",
+            )
+        elif approval.get("version") != request["version"]:
+            report.sim_block(
+                "evidence.approval",
+                "APPROVAL_EVIDENCE_MISMATCH",
+                "simulated approval version does not match",
+            )
+        else:
+            report.sim_ok("evidence.approval", "simulated fixture; GitHub was not queried")
+
+
+def result_payload(report: Report, request: dict | None, mode: str) -> dict:
+    deployment_id = None
+    if request:
+        environment = request.get("environment")
+        version = request.get("version")
+        if environment in ("test", "prod") and isinstance(version, str):
+            deployment_id = f"{environment}-{version}-1"
+    return {
+        "result_version": 1,
+        "mode": "dry_run" if mode == "dry-run" else mode,
+        "deployment_id": deployment_id,
+        "result": "success" if not report.blockers else "blocked_before_mutation",
+        "checks": report.checks,
+        "blockers": report.blockers,
+        "verification": {
+            "local": report.local,
+            "simulated": report.simulated,
+            "skipped": report.skipped,
+            "real_world_not_verified": [
+                "github_ci",
+                "github_rootless",
+                "github_qa",
+                "git_ancestry",
+                "prod_approval",
+                "host_state",
+                "tag_author",
+                "application_version",
+            ],
+        },
+        "activated_release": None,
+        "evidence_location": None,
+    }
+
+
+def write_result(path, payload: dict) -> None:
+    if path is None:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    destination = Path(path).expanduser()
+    if destination.is_symlink():
+        raise GateBlocked("OUTPUT_PATH_UNSAFE", "output path is a symlink")
+    parent = destination.parent
+    if not parent.is_dir() or parent.is_symlink():
+        raise GateBlocked("OUTPUT_PATH_UNSAFE", "output parent is missing or unsafe")
+    handle, temporary = tempfile.mkstemp(prefix=".release-gate-", dir=parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        os.replace(temporary, destination)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Validate a release request in local dry-run mode."
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    check = subparsers.add_parser("check", help="validate a release request")
+    check.add_argument("--request", required=True, help="deploy-request JSON")
+    check.add_argument("--release-dir", required=True, help="private release bundle")
+    check.add_argument("--state", help="simulated host state JSON")
+    check.add_argument("--evidence", help="simulated external evidence JSON")
+    check.add_argument("--seed-manifest", help="seed manifest for TEST")
+    check.add_argument(
+        "--mode",
+        default="dry-run",
+        choices=("dry-run", "apply"),
+        help="dry-run only; apply is not implemented",
+    )
+    check.add_argument("--output", help="write the result JSON here")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    report = Report()
+    request = None
+
+    if args.mode != "dry-run":
+        report.local_block(
+            "mode",
+            "APPLY_NOT_IMPLEMENTED",
+            "apply mode is not implemented; only dry-run is available",
+        )
+        payload = result_payload(report, None, args.mode)
+        try:
+            write_result(args.output, payload)
+        except GateBlocked as exc:
+            print(f"release-gate: {exc.code}: {exc.message}", file=sys.stderr)
+            return EXIT_FAILED
+        return EXIT_BLOCKED
+
+    try:
+        request = load_json_file(
+            args.request, "REQUEST_JSON_INVALID", "deploy request"
+        )
+        validate_request(request)
+        report.local_ok("request.format", "request fields and tag/version are valid")
+    except GateBlocked as exc:
+        report.local_block("request", exc.code, exc.message)
+        payload = result_payload(report, None, args.mode)
+        try:
+            write_result(args.output, payload)
+        except GateBlocked as output_error:
+            print(
+                f"release-gate: {output_error.code}: {output_error.message}",
+                file=sys.stderr,
+            )
+            return EXIT_FAILED
+        return EXIT_BLOCKED
+
+    deployment_id = f"{request['environment']}-{request['version']}-1"
+
+    release_dir = Path(args.release_dir).expanduser()
+    if release_dir.is_symlink() or not release_dir.is_dir():
+        report.local_block(
+            "release.dir", "RELEASE_DIR_INVALID", "release directory is missing or unsafe"
+        )
+        manifest = None
+    else:
+        release_dir = release_dir.resolve()
+        manifest = None
+        try:
+            check_release_tree(release_dir)
+            report.local_ok(
+                "release.tree",
+                "release bundle has only allowed entries and no symlinks",
+            )
+            tree_ok = True
+        except GateBlocked as exc:
+            report.local_block("release.tree", exc.code, exc.message)
+            tree_ok = False
+        if tree_ok:
+            try:
+                manifest = check_manifest(request, release_dir)
+                report.local_ok(
+                    "manifest.sha256", "manifest hash and manifest.sha256 are verified"
+                )
+                report.local_ok(
+                    "manifest.source", "inputs.source matches release_sha"
+                )
+                report.local_ok(
+                    "manifest.contracts", "schema/data/authentication contracts are present"
+                )
+            except GateBlocked as exc:
+                report.local_block("manifest", exc.code, exc.message)
+                manifest = None
+
+        if manifest is not None:
+            for check_id, function in (
+                ("oci.archive", lambda: check_oci(request, release_dir, manifest)),
+                ("frontend.files", lambda: check_frontend(release_dir, manifest)),
+            ):
+                try:
+                    function()
+                    detail = (
+                        "OCI archive, index and blobs are verified"
+                        if check_id == "oci.archive"
+                        else "frontend files match the manifest map"
+                    )
+                    report.local_ok(check_id, detail)
+                except GateBlocked as exc:
+                    report.local_block(check_id, exc.code, exc.message)
+
+    try:
+        check_seed(request, args.seed_manifest, manifest)
+        report.local_ok(
+            "seed.manifest",
+            "seed manifest hash and schema are verified"
+            if request["environment"] == "test"
+            else "no seed is carried by PROD",
+        )
+    except GateBlocked as exc:
+        report.local_block("seed.manifest", exc.code, exc.message)
+
+    try:
+        check_state(request, args.state, report)
+    except GateBlocked as exc:
+        report.sim_block("host.state", exc.code, exc.message)
+
+    try:
+        check_evidence(request, args.evidence, report)
+    except GateBlocked as exc:
+        report.sim_block("evidence", exc.code, exc.message)
+
+    payload = result_payload(report, request, args.mode)
+    payload["deployment_id"] = deployment_id
+    try:
+        write_result(args.output, payload)
+    except GateBlocked as exc:
+        print(f"release-gate: {exc.code}: {exc.message}", file=sys.stderr)
+        return EXIT_FAILED
+    return EXIT_OK if not report.blockers else EXIT_BLOCKED
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except GateBlocked as error:
+        print(f"release-gate: {error.code}: {error.message}", file=sys.stderr)
+        sys.exit(EXIT_BLOCKED)
+    except Exception as error:
+        print(
+            f"release-gate: internal error: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_FAILED)

@@ -56,6 +56,7 @@ ROLLBACK_KEYS = {"previous_release_sha", "previous_manifest_sha256"}
 STATE_KEYS = {"environment", "installed", "lock"}
 INSTALLED_KEYS = {"version", "release_sha", "manifest_sha256"}
 EXTERNAL_EVIDENCE_KEYS = {"ci", "rootless", "qa", "ancestry", "approval"}
+RELEASE_TOP_LEVEL = {"manifest.json", "manifest.sha256", "image.oci.tar", "frontend"}
 
 MAX_JSON_BYTES = 2_000_000
 MAX_TEXT = 2048
@@ -211,6 +212,49 @@ def safe_child(root: Path, relative: str, code: str = "PATH_UNSAFE") -> Path:
     return candidate
 
 
+def check_release_tree(release_dir: Path) -> None:
+    try:
+        entries = list(release_dir.iterdir())
+    except OSError as exc:
+        raise GateBlocked("RELEASE_DIR_INVALID", f"cannot list release directory: {exc}") from exc
+    for entry in entries:
+        if entry.is_symlink():
+            raise GateBlocked("RELEASE_SYMLINK", f"symlink in release bundle: {entry.name}")
+    names = {entry.name for entry in entries}
+    unexpected = sorted(names - RELEASE_TOP_LEVEL)
+    if unexpected:
+        raise GateBlocked(
+            "RELEASE_EXTRA_ENTRY",
+            f"unexpected release entries: {', '.join(unexpected)}",
+        )
+    for entry in entries:
+        if entry.name == "frontend":
+            if not entry.is_dir():
+                raise GateBlocked("RELEASE_ENTRY_INVALID", "frontend must be a directory")
+        elif not entry.is_file():
+            raise GateBlocked(
+                "RELEASE_ENTRY_INVALID", f"release entry is not a file: {entry.name}"
+            )
+    for current, directories, files in os.walk(release_dir, followlinks=False):
+        current_path = Path(current)
+        for directory in directories:
+            candidate = current_path / directory
+            if candidate.is_symlink():
+                raise GateBlocked(
+                    "RELEASE_SYMLINK", f"symlink in release bundle: {candidate}"
+                )
+        for filename in files:
+            candidate = current_path / filename
+            if candidate.is_symlink():
+                raise GateBlocked(
+                    "RELEASE_SYMLINK", f"symlink in release bundle: {candidate}"
+                )
+            if not candidate.is_file():
+                raise GateBlocked(
+                    "RELEASE_ENTRY_INVALID", f"special file in release bundle: {candidate}"
+                )
+
+
 def scan_secrets(value, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -341,11 +385,15 @@ def validate_request(request: dict) -> None:
             raise GateBlocked(
                 "ROLLBACK_PAIR_INVALID", "rollback_pair must contain exactly its two fields"
             )
-        if not SHA.fullmatch(str(rollback["previous_release_sha"])):
+        if not isinstance(rollback["previous_release_sha"], str) or not SHA.fullmatch(
+            rollback["previous_release_sha"]
+        ):
             raise GateBlocked(
                 "ROLLBACK_PAIR_INVALID", "rollback_pair.previous_release_sha is invalid"
             )
-        if not HASH.fullmatch(str(rollback["previous_manifest_sha256"])):
+        if not isinstance(
+            rollback["previous_manifest_sha256"], str
+        ) or not HASH.fullmatch(rollback["previous_manifest_sha256"]):
             raise GateBlocked(
                 "ROLLBACK_PAIR_INVALID",
                 "rollback_pair.previous_manifest_sha256 is invalid",
@@ -595,8 +643,11 @@ def check_state(request: dict, state_path, report: Report) -> None:
         report.skip("host.state", "no --state fixture supplied")
         return
     state = load_json_file(state_path, "STATE_INVALID", "state fixture")
-    if set(state) - STATE_KEYS:
-        raise GateBlocked("STATE_INVALID", "state fixture has unknown fields")
+    if set(state) != STATE_KEYS:
+        raise GateBlocked(
+            "STATE_INVALID",
+            "state fixture must contain exactly environment, installed and lock",
+        )
     if state.get("environment") != request["environment"]:
         raise GateBlocked(
             "STATE_ENVIRONMENT_MISMATCH", "state fixture environment does not match"
@@ -615,11 +666,17 @@ def check_state(request: dict, state_path, report: Report) -> None:
     else:
         if not isinstance(installed, dict) or set(installed) != INSTALLED_KEYS:
             raise GateBlocked("STATE_INVALID", "installed state is invalid")
-        if not SEMVER.fullmatch(str(installed.get("version"))):
+        if not isinstance(installed.get("version"), str) or not SEMVER.fullmatch(
+            installed["version"]
+        ):
             raise GateBlocked("STATE_INVALID", "installed version is invalid")
-        if not SHA.fullmatch(str(installed.get("release_sha"))):
+        if not isinstance(installed.get("release_sha"), str) or not SHA.fullmatch(
+            installed["release_sha"]
+        ):
             raise GateBlocked("STATE_INVALID", "installed release_sha is invalid")
-        if not HASH.fullmatch(str(installed.get("manifest_sha256"))):
+        if not isinstance(
+            installed.get("manifest_sha256"), str
+        ) or not HASH.fullmatch(installed["manifest_sha256"]):
             raise GateBlocked("STATE_INVALID", "installed manifest hash is invalid")
         if installed["version"] == request["version"]:
             raise GateBlocked(
@@ -852,20 +909,32 @@ def main(argv=None) -> int:
         manifest = None
     else:
         release_dir = release_dir.resolve()
+        manifest = None
         try:
-            manifest = check_manifest(request, release_dir)
+            check_release_tree(release_dir)
             report.local_ok(
-                "manifest.sha256", "manifest hash and manifest.sha256 are verified"
+                "release.tree",
+                "release bundle has only allowed entries and no symlinks",
             )
-            report.local_ok(
-                "manifest.source", "inputs.source matches release_sha"
-            )
-            report.local_ok(
-                "manifest.contracts", "schema/data/authentication contracts are present"
-            )
+            tree_ok = True
         except GateBlocked as exc:
-            report.local_block("manifest", exc.code, exc.message)
-            manifest = None
+            report.local_block("release.tree", exc.code, exc.message)
+            tree_ok = False
+        if tree_ok:
+            try:
+                manifest = check_manifest(request, release_dir)
+                report.local_ok(
+                    "manifest.sha256", "manifest hash and manifest.sha256 are verified"
+                )
+                report.local_ok(
+                    "manifest.source", "inputs.source matches release_sha"
+                )
+                report.local_ok(
+                    "manifest.contracts", "schema/data/authentication contracts are present"
+                )
+            except GateBlocked as exc:
+                report.local_block("manifest", exc.code, exc.message)
+                manifest = None
 
         if manifest is not None:
             for check_id, function in (

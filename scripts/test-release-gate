@@ -368,6 +368,21 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "MANIFEST_NOT_FOUND")
 
+    def test_release_extra_file(self) -> None:
+        (self.fx.release / "extra.txt").write_text("extra\n")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "RELEASE_EXTRA_ENTRY")
+
+    def test_release_extra_symlink(self) -> None:
+        try:
+            (self.fx.release / "extra-link").symlink_to("manifest.json")
+        except OSError as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "RELEASE_SYMLINK")
+
     def test_tampered_frontend(self) -> None:
         (self.fx.frontend / "assets" / "app.js").write_text("tampered\n")
         completed, payload = self.fx.run()
@@ -492,7 +507,7 @@ class ReleaseGateTests(unittest.TestCase):
             self.skipTest(f"symlinks unavailable: {exc}")
         completed, payload = self.fx.run()
         self.assertEqual(completed.returncode, 2)
-        self.assertBlocked(payload, "FRONTEND_SYMLINK")
+        self.assertBlocked(payload, "RELEASE_SYMLINK")
 
     def test_state_locked(self) -> None:
         completed, payload = self.fx.run(
@@ -507,6 +522,33 @@ class ReleaseGateTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "STATE_ENVIRONMENT_MISMATCH")
+
+    def test_state_partial(self) -> None:
+        completed, payload = self.fx.run(state={"environment": "test"})
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "STATE_INVALID")
+
+    def test_installed_numeric_sha(self) -> None:
+        installed = {
+            "version": "0.0.9",
+            "release_sha": int("1" * 40),
+            "manifest_sha256": "0" * 64,
+        }
+        completed, payload = self.fx.run(
+            state={"environment": "test", "installed": installed, "lock": None}
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "STATE_INVALID")
+
+    def test_rollback_numeric_sha(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["rollback_pair"] = {
+            "previous_release_sha": int("1" * 40),
+            "previous_manifest_sha256": "0" * 64,
+        }
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "ROLLBACK_PAIR_INVALID")
 
     def test_rollback_pair_required(self) -> None:
         installed = {

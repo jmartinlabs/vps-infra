@@ -73,10 +73,10 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 36 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
+Los 41 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
 manifiesto, OCI, frontend, seed, aprobación, evidencia simulada, rutas inseguras, symlinks,
-estado bloqueado, rollback y modo `apply`. También comprueban que el CLI no modifica el estado
-simulado.
+entradas extra, estado incompleto o bloqueado, rollback y modo `apply`. También comprueban que
+el CLI no modifica el estado simulado.
 
 ## Límites para una activación real
 

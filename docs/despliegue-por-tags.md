@@ -269,4 +269,5 @@ Ninguna fase se deduce de otra. Un merge documental no habilita la siguiente.
 - [Roadmap](roadmap.md)
 - [Estado actual](estado-actual.md)
 - [Host TEST (PR #9, MERGED `901204c`; spec DRAFT)](https://github.com/jmartinlabs/vps-infra/blob/main/specs/02-infra-test-01-host-specification.md)
+- [Release gate local (dry-run)](release-gate.md)
 - `myfinanzas-app`: especificación `DEPLOY-TAGS-01`, mantenida en su repositorio.

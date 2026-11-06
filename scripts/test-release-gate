@@ -1,0 +1,586 @@
+#!/usr/bin/env python3
+"""Positive and negative fixtures for scripts/release-gate (dry-run only)."""
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+GATE = ROOT / "scripts" / "release-gate"
+DEFAULT = object()
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_json(path: Path, value: dict) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def add_bytes(archive: tarfile.TarFile, name: str, data: bytes) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    info.mode = 0o644
+    archive.addfile(info, __import__("io").BytesIO(data))
+
+
+def tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        if path.is_file():
+            digest.update(sha256_file(path).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+class Fixture:
+    def __init__(self, base: Path) -> None:
+        self.base = base
+        self.work = base / "work"
+        self.release = self.work / "release"
+        self.frontend = self.release / "frontend"
+        self.seed = self.work / "seed-manifest.json"
+        self.request_path = self.work / "request.json"
+        self.state_path = self.work / "state.json"
+        self.evidence_path = self.work / "evidence.json"
+        self.output_path = base / "result.json"
+        self.release_sha = "a" * 40
+        self.version = "0.1.0"
+        self.build()
+
+    def build(self) -> None:
+        self.frontend.mkdir(parents=True)
+        (self.frontend / "assets").mkdir()
+        (self.frontend / "index.html").write_text("<html>fixture</html>\n")
+        (self.frontend / "assets" / "app.js").write_text("console.log('fixture')\n")
+        frontend = {
+            path.relative_to(self.frontend).as_posix(): sha256(path.read_bytes())
+            for path in self.frontend.rglob("*")
+            if path.is_file()
+        }
+
+        blob = b'{"architecture":"amd64","os":"linux"}'
+        blob_digest = sha256(blob)
+        index = json.dumps(
+            {
+                "schemaVersion": 2,
+                "manifests": [
+                    {
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "digest": f"sha256:{blob_digest}",
+                        "size": len(blob),
+                    }
+                ],
+            },
+            sort_keys=True,
+        ).encode()
+        oci_path = self.release / "image.oci.tar"
+        with tarfile.open(oci_path, "w") as archive:
+            add_bytes(archive, "oci-layout", b'{"imageLayoutVersion":"1.0.0"}')
+            add_bytes(archive, "index.json", index)
+            add_bytes(archive, f"blobs/sha256/{blob_digest}", blob)
+
+        self.manifest = {
+            "format": 1,
+            "inputs": {
+                "source": self.release_sha,
+                "contracts": {
+                    "schema": 25,
+                    "data": "e4.9-v25",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+            },
+            "oci_manifest_digest": f"sha256:{blob_digest}",
+            "oci_archive_sha256": sha256_file(oci_path),
+            "frontend_files": frontend,
+        }
+        self.write_manifest()
+        write_json(
+            self.seed,
+            {
+                "format": 1,
+                "dataset": "FT-1",
+                "commit": self.release_sha,
+                "schema": 25,
+                "origin": "test",
+            },
+        )
+
+        self.request = {
+            "request_version": 1,
+            "environment": "test",
+            "version": self.version,
+            "tag": f"deploy-test-v{self.version}",
+            "release_sha": self.release_sha,
+            "manifest_sha256": self.manifest_sha,
+            "artifact_ref": self.manifest["oci_manifest_digest"],
+            "actor": "release-bot",
+            "seed_manifest_sha256": sha256_file(self.seed),
+            "evidence": {
+                "ci_run_id": 1001,
+                "rootless_run_id": 1002,
+                "qa_reference": "qa://fixture/sha",
+            },
+            "approval": None,
+            "backup_plan": "fixture backup plan",
+            "rollback_pair": None,
+            "smoke_profile": "test-v1",
+        }
+        self.state = {"environment": "test", "installed": None, "lock": None}
+        self.evidence = {
+            "ci": {"status": "success", "sha": self.release_sha},
+            "rootless": {"status": "success", "sha": self.release_sha},
+            "qa": {"status": "success", "sha": self.release_sha},
+            "ancestry": {"origin": "main", "ancestor": True, "sha": self.release_sha},
+        }
+        self.write_request()
+        self.write_state()
+        self.write_evidence()
+
+    def write_manifest(self) -> None:
+        write_json(self.release / "manifest.json", self.manifest)
+        self.manifest_sha = sha256_file(self.release / "manifest.json")
+        (self.release / "manifest.sha256").write_text(
+            self.manifest_sha + "\n", encoding="utf-8"
+        )
+
+    def write_request(self, request=None) -> None:
+        write_json(self.request_path, self.request if request is None else request)
+
+    def write_state(self, state=None) -> None:
+        write_json(self.state_path, self.state if state is None else state)
+
+    def write_evidence(self, evidence=None) -> None:
+        write_json(
+            self.evidence_path, self.evidence if evidence is None else evidence
+        )
+
+    def run(
+        self,
+        request=None,
+        state=DEFAULT,
+        evidence=DEFAULT,
+        seed=True,
+        mode="dry-run",
+        output=True,
+    ):
+        request = copy.deepcopy(self.request if request is None else request)
+        self.write_request(request)
+        command = [
+            sys.executable,
+            str(GATE),
+            "check",
+            "--request",
+            str(self.request_path),
+            "--release-dir",
+            str(self.release),
+            "--mode",
+            mode,
+        ]
+        if state is not DEFAULT:
+            if state is not None:
+                self.write_state(state)
+                command.extend(["--state", str(self.state_path)])
+        else:
+            command.extend(["--state", str(self.state_path)])
+        if evidence is not DEFAULT:
+            if evidence is not None:
+                self.write_evidence(evidence)
+                command.extend(["--evidence", str(self.evidence_path)])
+        else:
+            command.extend(["--evidence", str(self.evidence_path)])
+        if seed and request.get("seed_manifest_sha256"):
+            command.extend(["--seed-manifest", str(self.seed)])
+        if output:
+            command.extend(["--output", str(self.output_path)])
+        completed = subprocess.run(
+            command, capture_output=True, text=True, check=False
+        )
+        payload = None
+        if output and self.output_path.is_file():
+            payload = json.loads(self.output_path.read_text(encoding="utf-8"))
+        elif completed.stdout.strip():
+            payload = json.loads(completed.stdout)
+        return completed, payload
+
+    def prod_request(self) -> dict:
+        request = copy.deepcopy(self.request)
+        request.update(
+            {
+                "environment": "prod",
+                "tag": f"deploy-prod-v{self.version}",
+                "seed_manifest_sha256": None,
+                "approval": {
+                    "environment": "production",
+                    "run_id": 2001,
+                    "reviewer": "release-reviewer",
+                    "sha": self.release_sha,
+                    "version": self.version,
+                },
+            }
+        )
+        return request
+
+    def prod_evidence(self, request: dict) -> dict:
+        evidence = copy.deepcopy(self.evidence)
+        evidence["approval"] = {
+            "verified": True,
+            "sha": request["release_sha"],
+            "version": request["version"],
+        }
+        return evidence
+
+
+class ReleaseGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.fx = Fixture(Path(self.temp.name))
+
+    def assertBlocked(self, payload, code: str) -> None:
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["result"], "blocked_before_mutation", payload)
+        codes = {item["code"] for item in payload["blockers"]}
+        self.assertIn(code, codes, payload)
+
+    def test_valid_test_dry_run(self) -> None:
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["mode"], "dry_run")
+        self.assertIsNone(payload["activated_release"])
+        self.assertIn("manifest.sha256", payload["verification"]["local"])
+        self.assertIn("oci.archive", payload["verification"]["local"])
+        self.assertIn("frontend.files", payload["verification"]["local"])
+        self.assertIn("seed.manifest", payload["verification"]["local"])
+        self.assertIn("evidence.ci", payload["verification"]["simulated"])
+        self.assertIn("evidence.ancestry", payload["verification"]["simulated"])
+        self.assertIn("github_ci", payload["verification"]["real_world_not_verified"])
+
+    def test_valid_prod_dry_run(self) -> None:
+        request = self.fx.prod_request()
+        completed, payload = self.fx.run(
+            request=request,
+            state={"environment": "prod", "installed": None, "lock": None},
+            evidence=self.fx.prod_evidence(request),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(payload["result"], "success")
+        self.assertIn("evidence.approval", payload["verification"]["simulated"])
+        self.assertIn("prod_approval", payload["verification"]["real_world_not_verified"])
+
+    def test_tag_format(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["tag"] = "deploy-test-0.1.0"
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "TAG_FORMAT")
+
+    def test_tag_environment_mismatch(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["tag"] = "deploy-prod-v0.1.0"
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "TAG_ENVIRONMENT_MISMATCH")
+
+    def test_tag_version_mismatch(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["version"] = "0.2.0"
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "TAG_VERSION_MISMATCH")
+
+    def test_release_sha_format(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["release_sha"] = "a" * 39
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "RELEASE_SHA_FORMAT")
+
+    def test_manifest_hash_mismatch(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["manifest_sha256"] = "0" * 64
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "MANIFEST_HASH_MISMATCH")
+
+    def test_manifest_sha_file_missing(self) -> None:
+        (self.fx.release / "manifest.sha256").unlink()
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "MANIFEST_SHA256_FILE_MISSING")
+
+    def test_manifest_sha256_mismatch(self) -> None:
+        (self.fx.release / "manifest.sha256").write_text("0" * 64 + "\n")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "MANIFEST_SHA256_MISMATCH")
+
+    def test_manifest_source_mismatch(self) -> None:
+        self.fx.manifest["inputs"]["source"] = "b" * 40
+        self.fx.write_manifest()
+        request = copy.deepcopy(self.fx.request)
+        request["manifest_sha256"] = self.fx.manifest_sha
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "MANIFEST_SOURCE_MISMATCH")
+
+    def test_artifact_ref_mismatch(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["artifact_ref"] = "sha256:" + "f" * 64
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "ARTIFACT_REF_MISMATCH")
+
+    def test_oci_digest_mismatch(self) -> None:
+        self.fx.manifest["oci_manifest_digest"] = "sha256:" + "f" * 64
+        self.fx.write_manifest()
+        request = copy.deepcopy(self.fx.request)
+        request["manifest_sha256"] = self.fx.manifest_sha
+        request["artifact_ref"] = self.fx.manifest["oci_manifest_digest"]
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "OCI_DIGEST_MISMATCH")
+
+    def test_missing_manifest(self) -> None:
+        (self.fx.release / "manifest.json").unlink()
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "MANIFEST_NOT_FOUND")
+
+    def test_tampered_frontend(self) -> None:
+        (self.fx.frontend / "assets" / "app.js").write_text("tampered\n")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "FRONTEND_MISMATCH")
+
+    def test_tampered_oci(self) -> None:
+        with (self.fx.release / "image.oci.tar").open("ab") as handle:
+            handle.write(b"tamper")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "OCI_ARCHIVE_HASH_MISMATCH")
+
+    def test_seed_required(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = None
+        completed, payload = self.fx.run(request=request, seed=False)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_REQUIRED")
+
+    def test_seed_hash_mismatch(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = "0" * 64
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_HASH_MISMATCH")
+
+    def test_prod_seed_not_allowed(self) -> None:
+        request = self.fx.prod_request()
+        request["seed_manifest_sha256"] = "1" * 64
+        completed, payload = self.fx.run(
+            request=request,
+            state={"environment": "prod", "installed": None, "lock": None},
+            evidence=self.fx.prod_evidence(request),
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_NOT_ALLOWED")
+
+    def test_prod_without_approval(self) -> None:
+        request = self.fx.prod_request()
+        request["approval"] = None
+        completed, payload = self.fx.run(
+            request=request,
+            state={"environment": "prod", "installed": None, "lock": None},
+            evidence=self.fx.prod_evidence(request),
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "APPROVAL_REQUIRED")
+
+    def test_prod_approval_wrong_sha(self) -> None:
+        request = self.fx.prod_request()
+        request["approval"]["sha"] = "b" * 40
+        completed, payload = self.fx.run(
+            request=request,
+            state={"environment": "prod", "installed": None, "lock": None},
+            evidence=self.fx.prod_evidence(request),
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "APPROVAL_SHA_MISMATCH")
+
+    def test_prod_self_approval(self) -> None:
+        request = self.fx.prod_request()
+        request["approval"]["reviewer"] = request["actor"]
+        completed, payload = self.fx.run(
+            request=request,
+            state={"environment": "prod", "installed": None, "lock": None},
+            evidence=self.fx.prod_evidence(request),
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "APPROVAL_SELF_REVIEW")
+
+    def test_simulated_ci_failure(self) -> None:
+        evidence = copy.deepcopy(self.fx.evidence)
+        evidence["ci"]["status"] = "failure"
+        completed, payload = self.fx.run(evidence=evidence)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "CI_NOT_SUCCESS")
+        self.assertIn("evidence.ci", payload["verification"]["simulated"])
+        self.assertIn("github_ci", payload["verification"]["real_world_not_verified"])
+
+    def test_simulated_ancestry_failure(self) -> None:
+        evidence = copy.deepcopy(self.fx.evidence)
+        evidence["ancestry"]["ancestor"] = False
+        completed, payload = self.fx.run(evidence=evidence)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "ANCESTRY_NOT_VERIFIED")
+
+    def test_unknown_environment(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["environment"] = "staging"
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "ENVIRONMENT_INVALID")
+
+    def test_unknown_field(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["extra"] = "value"
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "REQUEST_UNKNOWN_FIELD")
+
+    def test_secret_field(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["password"] = "not-a-real-secret"
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "REQUEST_SECRET_FIELD")
+
+    def test_unsafe_frontend_path(self) -> None:
+        self.fx.manifest["frontend_files"]["../escape.html"] = "0" * 64
+        self.fx.write_manifest()
+        request = copy.deepcopy(self.fx.request)
+        request["manifest_sha256"] = self.fx.manifest_sha
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "FRONTEND_PATH_UNSAFE")
+
+    def test_frontend_symlink(self) -> None:
+        try:
+            (self.fx.frontend / "link.html").symlink_to("index.html")
+        except OSError as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "FRONTEND_SYMLINK")
+
+    def test_state_locked(self) -> None:
+        completed, payload = self.fx.run(
+            state={"environment": "test", "installed": None, "lock": "deploy-1"}
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "ENVIRONMENT_LOCKED")
+
+    def test_state_environment_mismatch(self) -> None:
+        completed, payload = self.fx.run(
+            state={"environment": "prod", "installed": None, "lock": None}
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "STATE_ENVIRONMENT_MISMATCH")
+
+    def test_rollback_pair_required(self) -> None:
+        installed = {
+            "version": "0.0.9",
+            "release_sha": "b" * 40,
+            "manifest_sha256": "0" * 64,
+        }
+        completed, payload = self.fx.run(
+            state={"environment": "test", "installed": installed, "lock": None}
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "ROLLBACK_PAIR_REQUIRED")
+
+    def test_version_already_active(self) -> None:
+        installed = {
+            "version": self.fx.version,
+            "release_sha": self.fx.release_sha,
+            "manifest_sha256": self.fx.manifest_sha,
+        }
+        completed, payload = self.fx.run(
+            state={"environment": "test", "installed": installed, "lock": None}
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "VERSION_ALREADY_ACTIVE")
+
+    def test_apply_mode_rejected(self) -> None:
+        completed, payload = self.fx.run(mode="apply")
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "APPLY_NOT_IMPLEMENTED")
+
+    def test_missing_evidence_fixture(self) -> None:
+        completed, payload = self.fx.run(evidence=None)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "EVIDENCE_NOT_SIMULATED")
+
+    def test_duplicate_json_key(self) -> None:
+        text = self.fx.request_path.read_text(encoding="utf-8")
+        text = text.replace('"environment": "test",', '"environment": "test", "environment": "test",')
+        self.fx.request_path.write_text(text, encoding="utf-8")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(GATE),
+                "check",
+                "--request",
+                str(self.fx.request_path),
+                "--release-dir",
+                str(self.fx.release),
+                "--state",
+                str(self.fx.state_path),
+                "--evidence",
+                str(self.fx.evidence_path),
+                "--seed-manifest",
+                str(self.fx.seed),
+                "--output",
+                str(self.fx.output_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        payload = json.loads(self.fx.output_path.read_text(encoding="utf-8"))
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "JSON_DUPLICATE_KEY")
+
+    def test_cli_does_not_modify_simulated_state(self) -> None:
+        before = tree_digest(self.fx.work)
+        completed, payload = self.fx.run()
+        after = tree_digest(self.fx.work)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(before, after)
+        self.assertTrue(self.fx.output_path.is_file())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

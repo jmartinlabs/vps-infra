@@ -584,6 +584,11 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "EVIDENCE_NOT_SIMULATED")
 
+    def test_missing_state_fixture(self) -> None:
+        completed, payload = self.fx.run(state=None)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "STATE_NOT_SIMULATED")
+
     def test_duplicate_json_key(self) -> None:
         text = self.fx.request_path.read_text(encoding="utf-8")
         text = text.replace('"environment": "test",', '"environment": "test", "environment": "test",')

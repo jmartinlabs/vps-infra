@@ -34,8 +34,8 @@ campos y la integridad del paquete.
 ```
 
 - `--release-dir` es una entrada de confianza separada; no se acepta una ruta del JSON.
-- `--state` simula el estado del host (instalado/bloqueo). Si se omite, `host.state` queda
-  como `skipped`.
+- `--state` simula el estado del host (instalado/bloqueo). Es obligatorio: sin este fixture
+  el gate bloquea y no puede validar concurrencia ni rollback.
 - `--evidence` simula CI, Rootless, QA, ascendencia Git y aprobación PROD. Sin este fixture
   el gate bloquea: no declara verificado nada que no haya comprobado localmente.
 - `--seed-manifest` es obligatorio en TEST y prohibido en PROD.
@@ -73,10 +73,10 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 41 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
+Los 42 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
 manifiesto, OCI, frontend, seed, aprobación, evidencia simulada, rutas inseguras, symlinks,
-entradas extra, estado incompleto o bloqueado, rollback y modo `apply`. También comprueban que
-el CLI no modifica el estado simulado.
+entradas extra, estado ausente/incompleto/bloqueado, rollback y modo `apply`. También
+comprueban que el CLI no modifica el estado simulado.
 
 ## Límites para una activación real
 

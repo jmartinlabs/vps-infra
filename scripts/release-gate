@@ -640,8 +640,10 @@ def check_seed(request: dict, seed_path) -> None:
 
 def check_state(request: dict, state_path, report: Report) -> None:
     if state_path is None:
-        report.skip("host.state", "no --state fixture supplied")
-        return
+        raise GateBlocked(
+            "STATE_NOT_SIMULATED",
+            "dry-run requires a --state fixture; host state is not verified",
+        )
     state = load_json_file(state_path, "STATE_INVALID", "state fixture")
     if set(state) != STATE_KEYS:
         raise GateBlocked(

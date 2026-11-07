@@ -55,7 +55,7 @@ ni la CLI de MyFinanzas.
 
 ## Pruebas automatizadas
 
-- `./scripts/test-datasette-admin`: **34/34 PASS**.
+- `./scripts/test-datasette-admin`: **35/35 PASS**.
 - `./scripts/test-datasette-admin-integration`: **12/12 PASS**.
 - `validate-template`, `check_harness`, `test-validator`: **188/188 PASS**.
 

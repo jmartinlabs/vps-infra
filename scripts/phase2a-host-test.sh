@@ -12,10 +12,17 @@
 # No ejecuta recuperación automática: cualquier desviación imprime el estado y
 # termina con código 1 para revisión. No repetir ni limpiar a ciegas.
 #
+# Este script es para un host sin mftest. Si mftest ya existe tras una ejecución
+# parcial, no repetir 2A: usar scripts/phase2a-postcheck-test.sh.
+#
 # Evidencia: la salida PRE/POST se guarda fuera del repositorio. No imprime
 # claves, contraseñas ni contenido de datos.
 set -euo pipefail
 umask 077
+
+# runuser hereda el cwd. Si el script se lanza desde /home/mfadmin, mftest no
+# puede acceder y Podman falla con "cannot chdir". Fijamos un cwd accesible.
+cd /
 
 fail() {
   printf '\nBLOQUEO FASE2A: %s\n' "$*" >&2
@@ -47,7 +54,9 @@ section "PRE · precondiciones"
 for c in useradd usermod loginctl systemctl runuser python3; do
   command -v "$c" >/dev/null || fail "falta $c"
 done
-if getent passwd mftest >/dev/null 2>&1; then fail "mftest ya existe"; fi
+if getent passwd mftest >/dev/null 2>&1; then
+  fail "mftest ya existe; usar scripts/phase2a-postcheck-test.sh, no repetir 2A"
+fi
 if getent group mftest >/dev/null 2>&1; then fail "grupo mftest ya existe"; fi
 if grep -q '^mftest:' /etc/subuid; then fail "subuid mftest ya existe"; fi
 if grep -q '^mftest:' /etc/subgid; then fail "subgid mftest ya existe"; fi
@@ -69,6 +78,11 @@ UID_MFTEST="$(id -u mftest)"
 GID_MFTEST="$(id -g mftest)"
 SUBUID_MFTEST="$(grep '^mftest:' /etc/subuid || true)"
 SUBGID_MFTEST="$(grep '^mftest:' /etc/subgid || true)"
+
+as_mftest() {
+  runuser -u mftest -- env HOME=/home/mftest USER=mftest LOGNAME=mftest \
+    XDG_RUNTIME_DIR="/run/user/${UID_MFTEST}" "$@"
+}
 
 section "2A · subuid/subgid efectivos tras useradd"
 echo "uid=$UID_MFTEST gid=$GID_MFTEST"
@@ -145,26 +159,24 @@ systemctl start "user@${UID_MFTEST}.service" || fail "systemd user manager start
 systemctl show "user@${UID_MFTEST}.service" -p ActiveState,SubState
 
 set +e
-USER_STATE="$(runuser -u mftest -- env XDG_RUNTIME_DIR="/run/user/${UID_MFTEST}" \
-  systemctl --user is-system-running 2>&1)"
+USER_STATE="$(as_mftest systemctl --user is-system-running 2>&1)"
 USER_RC=$?
 set -e
 echo "systemd_user_state=${USER_STATE} rc=${USER_RC}"
 
 if [ "$USER_STATE" = "degraded" ]; then
-  runuser -u mftest -- env XDG_RUNTIME_DIR="/run/user/${UID_MFTEST}" \
-    systemctl --user --failed --no-pager 2>&1 || true
+  as_mftest systemctl --user --failed --no-pager 2>&1 || true
   fail "systemd --user degraded; investigar antes de continuar"
 fi
 if [ "$USER_RC" -ne 0 ] || [ "$USER_STATE" != "running" ]; then
   fail "systemd --user no responde en estado running: ${USER_STATE} rc=${USER_RC}"
 fi
-runuser -u mftest -- env XDG_RUNTIME_DIR="/run/user/${UID_MFTEST}" \
-  systemctl --user show -p Version | grep -q 'Version=' || fail "systemd --user show"
+as_mftest systemctl --user show -p Version | grep -q 'Version=' \
+  || fail "systemd --user show"
 
 section "2A · Podman rootless y cgroups"
-PODMAN_INFO="$(runuser -u mftest -- env XDG_RUNTIME_DIR="/run/user/${UID_MFTEST}" \
-  podman info --format 'rootless={{.Host.Security.Rootless}} cgroup={{.Host.CgroupManager}}')"
+PODMAN_INFO="$(as_mftest podman info \
+  --format 'rootless={{.Host.Security.Rootless}} cgroup={{.Host.CgroupManager}}')"
 echo "$PODMAN_INFO"
 grep -q 'rootless=true' <<<"$PODMAN_INFO" || fail "Podman no rootless"
 grep -q 'cgroup=systemd' <<<"$PODMAN_INFO" || fail "Podman no usa systemd"

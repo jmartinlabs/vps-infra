@@ -90,7 +90,7 @@ oficial de release de MyFinanzas y el VPS real siguen sin probarse.
 
 ## Pruebas automatizadas
 
-- `./scripts/test-datasette-admin`: **36/36 PASS**.
+- `./scripts/test-datasette-admin`: **37/37 PASS**.
 - `./scripts/test-datasette-admin-integration`: **12/12 PASS**.
 - `validate-template`, `check_harness`, `test-validator`: **188/188 PASS**.
 

@@ -60,9 +60,10 @@ solo escucha en loopback; el túnel es la única entrada desde Mac.
 La vinculación es estricta:
 
 - `test` solo se acepta como usuario `mftest` y estado
-  `/srv/myfinanzas-test/data`.
+  `/srv/myfinanzas-test/data/state` (raíz de datos `/srv/myfinanzas-test/data`).
 - `prod` solo se acepta como usuario `mfprod` y estado
-  `/srv/myfinanzas-prod/data`.
+  `/srv/myfinanzas-prod/data`; su ruta `state` queda pendiente de confirmación con
+  MyFinanzas antes de cualquier uso PROD.
 - Se rechazan rutas relativas, `..`, componentes symlink, rutas equivalentes por
   symlink y cualquier combinación entorno/UID/ruta distinta. Si los directorios
   reales del VPS cambian, debe revisarse `ENVIRONMENTS` en el wrapper como un
@@ -95,7 +96,7 @@ multi-sentencia.
 
 ```bash
 sudo -u mftest scripts/datasette-admin start test \
-  --state /srv/myfinanzas-test/data
+  --state /srv/myfinanzas-test/data/state
 ```
 
 ### Lectura con la app funcionando
@@ -214,7 +215,7 @@ python3 -m pip install 'datasette==1.0a41'
 ./scripts/test-datasette-admin-integration
 ```
 
-La primera suite (**36 pruebas**) cubre vinculación entorno/UID/ruta/symlinks,
+La primera suite (**37 pruebas**) cubre vinculación entorno/UID/ruta/symlinks,
 autorizador, parser string-aware, dos perfiles, solo lectura con WAL vivo,
 auditoría append-only/fail-closed y resultado, PRAGMAs, DDL/ATTACH,
 schema/origin, tablas desconocidas, la matriz v27 completa (108 tablas; 72

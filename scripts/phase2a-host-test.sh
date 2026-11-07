@@ -156,7 +156,8 @@ section "2A · linger y systemd --user"
 loginctl enable-linger mftest || fail "enable-linger"
 loginctl show-user mftest -p Linger | grep -q 'Linger=yes' || fail "Linger no activo"
 systemctl start "user@${UID_MFTEST}.service" || fail "systemd user manager start"
-systemctl show "user@${UID_MFTEST}.service" -p ActiveState,SubState
+systemctl show "user@${UID_MFTEST}.service" -p ActiveState,SubState \
+  || fail "systemctl show user manager"
 
 set +e
 USER_STATE="$(as_mftest systemctl --user is-system-running 2>&1)"
@@ -176,14 +177,16 @@ as_mftest systemctl --user show -p Version | grep -q 'Version=' \
 
 section "2A · Podman rootless y cgroups"
 PODMAN_INFO="$(as_mftest podman info \
-  --format 'rootless={{.Host.Security.Rootless}} cgroup={{.Host.CgroupManager}}')"
+  --format 'rootless={{.Host.Security.Rootless}} cgroup={{.Host.CgroupManager}}')" \
+  || fail "podman info"
 echo "$PODMAN_INFO"
 grep -q 'rootless=true' <<<"$PODMAN_INFO" || fail "Podman no rootless"
 grep -q 'cgroup=systemd' <<<"$PODMAN_INFO" || fail "Podman no usa systemd"
 
 systemctl show "user@${UID_MFTEST}.service" -p Delegate | grep -q 'Delegate=yes' \
   || fail "cgroup delegation no activa"
-CONTROLLERS="$(cat "/sys/fs/cgroup/user.slice/user-${UID_MFTEST}.slice/user@${UID_MFTEST}.service/cgroup.controllers")"
+CONTROLLERS="$(cat "/sys/fs/cgroup/user.slice/user-${UID_MFTEST}.slice/user@${UID_MFTEST}.service/cgroup.controllers")" \
+  || fail "cgroup controllers"
 echo "cgroup_controllers=${CONTROLLERS}"
 for c in cpu memory pids; do
   echo "$CONTROLLERS" | grep -qw "$c" || fail "controlador cgroup ausente: $c"

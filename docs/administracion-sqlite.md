@@ -64,14 +64,16 @@ sudo -u mfprod scripts/datasette-admin start prod \
   --state /srv/myfinanzas-prod/data \
   --writer-stopped \
   --backup-cmd '/ruta/backup-cli create /ruta/backup-nuevo /ruta/recipient.age' \
-  --backup-verify-cmd '/ruta/backup-cli verify-restore /ruta/backup-nuevo /ruta/restore-nuevo' \
-  --backup-ref '/ruta/backup-nuevo'
+  --backup-verify-cmd '/ruta/backup-cli verify-restore /ruta/backup-nuevo' \
+  --backup-ref '/ruta/backup-nuevo' \
+  --restore-path /ruta/restore-nuevo
 ```
 
-El segundo comando debe restaurar el backup a un destino **nuevo** y verificar
-que la copia es legible/consistente; el wrapper exige que ambos terminen en 0.
-Sustituir los ejemplos por la interfaz real de la CLI de MyFinanzas. Si el backup
-o su verificación fallan, no se abre el editor.
+El comando de verificación recibe `VPS_ADMIN_RESTORE_PATH` y debe restaurar el
+backup a ese destino **nuevo**, comprobar que la copia es legible/consistente y
+terminar en 0. El wrapper exige que el destino no existiera antes y que contenga
+un artefacto no vacío. Sustituir los ejemplos por la interfaz real de la CLI de
+MyFinanzas. Si el backup o su verificación fallan, no se abre el editor.
 
 ### Desde el Mac
 
@@ -141,8 +143,9 @@ python3 -m pip install 'datasette==1.0a41'
 
 La primera suite cubre autorizador, parser string-aware, dos perfiles, auditoría
 append-only y fail-closed, PRAGMAs, DDL/ATTACH, schema/origin, tablas desconocidas,
-la matriz v27 completa (108 tablas; 72 protegidas y 36 de negocio), AUTOINCREMENT,
-triggers de negocio y enmascarado. La segunda importa el plugin real en Datasette
+la matriz v27 completa (108 tablas; 72 protegidas y 36 de negocio) contrastada con
+el fixture `infra/datasette-admin/v27_tables.json`, AUTOINCREMENT, triggers de
+negocio y enmascarado. La segunda importa el plugin real en Datasette
 1.0a41 y comprueba `Database.connect()`, `execute`, `execute_write`, escrituras
 por callback, health y las rutas HTTP principales. Las pruebas de contenedor
 rootless, SSH y backup age se ejecutan en un entorno Linux aislado antes de

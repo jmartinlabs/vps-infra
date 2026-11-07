@@ -147,6 +147,8 @@ def register_routes():
 
 async def health(request, datasette):
     try:
+        if any(name.startswith("_") for name in datasette.databases):
+            raise RuntimeError("internal database is exposed")
         databases = [
             database
             for database in datasette.databases.values()

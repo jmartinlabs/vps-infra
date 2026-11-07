@@ -116,24 +116,40 @@ def container_exists(name: str) -> bool:
     return run(["podman", "container", "exists", name], capture_output=True).returncode == 0
 
 
-def backup(env: str, command: str | None, verify_command: str | None) -> None:
+def backup(
+    env: str,
+    command: str | None,
+    verify_command: str | None,
+    restore_path: str | None,
+) -> None:
     if env != "prod":
         return
-    if not command or not verify_command:
+    if not command or not verify_command or not restore_path:
         die(
-            "PROD requires --backup-cmd and --backup-verify-cmd; "
+            "PROD requires --backup-cmd, --backup-verify-cmd and --restore-path; "
             "verification must restore to a new destination and check integrity"
         )
+    restore = Path(restore_path).expanduser()
+    if restore.exists():
+        die("--restore-path must not exist; use a new destination for verification")
     result = run(shlex.split(command), capture_output=True)
     if result.returncode != 0:
         die(f"backup command failed; refusing to start PROD editor: {result.stderr.strip()}")
-    verify = run(shlex.split(verify_command), capture_output=True)
+    verify_env = os.environ.copy()
+    verify_env["VPS_ADMIN_RESTORE_PATH"] = str(restore)
+    verify = run(shlex.split(verify_command), capture_output=True, env=verify_env)
     if verify.returncode != 0:
         die(
             "backup verification failed; refusing to start PROD editor: "
             f"{verify.stderr.strip()}"
         )
-    print("Backup created and verified before opening the PROD editor.")
+    if not restore.exists():
+        die("backup verification produced no restored artifact; refusing to start")
+    if restore.is_file() and restore.stat().st_size == 0:
+        die("restored artifact is empty; refusing to start PROD editor")
+    if restore.is_dir() and not any(restore.iterdir()):
+        die("restored directory is empty; refusing to start PROD editor")
+    print("Backup created and restored to a new destination before opening the PROD editor.")
 
 
 def wait_for_url(port: int, name: str, timeout: float = 30.0) -> str:
@@ -187,7 +203,9 @@ def start(args) -> None:
         die("PROD requires --writer-stopped (stop MyFinanzas before editing)")
     if env == "prod" and not args.backup_ref:
         die("PROD requires --backup-ref to identify the backup in the audit log")
-    backup(env, args.backup_cmd, args.backup_verify_cmd)
+    if env == "prod" and not args.restore_path:
+        die("PROD requires --restore-path for the verification restore")
+    backup(env, args.backup_cmd, args.backup_verify_cmd, args.restore_path)
 
     name = CONTAINER.format(env=env)
     if container_exists(name):
@@ -328,6 +346,10 @@ def parse_args(argv=None):
     )
     start_parser.add_argument(
         "--backup-ref", help="backup identifier recorded in the audit log; required for PROD"
+    )
+    start_parser.add_argument(
+        "--restore-path",
+        help="new destination for the verification restore; required for PROD",
     )
     start_parser.add_argument("--writer-stopped", action="store_true", help="confirm app/writer is stopped (PROD)")
     start_parser.set_defaults(func=start)

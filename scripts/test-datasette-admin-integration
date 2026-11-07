@@ -138,6 +138,20 @@ class PluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["recursive_triggers"], 1)
         self.assertGreater(payload["protected_tables"], 0)
 
+    async def test_internal_database_routes_are_not_exposed(self):
+        for database in ("_internal", "__INTERNAL__"):
+            for path in (f"/{database}.json", f"/{database}/-/query"):
+                response = await self.datasette.client.get(
+                    path, actor={"id": "root"}
+                )
+                self.assertNotEqual(response.status_code, 200, path)
+            response = await self.datasette.client.post(
+                f"/{database}/-/execute-write",
+                data={"sql": "SELECT 1"},
+                actor={"id": "root"},
+            )
+            self.assertIn(response.status_code, (403, 404, 405))
+
     async def test_http_execute_write_route(self):
         response = await self.datasette.client.post(
             "/poc/-/execute-write",

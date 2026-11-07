@@ -132,8 +132,8 @@ def maintenance_enabled() -> bool:
     return os.environ.get("VPS_ADMIN_MAINTENANCE") == "1"
 
 
-def scan_sql(sql: str) -> str:
-    """Remove comments and replace single-quoted literals with ``?``.
+def scan_sql(sql: str, *, mask_literals: bool = True) -> str:
+    """Remove comments and optionally replace string literals with ``?``.
 
     The scan is string-aware, so ``--`` or ``/* */`` inside a literal does not
     hide the rest of the statement. Double-quoted, backtick and bracket
@@ -147,6 +147,7 @@ def scan_sql(sql: str) -> str:
         char = sql[index]
         following = sql[index + 1] if index + 1 < length else ""
         if char == "'":
+            start = index
             index += 1
             while index < length:
                 if sql[index] == "'":
@@ -156,7 +157,7 @@ def scan_sql(sql: str) -> str:
                     index += 1
                     break
                 index += 1
-            output.append("?")
+            output.append("?" if mask_literals else sql[start:index])
         elif char in {'"', "`"}:
             quote = char
             end = index + 1
@@ -217,6 +218,34 @@ def write_operation(sql: str) -> str | None:
     return match.group(1).upper() if match else None
 
 
+def unquote_identifier(value: str) -> str:
+    value = value.strip()
+    if "." in value:
+        value = value.rsplit(".", 1)[1]
+    if len(value) >= 2 and value[0] in {"'", '"', "`"} and value[-1] == value[0]:
+        quote = value[0]
+        return value[1:-1].replace(quote * 2, quote)
+    if len(value) >= 2 and value[0] == "[" and value[-1] == "]":
+        return value[1:-1]
+    return value
+
+
+def target_table(sql: str) -> str:
+    """Return the table targeted by a top-level INSERT/UPDATE/DELETE/REPLACE."""
+    text = scan_sql(sql, mask_literals=False)
+    match = re.search(
+        r"\b(?:"
+        r"INSERT(?:\s+OR\s+\w+)?\s+INTO"
+        r"|REPLACE\s+INTO"
+        r"|UPDATE(?:\s+OR\s+\w+)?"
+        r"|DELETE\s+FROM"
+        r")\s+([^\s(;,]+)",
+        text,
+        re.I,
+    )
+    return unquote_identifier(match.group(1)).lower() if match else ""
+
+
 def validate_read_sql(sql: str) -> None:
     """Reject write operations before they reach a read connection."""
     text = scan_sql(sql).strip()
@@ -260,11 +289,11 @@ def validate_write_sql(sql: str) -> None:
         raise ValueError("CTE writes are not supported")
     if verb not in {"INSERT", "UPDATE", "DELETE", "REPLACE", "EXPLAIN"}:
         raise ValueError(f"SQL operation not supported: {verb}")
-    tokens = {token.lower() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)}
-    if tokens & AUDIT:
+    target = target_table(sql)
+    if target in AUDIT:
         if verb in {"UPDATE", "DELETE"}:
             raise ValueError("audit tables are append-only")
-        if "replace" in tokens or re.search(r"\bon\s+conflict\b", text, re.I):
+        if re.search(r"\bREPLACE\b|\bon\s+conflict\b", text, re.I):
             raise ValueError("audit tables are append-only")
 
 
@@ -282,6 +311,10 @@ def validate_connection_sql(sql: str) -> None:
         return
     if verb in {"SELECT", "VALUES", "EXPLAIN"}:
         return
+    if verb == "WITH":
+        if write_operation(sql) is None:
+            return
+        raise ValueError("CTE writes are not supported")
     if verb == "PRAGMA":
         setup = re.fullmatch(
             r"PRAGMA\s+(?:foreign_keys|recursive_triggers)\s*=\s*(?:on|1)\s*;?",
@@ -393,6 +426,20 @@ def make_authorizer(maintenance: bool):
     return authorizer
 
 
+def quote_identifier(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def audit_insert_condition(conn: sqlite3.Connection, table: str) -> str:
+    rows = conn.execute(f"PRAGMA table_info({quote_identifier(table)})").fetchall()
+    keys = [row[1] for row in rows if row[5]]
+    if keys:
+        return " AND ".join(
+            f"{quote_identifier(key)} IS NEW.{quote_identifier(key)}" for key in keys
+        )
+    return "rowid = NEW.rowid"
+
+
 def install_audit_triggers(conn: sqlite3.Connection) -> None:
     for table in sorted(AUDIT):
         if not conn.execute(
@@ -400,7 +447,18 @@ def install_audit_triggers(conn: sqlite3.Connection) -> None:
             (table,),
         ).fetchone():
             continue
-        for suffix, action in (("update", "UPDATE"), ("delete", "DELETE")):
+        trigger_table = quote_identifier(table)
+        statements = [
+            (
+                "insert",
+                f"BEFORE INSERT ON {trigger_table} "
+                f"WHEN EXISTS (SELECT 1 FROM main.{trigger_table} "
+                f"WHERE {audit_insert_condition(conn, table)})",
+            ),
+            ("update", f"BEFORE UPDATE ON {trigger_table}"),
+            ("delete", f"BEFORE DELETE ON {trigger_table}"),
+        ]
+        for suffix, clause in statements:
             name = f"vps_audit_no_{suffix}_{table}"
             if conn.execute(
                 "SELECT 1 FROM sqlite_temp_master WHERE type='trigger' AND name=?",
@@ -408,7 +466,7 @@ def install_audit_triggers(conn: sqlite3.Connection) -> None:
             ).fetchone():
                 continue
             conn.execute(
-                f'CREATE TEMP TRIGGER "{name}" BEFORE {action} ON "{table}" '
+                f"CREATE TEMP TRIGGER {quote_identifier(name)} {clause} "
                 "BEGIN SELECT RAISE(ABORT, 'audit append-only'); END"
             )
 

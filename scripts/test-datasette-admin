@@ -2,6 +2,7 @@
 """Unit tests for the Datasette admin policy (no Datasette or Podman needed)."""
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -28,20 +29,62 @@ _loader.exec_module(wrapper)
 
 
 class WrapperTests(unittest.TestCase):
-    def test_test_environment_does_not_require_backup(self):
-        wrapper.backup("test", None, None)
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.verify_script = Path(self.temp.name) / "verify.py"
+        self.verify_script.write_text(
+            "import os, pathlib\n"
+            "pathlib.Path(os.environ['VPS_ADMIN_RESTORE_PATH']).write_text('ok')\n",
+            encoding="utf-8",
+        )
+        self.verify_command = f"{sys.executable} {self.verify_script}"
+        self.restore = str(Path(self.temp.name) / "restore")
 
-    def test_prod_requires_backup_and_verification(self):
-        for command, verify in ((None, None), ("true", None), (None, "true")):
+    def test_test_environment_does_not_require_backup(self):
+        wrapper.backup("test", None, None, None)
+
+    def test_prod_requires_backup_verification_and_restore_path(self):
+        cases = (
+            (None, None, None),
+            ("true", None, None),
+            (None, "true", None),
+            ("true", "true", None),
+        )
+        for command, verify, restore in cases:
             with self.assertRaises(SystemExit):
-                wrapper.backup("prod", command, verify)
+                wrapper.backup("prod", command, verify, restore)
 
     def test_prod_backup_and_verification_must_both_succeed(self):
-        wrapper.backup("prod", "true", "true")
+        wrapper.backup("prod", "true", self.verify_command, self.restore)
+        self.assertTrue(Path(self.restore).is_file())
         with self.assertRaises(SystemExit):
-            wrapper.backup("prod", "false", "true")
+            wrapper.backup(
+                "prod", "false", self.verify_command, str(Path(self.temp.name) / "r2")
+            )
         with self.assertRaises(SystemExit):
-            wrapper.backup("prod", "true", "false")
+            wrapper.backup(
+                "prod", "true", "true", str(Path(self.temp.name) / "r3")
+            )
+        with self.assertRaises(SystemExit):
+            wrapper.backup(
+                "prod", "true", self.verify_command, self.restore
+            )
+
+    def test_prod_verification_must_create_non_empty_artifact(self):
+        empty_script = Path(self.temp.name) / "empty.py"
+        empty_script.write_text(
+            "import os, pathlib\n"
+            "pathlib.Path(os.environ['VPS_ADMIN_RESTORE_PATH']).write_text('')\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(SystemExit):
+            wrapper.backup(
+                "prod",
+                "true",
+                f"{sys.executable} {empty_script}",
+                str(Path(self.temp.name) / "empty-restore"),
+            )
 
 
 class PolicyTests(unittest.TestCase):
@@ -158,12 +201,28 @@ class PolicyTests(unittest.TestCase):
         policy.validate_write_sql(
             "INSERT INTO movimientos(importe) VALUES ('x') /* audit replace */"
         )
+        policy.validate_write_sql(
+            'INSERT INTO movimientos(importe) VALUES ("audit replace")'
+        )
         self.assertNotIn(
             "secret-value",
             policy.normalize_sql(
                 'INSERT INTO movimientos(importe) VALUES ("secret-value")'
             ),
         )
+        self.assertEqual(
+            policy.target_table("INSERT OR REPLACE INTO 'audit'(id) VALUES (1)"),
+            "audit",
+        )
+        self.assertEqual(
+            policy.target_table('UPDATE main."audit" SET entidad=\'x\' WHERE id=1'),
+            "audit",
+        )
+        policy.validate_connection_sql("WITH x AS (SELECT 1) SELECT * FROM x")
+        with self.assertRaises(ValueError):
+            policy.validate_connection_sql(
+                "WITH x AS (SELECT 1) INSERT INTO movimientos(importe) VALUES ('x')"
+            )
         self.assertEqual(
             policy.write_operation(
                 "WITH x AS (SELECT 1) INSERT INTO movimientos(importe) VALUES ('x')"
@@ -196,6 +255,53 @@ class PolicyTests(unittest.TestCase):
             records = [json.loads(line) for line in handle if line.strip()]
         self.assertTrue(any(record["op"] == "INSERT" for record in records))
         self.assertTrue(any("WITH" in record["sql"] for record in records))
+
+    def test_audit_replace_upsert_and_quoted_name_are_append_only(self):
+        self.install(maintenance=True)
+        self.db.execute("INSERT INTO audit(entidad,detalle) VALUES ('a','a')")
+        for sql in (
+            "INSERT OR REPLACE INTO 'audit'(id,entidad) VALUES (1,'x')",
+            "REPLACE INTO 'audit'(id,entidad) VALUES (1,'x')",
+            'INSERT OR REPLACE INTO "audit"(id,entidad) VALUES (1,"x")',
+            "INSERT INTO audit(id,entidad) VALUES (1,'x') "
+            "ON CONFLICT(id) DO UPDATE SET entidad='x'",
+        ):
+            with self.assertRaises(sqlite3.DatabaseError, msg=sql):
+                self.db.execute(sql)
+        self.db.execute("INSERT OR REPLACE INTO 'audit'(id,entidad) VALUES (99,'new')")
+        self.assertEqual(
+            self.db.execute(
+                "SELECT count(*) FROM audit WHERE entidad='new'"
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_business_trigger_replace_on_audit_aborts(self):
+        db_path = Path(self.temp.name) / "trigger_replace.db"
+        setup = sqlite3.connect(db_path)
+        setup.executescript(
+            """
+            CREATE TABLE movimientos(id INTEGER PRIMARY KEY, importe TEXT);
+            CREATE TABLE audit(id INTEGER PRIMARY KEY, entidad TEXT);
+            INSERT INTO audit(id, entidad) VALUES (1, 'seed');
+            CREATE TRIGGER mov_bad AFTER INSERT ON movimientos
+            BEGIN
+              INSERT OR REPLACE INTO audit(id, entidad) VALUES (1, 'bad');
+            END;
+            """
+        )
+        setup.close()
+        db = sqlite3.connect(db_path)
+        self.addCleanup(db.close)
+        policy.install(db, "trigger", audit_path=self.audit)
+        with self.assertRaises(sqlite3.DatabaseError):
+            db.execute("INSERT INTO movimientos(importe) VALUES ('1.00')")
+        self.assertEqual(
+            db.execute("SELECT count(*) FROM movimientos").fetchone()[0], 0
+        )
+        self.assertEqual(
+            db.execute("SELECT entidad FROM audit WHERE id=1").fetchone()[0], "seed"
+        )
 
     def test_audit_failure_aborts_write(self):
         self.install()
@@ -264,14 +370,12 @@ class MatrixTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.tables = sorted(
-            set(self.data["business"])
-            | set(self.data["app_only"])
-            | set(self.data["auth"])
-            | set(self.data["audit"])
-            | set(self.data["technical"])
-            | set(self.data["immutable"])
+        self.fixture = json.loads(
+            (ROOT / "infra" / "datasette-admin" / "v27_tables.json").read_text(
+                encoding="utf-8"
+            )
         )
+        self.tables = sorted(self.fixture["tables"])
         self.audit = str(Path(self.temp.name) / "audit.jsonl")
         self.db_path = Path(self.temp.name) / "matrix.db"
         connection = sqlite3.connect(self.db_path)
@@ -312,11 +416,40 @@ class MatrixTests(unittest.TestCase):
             | set(self.data["technical"])
             | set(self.data["immutable"])
         )
+        listed = protected | set(self.data["business"])
         self.assertEqual(total, 108)
+        self.assertEqual(self.fixture["table_count"], total)
+        self.assertEqual(self.fixture["schema_version"], 27)
         self.assertEqual(len(protected), 72)
         self.assertEqual(len(self.data["business"]), 36)
         self.assertEqual(len(protected & set(self.data["business"])), 0)
-        self.assertIn("v27", self.data["source"])
+        self.assertEqual(set(self.tables), listed)
+        self.assertIn("a9ae4101ec625875b930bf9b015a46f51ff052aa", self.fixture["source"])
+        self.assertEqual(
+            self.fixture["sha256"],
+            hashlib.sha256(("\n".join(sorted(self.tables)) + "\n").encode()).hexdigest(),
+        )
+
+        rule_based_protected = {
+            table
+            for table in self.tables
+            if table in set(self.data["app_only"])
+            or table in set(self.data["auth"])
+            or table in set(self.data["immutable"])
+            or table == "audit"
+            or table.endswith("_audit")
+            or table.endswith("_attempts")
+            or table
+            in {
+                "budget_contract",
+                "counters",
+                "cycle_operation_guard",
+                "idempotency",
+                "reapertura_activa",
+            }
+        }
+        self.assertEqual(rule_based_protected, protected)
+        self.assertEqual(set(self.tables) - rule_based_protected, set(self.data["business"]))
 
     def test_habitual_allowlist_across_all_tables(self):
         db = self.open()

@@ -8,10 +8,13 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "infra" / "datasette-admin"))
@@ -32,107 +35,137 @@ class WrapperTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.fixture = Path(self.temp.name) / "fixture.sqlite"
-        connection = sqlite3.connect(self.fixture)
-        connection.executescript(
-            "CREATE TABLE schema_version(version INTEGER PRIMARY KEY);"
-            "INSERT INTO schema_version VALUES (27);"
-            "CREATE TABLE sample(id INTEGER PRIMARY KEY, value TEXT);"
+        self.root = Path(self.temp.name)
+        os.chmod(self.root, 0o700)
+
+    def make_private_dir(self, name):
+        path = self.root / name
+        path.mkdir(mode=0o700)
+        return path
+
+    def make_private_file(self, path, content=b"x"):
+        path.write_bytes(content)
+        os.chmod(path, 0o600)
+        return path
+
+    def test_app_command_uses_myfinanzas_cli_and_hardening(self):
+        command = wrapper.app_podman_command(
+            "sha256:" + "a" * 64,
+            ["/state:/var/lib/myfinanzas/state:rw"],
+            {"NODE_ENV": "production"},
+            ["create", "/backup/new", "age1recipient"],
         )
-        connection.close()
-        self.verify_script = Path(self.temp.name) / "verify.py"
-        self.verify_script.write_text(
-            "import os, shutil\n"
-            "shutil.copyfile(\n"
-            "    os.environ['VPS_ADMIN_BACKUP_PATH'],\n"
-            "    os.environ['VPS_ADMIN_RESTORE_PATH'],\n"
-            ")\n",
-            encoding="utf-8",
+        self.assertIn("--network=none", command)
+        self.assertIn("--read-only", command)
+        self.assertIn("--pull=never", command)
+        self.assertIn("apps/api/src/backup-cli.ts", command)
+        self.assertEqual(command[-3:], ["create", "/backup/new", "age1recipient"])
+        self.assertIn("/state:/var/lib/myfinanzas/state:rw", command)
+
+    def test_artifact_directory_checks_mode_and_content(self):
+        backup = self.make_private_dir("backup")
+        self.make_private_file(backup / "database.age", b"db")
+        self.make_private_file(backup / "access-key.age", b"key")
+        wrapper.check_artifact_directory(
+            backup, ("database.age", "access-key.age"), "backup"
         )
-        self.verify_command = f"{sys.executable} {self.verify_script}"
+        empty = self.make_private_dir("empty")
+        for name in ("database.age", "access-key.age"):
+            self.make_private_file(empty / name, b"")
+        with self.assertRaises(SystemExit):
+            wrapper.check_artifact_directory(
+                empty, ("database.age", "access-key.age"), "backup"
+            )
 
-    def paths(self, suffix):
-        base = Path(self.temp.name)
-        return base / f"backup-{suffix}", base / f"restore-{suffix}"
+    def test_writer_service_must_be_inactive(self):
+        def result(state, code=0):
+            return subprocess.CompletedProcess([], code, state, "")
 
-    def backup_command(self, backup):
-        return f"cp {self.fixture} {backup}"
-
-    def test_test_environment_does_not_require_backup(self):
-        wrapper.backup("test", None, None, None, None)
-
-    def test_prod_requires_all_backup_inputs(self):
-        cases = (
-            (None, None, None, None),
-            ("true", None, None, None),
-            (None, "true", None, None),
-            ("true", "true", None, None),
-            ("true", "true", "backup", None),
-        )
-        for command, verify, backup, restore in cases:
+        with mock.patch.object(wrapper, "run", return_value=result("inactive")):
+            wrapper.check_writer_stopped("myfinanzas-api.service")
+        with mock.patch.object(wrapper, "run", return_value=result("failed")):
+            wrapper.check_writer_stopped("myfinanzas-api.service")
+        for state in ("active", "activating", "deactivating", "unknown"):
+            with mock.patch.object(wrapper, "run", return_value=result(state)):
+                with self.assertRaises(SystemExit):
+                    wrapper.check_writer_stopped("myfinanzas-api.service")
+        with mock.patch.object(
+            wrapper, "run", return_value=result("", code=1)
+        ):
             with self.assertRaises(SystemExit):
-                wrapper.backup("prod", command, verify, backup, restore)
+                wrapper.check_writer_stopped("myfinanzas-api.service")
 
-    def test_prod_backup_and_verification_must_both_succeed(self):
-        backup, restore = self.paths("ok")
-        wrapper.backup(
-            "prod",
-            self.backup_command(backup),
-            self.verify_command,
-            str(backup),
-            str(restore),
+    def test_backup_and_restore_orchestration(self):
+        state = self.make_private_dir("state")
+        self.make_private_file(state / "database.sqlite", b"db")
+        self.make_private_file(state / "auth.key", b"key")
+        backup_parent = self.make_private_dir("backups")
+        restore_parent = self.make_private_dir("restores")
+        identity = self.make_private_file(self.root / "identity", b"age")
+        backup_path = backup_parent / "copia"
+        restore_path = restore_parent / "restaurada"
+
+        def fake_run(command, **kwargs):
+            if "systemctl" in command:
+                return subprocess.CompletedProcess(command, 0, "inactive\n", "")
+            if "create" in command:
+                os.mkdir(backup_path, 0o700)
+                self.make_private_file(backup_path / "database.age", b"db")
+                self.make_private_file(backup_path / "access-key.age", b"key")
+            elif "restore" in command:
+                os.mkdir(restore_path, 0o700)
+                self.make_private_file(restore_path / "database.sqlite", b"db")
+                self.make_private_file(restore_path / "auth.key", b"key")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        args = SimpleNamespace(
+            myfinanzas_image="sha256:" + "a" * 64,
+            app_origin="https://myfinanzas.example",
+            app_service="myfinanzas-api.service",
+            backup_path=str(backup_path),
+            restore_path=str(restore_path),
+            backup_identity=str(identity),
+            backup_recipient="age1recipient",
         )
-        self.assertTrue(restore.is_file())
+        with mock.patch.object(wrapper, "run", side_effect=fake_run):
+            result = wrapper.backup_and_verify("prod", args, state)
+        self.assertEqual(result, backup_path.resolve())
+        self.assertTrue((backup_path / "database.age").is_file())
+        self.assertTrue((restore_path / "database.sqlite").is_file())
 
-    def test_prod_noop_backup_fails(self):
-        backup, restore = self.paths("noop")
-        with self.assertRaises(SystemExit):
-            wrapper.backup(
-                "prod", "true", self.verify_command, str(backup), str(restore)
-            )
-
-    def test_prod_failed_backup_or_verification_fails(self):
-        backup, restore = self.paths("fail")
-        with self.assertRaises(SystemExit):
-            wrapper.backup(
-                "prod", "false", self.verify_command, str(backup), str(restore)
-            )
-        backup, restore = self.paths("fail2")
-        with self.assertRaises(SystemExit):
-            wrapper.backup(
-                "prod",
-                self.backup_command(backup),
-                "true",
-                str(backup),
-                str(restore),
-            )
-
-    def test_prod_restore_must_be_new_valid_sqlite(self):
-        backup, restore = self.paths("text")
-        text_script = Path(self.temp.name) / "text.py"
-        text_script.write_text(
-            "import os, pathlib\n"
-            "pathlib.Path(os.environ['VPS_ADMIN_RESTORE_PATH']).write_text('ok')\n",
-            encoding="utf-8",
+    def test_backup_rejects_existing_destinations_and_inactive_writer(self):
+        state = self.make_private_dir("state")
+        self.make_private_file(state / "database.sqlite", b"db")
+        self.make_private_file(state / "auth.key", b"key")
+        backup_parent = self.make_private_dir("backups")
+        restore_parent = self.make_private_dir("restores")
+        identity = self.make_private_file(self.root / "identity", b"age")
+        existing = backup_parent / "existing"
+        existing.mkdir(mode=0o700)
+        args = SimpleNamespace(
+            myfinanzas_image="sha256:" + "a" * 64,
+            app_origin="https://myfinanzas.example",
+            app_service="myfinanzas-api.service",
+            backup_path=str(existing),
+            restore_path=str(restore_parent / "restore"),
+            backup_identity=str(identity),
+            backup_recipient="age1recipient",
         )
-        with self.assertRaises(SystemExit):
-            wrapper.backup(
-                "prod",
-                self.backup_command(backup),
-                f"{sys.executable} {text_script}",
-                str(backup),
-                str(restore),
-            )
-        backup, restore = self.paths("existing")
-        restore.write_text("existing", encoding="utf-8")
-        with self.assertRaises(SystemExit):
-            wrapper.backup(
-                "prod",
-                self.backup_command(backup),
-                self.verify_command,
-                str(backup),
-                str(restore),
-            )
+        with mock.patch.object(
+            wrapper,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "inactive\n", ""),
+        ):
+            with self.assertRaises(SystemExit):
+                wrapper.backup_and_verify("prod", args, state)
+        args.backup_path = str(backup_parent / "new")
+        with mock.patch.object(
+            wrapper,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "active\n", ""),
+        ):
+            with self.assertRaises(SystemExit):
+                wrapper.backup_and_verify("prod", args, state)
 
 
 class PolicyTests(unittest.TestCase):
@@ -428,6 +461,18 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(len(records[0]["sha256"]), 64)
         self.assertNotIn("987.65", json.dumps(records))
 
+    def test_read_only_mode_denies_writes_and_allows_reads(self):
+        os.environ["VPS_ADMIN_READ_ONLY"] = "1"
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_READ_ONLY", None)
+        self.install()
+        self.assertEqual(self.db.execute("SELECT count(*) FROM movimientos").fetchone()[0], 0)
+        self.assertDenied("INSERT INTO movimientos(importe) VALUES ('x')")
+        self.assertDenied("UPDATE movimientos SET importe='x'")
+        self.assertDenied("PRAGMA foreign_keys=OFF")
+        self.assertDenied("CREATE TABLE blocked(id INTEGER)")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("INSERT INTO movimientos(importe) VALUES ('x')")
+
     def test_audit_log_records_backup_reference(self):
         os.environ["VPS_ADMIN_BACKUP_REF"] = "backup-2026-11-07"
         self.addCleanup(os.environ.pop, "VPS_ADMIN_BACKUP_REF", None)
@@ -616,6 +661,95 @@ class MatrixTests(unittest.TestCase):
             ).fetchone()[0],
             0,
         )
+
+class RealSchemaTests(unittest.TestCase):
+    """Exercise the real v27 schema and application triggers with synthetic rows."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.audit = str(Path(self.temp.name) / "audit.jsonl")
+        self.db_path = Path(self.temp.name) / "v27.sqlite"
+        schema = (ROOT / "infra" / "datasette-admin" / "v27_schema.sql").read_text(
+            encoding="utf-8"
+        )
+        setup = sqlite3.connect(self.db_path)
+        setup.executescript(schema)
+        setup.close()
+        self.db = sqlite3.connect(self.db_path)
+        self.addCleanup(self.db.close)
+        policy.install(self.db, "v27", audit_path=self.audit)
+
+    def test_real_v27_schema_policy_and_triggers(self):
+        self.assertEqual(
+            self.db.execute(
+                "SELECT count(*) FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchone()[0],
+            108,
+        )
+        self.assertEqual(
+            self.db.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger'"
+            ).fetchone()[0],
+            176,
+        )
+        self.assertEqual(
+            self.db.execute(
+                "SELECT count(*) FROM sqlite_temp_master "
+                "WHERE type='trigger' AND name LIKE 'vps_audit_no_%'"
+            ).fetchone()[0],
+            66,
+        )
+        self.assertEqual(
+            self.db.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+        )
+        self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        self.db.execute(
+            "INSERT INTO categorias"
+            "(id, nombre, grupo, anual, mensual, referencia, estado, revision, creado, actualizado)"
+            " VALUES ('C1', 'Sintética', NULL, NULL, NULL, NULL, 'Activa', 1, "
+            "'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+        )
+        self.db.execute(
+            "UPDATE categorias SET nombre='Sintética 2' WHERE id='C1'"
+        )
+        self.assertEqual(
+            self.db.execute("SELECT nombre FROM categorias WHERE id='C1'").fetchone()[0],
+            "Sintética 2",
+        )
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute("DELETE FROM categorias WHERE id='C1'")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute("INSERT INTO audit(entidad) VALUES ('x')")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute("INSERT INTO owner DEFAULT VALUES")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute("INSERT INTO schema_version(version) VALUES (28)")
+
+    def test_real_v27_audit_replace_is_denied(self):
+        maintenance = sqlite3.connect(self.db_path)
+        self.addCleanup(maintenance.close)
+        policy.install(maintenance, "v27", maintenance=True, audit_path=self.audit)
+        maintenance.execute(
+            "INSERT INTO audit"
+            "(id, entidad, accion, revision, campos, instante, revision_previa, actor)"
+            " VALUES (1, 'synthetic', 'alta', 1, '{}', "
+            "'2026-01-01T00:00:00.000Z', 0, 'test')"
+        )
+        with self.assertRaises(sqlite3.DatabaseError):
+            maintenance.execute(
+                "INSERT OR REPLACE INTO 'audit'"
+                "(id, entidad, accion, revision, campos, instante, revision_previa, actor)"
+                " VALUES (1, 'changed', 'alta', 1, '{}', "
+                "'2026-01-01T00:00:00.000Z', 0, 'test')"
+            )
+        self.assertEqual(
+            maintenance.execute("SELECT entidad FROM audit WHERE id=1").fetchone()[0],
+            "synthetic",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

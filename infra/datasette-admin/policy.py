@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -124,12 +125,17 @@ DANGEROUS_FUNCTIONS = {
 }
 
 _lock = threading.Lock()
+_POLICY_MARKER = "__vps_admin_policy_installed"
 _actor = os.environ.get("VPS_ADMIN_ACTOR", "owner")
 _session = os.environ.get("VPS_ADMIN_SESSION", "unknown")
 
 
 def maintenance_enabled() -> bool:
     return os.environ.get("VPS_ADMIN_MAINTENANCE") == "1"
+
+
+def read_only_enabled() -> bool:
+    return os.environ.get("VPS_ADMIN_READ_ONLY") == "1"
 
 
 def scan_sql(sql: str, *, mask_literals: bool = True) -> str:
@@ -266,6 +272,8 @@ def validate_read_sql(sql: str) -> None:
 
 def validate_write_sql(sql: str) -> None:
     """Reject SQL that the authorizer alone cannot classify safely."""
+    if read_only_enabled():
+        raise ValueError("read-only mode: writes are disabled")
     text = scan_sql(sql).strip()
     verb = first_keyword(sql)
     if not verb:
@@ -335,13 +343,15 @@ def validate_connection_sql(sql: str) -> None:
     validate_write_sql(sql)
 
 
-def log_write(database: str, sql: str, path: str | None = None) -> None:
-    operation = write_operation(sql)
-    if operation is None:
-        return
-    destination = path or os.environ.get("VPS_ADMIN_AUDIT_LOG")
-    if not destination:
-        raise RuntimeError("VPS_ADMIN_AUDIT_LOG is required")
+def append_audit_record(record: dict, destination: str) -> None:
+    with _lock:
+        with open(destination, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
+def base_audit_record(database: str, sql: str, operation: str) -> dict:
     record = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "actor": _actor,
@@ -354,17 +364,63 @@ def log_write(database: str, sql: str, path: str | None = None) -> None:
     backup_ref = os.environ.get("VPS_ADMIN_BACKUP_REF")
     if backup_ref:
         record["backup"] = backup_ref
-    with _lock:
-        with open(destination, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+    return record
 
 
-def make_authorizer(maintenance: bool):
+def log_write(database: str, sql: str, path: str | None = None) -> None:
+    operation = write_operation(sql)
+    if operation is None:
+        return
+    destination = path or os.environ.get("VPS_ADMIN_AUDIT_LOG")
+    if not destination:
+        raise RuntimeError("VPS_ADMIN_AUDIT_LOG is required")
+    record = base_audit_record(database, sql, operation)
+    record["phase"] = "attempt"
+    append_audit_record(record, destination)
+
+
+def log_result(
+    database: str, sql: str, status: str, error: str | None = None
+) -> None:
+    operation = "CALLBACK" if sql == "CALLBACK" else write_operation(sql)
+    if operation is None:
+        return
+    destination = os.environ.get("VPS_ADMIN_AUDIT_LOG")
+    if not destination:
+        return
+    record = base_audit_record(database, sql, operation)
+    record["phase"] = "result"
+    record["status"] = status
+    if error:
+        record["error"] = error
+    try:
+        append_audit_record(record, destination)
+    except OSError as failure:
+        print(f"datasette-admin audit result log failed: {failure}", file=sys.stderr)
+
+
+def make_authorizer(maintenance: bool, read_only: bool = False):
     def authorizer(action, arg1, arg2, dbname, trigger):
         if action in DENIED_ACTIONS:
             return sqlite3.SQLITE_DENY
+        if read_only and action in WRITE_ACTIONS:
+            return sqlite3.SQLITE_DENY
+        if read_only and action == sqlite3.SQLITE_PRAGMA:
+            name = str(arg1).lower()
+            if name not in SAFE_PRAGMAS:
+                return sqlite3.SQLITE_DENY
+            if name in {
+                "journal_mode",
+                "synchronous",
+                "foreign_keys",
+                "recursive_triggers",
+                "busy_timeout",
+                "schema_version",
+                "user_version",
+                "application_id",
+                "query_only",
+            } and arg2 not in (None, ""):
+                return sqlite3.SQLITE_DENY
         if action in WRITE_ACTIONS:
             table = str(arg1).lower()
             if table in APP_ONLY:
@@ -506,6 +562,14 @@ def install(
     audit_path: str | None = None,
 ) -> None:
     maintenance = maintenance_enabled() if maintenance is None else maintenance
+    read_only = read_only_enabled()
+    if read_only:
+        maintenance = False
+    if conn.execute(
+        "SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name=?",
+        (_POLICY_MARKER,),
+    ).fetchone():
+        return
     destination = audit_path or os.environ.get("VPS_ADMIN_AUDIT_LOG")
     if not destination:
         raise RuntimeError("VPS_ADMIN_AUDIT_LOG is required")
@@ -517,7 +581,12 @@ def install(
     conn.execute("PRAGMA busy_timeout=3000")
     conn.execute("PRAGMA synchronous=FULL")
     install_audit_triggers(conn)
-    conn.set_authorizer(make_authorizer(maintenance))
+    conn.execute(
+        f"CREATE TEMP TABLE IF NOT EXISTS {quote_identifier(_POLICY_MARKER)}(x)"
+    )
+    if read_only:
+        conn.execute("PRAGMA query_only=ON")
+    conn.set_authorizer(make_authorizer(maintenance, read_only))
     trace_state = {"sql": None, "changes": None}
 
     def trace(sql: str) -> None:

@@ -2,6 +2,7 @@
 """Integration tests for the Datasette plugin, without Podman or a VPS."""
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import sys
@@ -115,6 +116,39 @@ class PluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises((ValueError, sqlite3.DatabaseError)):
                 await self.database.execute_write(sql)
 
+    async def test_audit_log_records_attempt_and_result(self):
+        await self.database.execute_write(
+            "INSERT INTO movimientos(importe) VALUES ('60.00')"
+        )
+        with self.assertRaises(Exception):
+            await self.database.execute_write(
+                "INSERT INTO audit(entidad) VALUES ('http')"
+            )
+        records = [
+            json.loads(line)
+            for line in self.audit.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertTrue(
+            any(record.get("phase") == "attempt" for record in records),
+            records,
+        )
+        self.assertTrue(
+            any(
+                record.get("phase") == "result" and record.get("status") == "ok"
+                for record in records
+            ),
+            records,
+        )
+        self.assertTrue(
+            any(
+                record.get("phase") == "result"
+                and record.get("status") in {"error", "rejected"}
+                for record in records
+            ),
+            records,
+        )
+
     async def test_other_write_entry_points_are_guarded(self):
         with self.assertRaises(ValueError):
             await self.database.execute_write_script(
@@ -206,6 +240,55 @@ class PluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 connection.execute("CREATE TABLE blocked(id INTEGER)")
         finally:
             connection.close()
+
+
+class ReadOnlyIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        os.environ["VPS_ADMIN_READ_ONLY"] = "1"
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_READ_ONLY", None)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.audit = Path(self.temp.name) / "audit.jsonl"
+        os.environ["VPS_ADMIN_AUDIT_LOG"] = str(self.audit)
+        os.environ["VPS_ADMIN_ACTOR"] = "readonly-owner"
+        os.environ["VPS_ADMIN_SESSION"] = "readonly-session"
+        self.db_path = Path(self.temp.name) / "poc.db"
+        connection = sqlite3.connect(self.db_path)
+        connection.executescript(
+            """
+            CREATE TABLE movimientos(id INTEGER PRIMARY KEY, importe TEXT);
+            CREATE TABLE audit(id INTEGER PRIMARY KEY, entidad TEXT);
+            INSERT INTO movimientos(importe) VALUES ('1.00');
+            """
+        )
+        connection.close()
+        self.datasette = Datasette(
+            [str(self.db_path)],
+            plugins_dir=str(PLUGIN_DIR),
+            settings={"allow_download": False},
+        )
+        self.datasette.root_enabled = True
+        self.database = self.datasette.get_database("poc")
+
+    async def asyncTearDown(self):
+        self.datasette.close()
+
+    async def test_read_only_allows_selects_and_denies_writes(self):
+        result = await self.database.execute("SELECT count(*) FROM movimientos")
+        self.assertEqual(result.first()[0], 1)
+        with self.assertRaises(ValueError):
+            await self.database.execute_write(
+                "INSERT INTO movimientos(importe) VALUES ('2.00')"
+            )
+        response = await self.datasette.client.post(
+            "/poc/-/execute-write",
+            data={"sql": "INSERT INTO movimientos(importe) VALUES ('2.00')"},
+            actor={"id": "root"},
+        )
+        self.assertNotEqual(response.status_code, 200)
+        health = await self.datasette.client.get("/-/vps-admin-health")
+        self.assertEqual(health.status_code, 200)
+        self.assertTrue(health.json()["read_only"])
 
 
 if __name__ == "__main__":

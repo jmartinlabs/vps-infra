@@ -92,18 +92,45 @@ async def _guarded_execute(self, sql, *args, **kwargs):
 
 async def _guarded_execute_write(self, sql, params=None, *args, **kwargs):
     if _is_app_database(self):
-        policy.validate_write_sql(sql)
-    return await _ORIGINAL_EXECUTE_WRITE(self, sql, params, *args, **kwargs)
+        try:
+            policy.validate_write_sql(sql)
+        except Exception as error:
+            policy.log_result(self.name, sql, "rejected", type(error).__name__)
+            raise
+    try:
+        result = await _ORIGINAL_EXECUTE_WRITE(self, sql, params, *args, **kwargs)
+    except Exception as error:
+        if _is_app_database(self):
+            policy.log_result(self.name, sql, "error", type(error).__name__)
+        raise
+    if _is_app_database(self):
+        policy.log_result(self.name, sql, "ok")
+    return result
 
 
 async def _guarded_execute_write_many(self, sql, params_seq, *args, **kwargs):
     if _is_app_database(self):
-        policy.validate_write_sql(sql)
-    return await _ORIGINAL_EXECUTE_WRITE_MANY(self, sql, params_seq, *args, **kwargs)
+        try:
+            policy.validate_write_sql(sql)
+        except Exception as error:
+            policy.log_result(self.name, sql, "rejected", type(error).__name__)
+            raise
+    try:
+        result = await _ORIGINAL_EXECUTE_WRITE_MANY(
+            self, sql, params_seq, *args, **kwargs
+        )
+    except Exception as error:
+        if _is_app_database(self):
+            policy.log_result(self.name, sql, "error", type(error).__name__)
+        raise
+    if _is_app_database(self):
+        policy.log_result(self.name, sql, "ok")
+    return result
 
 
 async def _guarded_execute_write_script(self, sql, *args, **kwargs):
     if _is_app_database(self):
+        policy.log_result(self.name, sql, "rejected", "MultiStatement")
         raise ValueError("multi-statement writes are not supported")
     return await _ORIGINAL_EXECUTE_WRITE_SCRIPT(self, sql, *args, **kwargs)
 
@@ -115,7 +142,13 @@ async def _guarded_execute_write_fn(self, fn, *args, **kwargs):
     def guarded(conn, *fn_args, **fn_kwargs):
         return fn(_GuardedConnection(conn), *fn_args, **fn_kwargs)
 
-    return await _ORIGINAL_EXECUTE_WRITE_FN(self, guarded, *args, **kwargs)
+    try:
+        result = await _ORIGINAL_EXECUTE_WRITE_FN(self, guarded, *args, **kwargs)
+    except Exception as error:
+        policy.log_result(self.name, "CALLBACK", "error", type(error).__name__)
+        raise
+    policy.log_result(self.name, "CALLBACK", "ok")
+    return result
 
 
 _DatasetteDatabase.connect = _prepared_connect
@@ -170,6 +203,7 @@ async def health(request, datasette):
                 "foreign_keys": foreign_keys,
                 "recursive_triggers": recursive,
                 "maintenance": maintenance,
+                "read_only": policy.read_only_enabled(),
                 "protected_tables": len(policy.PROTECTED),
             }
         )

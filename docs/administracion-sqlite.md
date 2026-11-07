@@ -7,19 +7,22 @@ segunda fase de aplicación.
 ## Arquitectura
 
 - Datasette corre como el UID de la aplicación (`mftest`/`mfprod`) en Podman rootless.
+- Se usa `--network=host` y Datasette escucha en `127.0.0.1` en el puerto del
+  entorno. No se publica con `-p`; el puerto queda solo en loopback y el acceso
+  desde Mac es por túnel SSH.
 - Se monta el **directorio real** de estado; SQLite crea y recrea WAL/SHM en él.
 - `auth.key` se sustituye solo dentro del namespace del contenedor por un fichero
   dummy; el original no se mueve, copia ni modifica.
 - El estado conserva 0700/0600 y no usa ACL.
-- El puerto escucha solo en `127.0.0.1`; el acceso desde Mac es por túnel SSH.
 - Sin Caddy, sin UFW nuevo y sin puerto público.
 
-Dos perfiles:
+Perfiles:
 
 | Perfil | Uso | DML |
 | --- | --- | --- |
 | habitual | cambios de negocio | permitido en tablas de negocio; denegado en protegidas |
 | `--maintenance` | correcciones técnicas excepcionales | permitido en protegidas, salvo `schema_version`/`database_origin`; auditoría solo INSERT |
+| `--read-only` | consulta con MyFinanzas funcionando | denegado; sin backup ni parada de la app |
 
 Siempre denegados desde el visor: DDL, migraciones, `ATTACH`, `PRAGMA` peligroso,
 `VACUUM INTO`, `load_extension`, CTE de escritura, scripts multi-sentencia, tablas
@@ -31,7 +34,8 @@ El mismo filtro se aplica al editor SQL, a las rutas HTTP de escritura por filas
 a las conexiones de escritura usadas por callbacks de Datasette. No se puede
 saltar la política usando una ruta distinta del formulario SQL. Si el log de
 auditoría no se puede escribir, la sentencia se interrumpe antes de confirmar el
-cambio.
+cambio. El log registra el intento y el resultado de las operaciones del editor
+SQL (`ok`, `error` o `rejected`) sin valores literales.
 
 ## Construcción
 
@@ -46,37 +50,52 @@ permanecer parcheada.
 
 ## Uso desde el VPS
 
-El wrapper debe ejecutarse como el UID de la aplicación, no como root.
+El wrapper debe ejecutarse como el UID de la aplicación, no como root. El puerto
+solo escucha en loopback; el túnel es la única entrada desde Mac.
 
-### TEST
+### TEST de escritura
 
 ```bash
 sudo -u mftest scripts/datasette-admin start test \
   --state /srv/myfinanzas-test/data
 ```
 
-### PROD
+### Lectura con la app funcionando
 
-Detener MyFinanzas, ejecutar un backup age verificado y arrancar el editor:
+Válido para TEST y PROD; monta el estado en solo lectura y no exige backup,
+mantenimiento ni parada de MyFinanzas:
+
+```bash
+sudo -u mfprod scripts/datasette-admin start prod \
+  --state /srv/myfinanzas-prod/data \
+  --read-only
+```
+
+### PROD de escritura
+
+El wrapper comprueba que el servicio systemd del escritor no está activo y ejecuta
+la CLI de backup/restore de la imagen de MyFinanzas. El backup y el restore usan
+directorios nuevos; la identidad age se monta solo para la verificación:
 
 ```bash
 sudo -u mfprod scripts/datasette-admin start prod \
   --state /srv/myfinanzas-prod/data \
   --writer-stopped \
-  --backup-cmd '/ruta/backup-cli create /ruta/backup-nuevo /ruta/recipient.age' \
-  --backup-verify-cmd '/ruta/backup-cli verify-restore' \
-  --backup-ref '/ruta/backup-nuevo' \
-  --backup-path /ruta/backup-nuevo \
-  --restore-path /ruta/restore-nuevo.sqlite
+  --app-service myfinanzas-api.service \
+  --myfinanzas-image sha256:<id-verificado> \
+  --app-origin https://myfinanzas.pp.ua \
+  --backup-path /home/mfprod/backups/copia-2026-11-07 \
+  --restore-path /home/mfprod/restores/restore-2026-11-07 \
+  --backup-identity /run/keys/identity \
+  --backup-recipient age1...
 ```
 
-El comando de verificación recibe `VPS_ADMIN_BACKUP_PATH` y
-`VPS_ADMIN_RESTORE_PATH`; debe restaurar el backup a ese fichero SQLite **nuevo**
-y terminar en 0. El wrapper exige que ni el backup ni el restore existieran
-antes, que ambos contengan artefactos no vacíos y que la base restaurada pase
-`PRAGMA integrity_check`, `PRAGMA foreign_key_check` y tenga `schema_version`
-válido. Sustituir los ejemplos por la interfaz real de la CLI de MyFinanzas. Si
-el backup o su verificación fallan, no se abre el editor.
+`--backup-path` y `--restore-path` deben ser directorios nuevos. El backup crea
+`database.age` y `access-key.age`; el restore crea `database.sqlite` y `auth.key`
+en un directorio nuevo. La CLI de MyFinanzas valida el esquema, la identidad
+DB/auth.key, las invariantes y la recuperación; Infraestructura solo comprueba
+que los artefactos existen con modos privados y que el servicio escritor está
+inactivo. No se duplican esas reglas de dominio.
 
 ### Desde el Mac
 
@@ -94,21 +113,13 @@ app. Para una corrección técnica:
 sudo -u mfprod scripts/datasette-admin start prod ... --maintenance
 ```
 
-### Cierre y comprobación PROD
+### Cierre y recuperación PROD
 
 1. Cerrar el editor antes de reanudar la app.
-2. Comprobar la base con el UID de la app:
-
-   ```bash
-   sudo -u mfprod sqlite3 /srv/myfinanzas-prod/data/database.sqlite \
-     'PRAGMA integrity_check; PRAGMA foreign_key_check;'
-   ```
-
-   `integrity_check` debe devolver `ok` y `foreign_key_check` no debe devolver
-   filas.
-3. Arrancar MyFinanzas y ejecutar el smoke habitual.
-4. Ante un incidente, restaurar el backup **solo a un destino nuevo**; no
-   sobrescribir la base original.
+2. Arrancar MyFinanzas y ejecutar su smoke habitual y sus comprobaciones de
+   dominio.
+3. Si hace falta una verificación o recuperación, usar la CLI de restore de
+   MyFinanzas a un directorio nuevo; no sobrescribir la base original.
 
 ### Parada
 
@@ -126,17 +137,19 @@ scripts/datasette-admin stop prod
 - El SQL directo no ejecuta validaciones ni auditoría de dominio de MyFinanzas.
   No se promete que un UPDATE sea funcionalmente válido solo por pasar
   `integrity_check`.
-- El log privado registra actor, sesión, timestamp, operación, hash y forma del
-  SQL, y en PROD la referencia de backup. No registra valores literales ni el
-  resultado final de cada sentencia; los errores se muestran en la interfaz y en
-  los logs del contenedor.
+- El log privado registra actor, sesión, timestamp, operación, hash, forma del
+  SQL, fase de intento/resultado y, en PROD, referencia de backup. No registra
+  valores literales; el resultado se registra de forma best-effort después de la
+  operación.
 - `schema_version` y `database_origin` solo cambian por migración de la app.
-- En PROD se usa una ventana de escritor único: app detenida antes de editar y
-  editor detenido antes de reanudar. `--writer-stopped` es una confirmación del
-  operador; el wrapper no inspecciona el servicio de la app. No se asume
-  concurrencia de writers.
+- En PROD se usa una ventana de escritor único. El wrapper consulta
+  `systemctl --user show <servicio> -p ActiveState` y rechaza `active`,
+  `activating`, `deactivating` o `unknown`; `--writer-stopped` sigue siendo una
+  confirmación adicional del operador. No se asume concurrencia de writers.
 - `--security-opt label=disable` evita conflictos SELinux; la política de labels
   del VPS queda pendiente de validación.
+- El backup/restore real y la validación de identidad dependen de la imagen y la
+  CLI de MyFinanzas; se prueban de forma aislada y se delegan a su agente.
 
 ## Pruebas
 
@@ -146,12 +159,14 @@ python3 -m pip install 'datasette==1.0a41'
 ./scripts/test-datasette-admin-integration
 ```
 
-La primera suite cubre autorizador, parser string-aware, dos perfiles, auditoría
-append-only y fail-closed, PRAGMAs, DDL/ATTACH, schema/origin, tablas desconocidas,
-la matriz v27 completa (108 tablas; 72 protegidas y 36 de negocio) contrastada con
-el fixture `infra/datasette-admin/v27_tables.json`, AUTOINCREMENT, triggers de
-negocio y enmascarado. La segunda importa el plugin real en Datasette
-1.0a41 y comprueba `Database.connect()`, `execute`, `execute_write`, escrituras
-por callback, health y las rutas HTTP principales. Las pruebas de contenedor
-rootless, SSH y backup age se ejecutan en un entorno Linux aislado antes de
-desplegar.
+La primera suite cubre autorizador, parser string-aware, dos perfiles, solo
+lectura, auditoría append-only y fail-closed, PRAGMAs, DDL/ATTACH, schema/origin,
+tablas desconocidas, la matriz v27 completa (108 tablas; 72 protegidas y 36 de
+negocio) contrastada con `infra/datasette-admin/v27_tables.json`, el esquema y
+los 176 triggers reales de `v27_schema.sql`, AUTOINCREMENT, triggers de negocio,
+resultado de auditoría y enmascarado. La segunda importa el plugin real en
+Datasette 1.0a41 y comprueba `Database.connect()`, `execute`, `execute_write`,
+escrituras por callback, health, rutas HTTP, `_internal` y solo lectura.
+
+Las pruebas de backup/restore con la imagen real de MyFinanzas, SSH y age
+requieren el entorno aislado autorizado y se delegan al agente de MyFinanzas.

@@ -10,6 +10,10 @@ segunda fase de aplicación.
 - Se usa `--network=host` y Datasette escucha en `127.0.0.1` en el puerto del
   entorno. No se publica con `-p`; el puerto queda solo en loopback y el acceso
   desde Mac es por túnel SSH.
+- Se revisó una red Podman privada: en este Podman rootless/pasta, publicar con
+  `-p 127.0.0.1` seguía siendo alcanzable por la IP no-loopback, y sin `-p` la IP
+  del contenedor no es alcanzable desde el host. Se mantiene `--network=host` con
+  binding `127.0.0.1`; cambiar a red privada requeriría proxy/firewall adicional.
 - Se monta el **directorio real** de estado; SQLite crea y recrea WAL/SHM en él.
 - `auth.key` se sustituye solo dentro del namespace del contenedor por un fichero
   dummy; el original no se mueve, copia ni modifica.
@@ -107,15 +111,15 @@ sudo -u mfprod scripts/datasette-admin start prod \
 
 ### PROD de escritura
 
-El wrapper comprueba que el servicio systemd del escritor no está activo y ejecuta
-la CLI de backup/restore de la imagen de MyFinanzas. El backup y el restore usan
+El wrapper comprueba que el servicio systemd fijo `myfinanzas-api.service` no está
+activo y ejecuta la CLI de backup/restore de la imagen de MyFinanzas. El nombre no
+se puede sobreescribir por CLI. El backup y el restore usan
 directorios nuevos; la identidad age se monta solo para la verificación:
 
 ```bash
 sudo -u mfprod scripts/datasette-admin start prod \
   --state /srv/myfinanzas-prod/data \
   --writer-stopped \
-  --app-service myfinanzas-api.service \
   --myfinanzas-image sha256:<id-verificado> \
   --app-origin https://myfinanzas.pp.ua \
   --backup-path /home/mfprod/backups/copia-2026-11-07 \
@@ -207,7 +211,7 @@ python3 -m pip install 'datasette==1.0a41'
 ./scripts/test-datasette-admin-integration
 ```
 
-La primera suite (**35 pruebas**) cubre vinculación entorno/UID/ruta/symlinks,
+La primera suite (**36 pruebas**) cubre vinculación entorno/UID/ruta/symlinks,
 autorizador, parser string-aware, dos perfiles, solo lectura con WAL vivo,
 auditoría append-only/fail-closed y resultado, PRAGMAs, DDL/ATTACH,
 schema/origin, tablas desconocidas, la matriz v27 completa (108 tablas; 72

@@ -27,6 +27,7 @@ ENVIRONMENTS = {
 }
 APP_UID = 10001
 APP_CLI = "apps/api/src/backup-cli.ts"
+APP_SERVICE = "myfinanzas-api.service"
 
 
 def die(message: str, code: int = 2) -> None:
@@ -193,7 +194,8 @@ def check_artifact_directory(path: Path, names: tuple[str, ...], label: str) -> 
             die(f"{label} {name} is empty; refusing to start PROD editor")
 
 
-def check_writer_stopped(service: str) -> None:
+def check_writer_stopped() -> None:
+    service = APP_SERVICE
     try:
         result = run(
             [
@@ -244,6 +246,8 @@ def app_podman_command(
         f"--user={APP_UID}:{APP_UID}",
         "--cap-drop=ALL",
         "--security-opt",
+        "label=disable",
+        "--security-opt",
         "no-new-privileges",
         "--read-only",
         "--read-only-tmpfs=false",
@@ -291,7 +295,7 @@ def backup_and_verify(env: str, args, state: Path) -> Path | None:
         restore_path.parent, 0o700, os.getuid(), "restore parent directory"
     )
     check_private_path(identity, 0o600, os.getuid(), "age identity file")
-    check_writer_stopped(args.app_service)
+    check_writer_stopped()
 
     backup_environment = {
         "NODE_ENV": "production",
@@ -562,11 +566,6 @@ def parse_args(argv=None):
     start_parser.add_argument(
         "--app-origin",
         help="MyFinanzas APP_ORIGIN; required for PROD backup/restore",
-    )
-    start_parser.add_argument(
-        "--app-service",
-        default="myfinanzas-api.service",
-        help="systemd user service used to verify the writer is stopped",
     )
     start_parser.add_argument(
         "--backup-ref",

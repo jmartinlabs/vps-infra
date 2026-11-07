@@ -53,9 +53,43 @@ ni la CLI de MyFinanzas.
 - Tests unitarios cubren además UID/nombre incorrectos, entorno incorrecto,
   `..`, symlink final, symlink padre y path esperado symlink.
 
+## Revisión de red privada Podman (alternativa a `--network=host`)
+
+Se probó una red bridge privada con publicación solo en loopback:
+
+- `--network=dsadmin -p 127.0.0.1:18112:18112`, Datasette en `0.0.0.0:18112`:
+  - loopback 200; IP no-loopback del host **200**; listener `*:18112`.
+  - **Rechazado**: no conserva loopback exclusivo en este Podman rootless/pasta.
+- Red privada sin `-p`, Datasette en la IP del contenedor: la IP privada no es
+  alcanzable desde el host/SSH; no se puede tunelar sin añadir proxy/firewall.
+- `pasta -T 127.0.0.1/...` rechaza el binding loopback.
+
+Conclusión: se mantiene `--network=host` + Datasette `127.0.0.1:<puerto>`, que sí
+ha demostrado loopback 200 / IP no-loopback 000. Cambiar a red privada exigiría
+un proxy o reglas de firewall adicionales, fuera del alcance autorizado.
+
+## Backup/restore real MyFinanzas + age
+
+Ejecutado con el árbol `origin/main` de MyFinanzas exportado en solo lectura, Bun
+1.4.3/SQLite 3.53.4, age 1.2.1 Linux y un estado v27 sintético con identidad
+`production` y `key_hash` de una clave de 32 bytes.
+
+- `backup-cli.ts create`: `Copia cifrada completada.`; artefactos
+  `database.age` y `access-key.age` 0600.
+- `backup-cli.ts restore` a directorio nuevo: `Restauración aislada completada.`
+  Archivos `database.sqlite` y `auth.key` 0600; `integrity_check=ok`,
+  `foreign_key_check=[]`, `schema_version=27`, `origin=production`, hash de
+  `auth.key` idéntico, sesiones/challenges/recovery/bootstrap a 0.
+- El mismo ciclo se ejecutó a través de `backup_and_verify` del wrapper con una
+  imagen de prueba que contiene la CLI, dependencias y age: backup y restore
+  completados, artefactos y hashes correctos.
+
+Esto valida la CLI/age/identidad/recuperación con datos sintéticos. La imagen
+oficial de release de MyFinanzas y el VPS real siguen sin probarse.
+
 ## Pruebas automatizadas
 
-- `./scripts/test-datasette-admin`: **35/35 PASS**.
+- `./scripts/test-datasette-admin`: **36/36 PASS**.
 - `./scripts/test-datasette-admin-integration`: **12/12 PASS**.
 - `validate-template`, `check_harness`, `test-validator`: **188/188 PASS**.
 

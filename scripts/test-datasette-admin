@@ -49,6 +49,20 @@ class WrapperTests(unittest.TestCase):
         os.chmod(path, 0o600)
         return path
 
+    def test_writer_service_is_fixed(self):
+        self.assertEqual(wrapper.APP_SERVICE, "myfinanzas-api.service")
+        with self.assertRaises(SystemExit):
+            wrapper.parse_args(
+                [
+                    "start",
+                    "test",
+                    "--state",
+                    "/srv/myfinanzas-test/data",
+                    "--app-service",
+                    "other.service",
+                ]
+            )
+
     def test_app_command_uses_myfinanzas_cli_and_hardening(self):
         command = wrapper.app_podman_command(
             "sha256:" + "a" * 64,
@@ -59,6 +73,7 @@ class WrapperTests(unittest.TestCase):
         self.assertIn("--network=none", command)
         self.assertIn("--read-only", command)
         self.assertIn("--pull=never", command)
+        self.assertIn("label=disable", command)
         self.assertIn("apps/api/src/backup-cli.ts", command)
         self.assertIn(
             "/tmp:rw,noexec,nosuid,nodev,tmpcopyup,mode=1777,size=64m",
@@ -100,23 +115,23 @@ class WrapperTests(unittest.TestCase):
             with mock.patch.object(
                 wrapper, "run", return_value=result("loaded", active)
             ):
-                wrapper.check_writer_stopped("myfinanzas-api.service")
+                wrapper.check_writer_stopped()
         for active in ("active", "activating", "deactivating", "unknown"):
             with mock.patch.object(
                 wrapper, "run", return_value=result("loaded", active)
             ):
                 with self.assertRaises(SystemExit):
-                    wrapper.check_writer_stopped("myfinanzas-api.service")
+                    wrapper.check_writer_stopped()
         with mock.patch.object(
             wrapper, "run", return_value=result("not-found", "inactive")
         ):
             with self.assertRaises(SystemExit):
-                wrapper.check_writer_stopped("myfinanzas-api.service")
+                wrapper.check_writer_stopped()
         with mock.patch.object(
             wrapper, "run", return_value=result("loaded", "inactive", code=1)
         ):
             with self.assertRaises(SystemExit):
-                wrapper.check_writer_stopped("myfinanzas-api.service")
+                wrapper.check_writer_stopped()
 
     def test_backup_and_restore_orchestration(self):
         state = self.make_private_dir("state")
@@ -149,7 +164,6 @@ class WrapperTests(unittest.TestCase):
         args = SimpleNamespace(
             myfinanzas_image="sha256:" + "a" * 64,
             app_origin="https://myfinanzas.example",
-            app_service="myfinanzas-api.service",
             backup_path=str(backup_path),
             restore_path=str(restore_path),
             backup_identity=str(identity),
@@ -173,7 +187,6 @@ class WrapperTests(unittest.TestCase):
         args = SimpleNamespace(
             myfinanzas_image="sha256:" + "a" * 64,
             app_origin="https://myfinanzas.example",
-            app_service="myfinanzas-api.service",
             backup_path=str(existing),
             restore_path=str(restore_parent / "restore"),
             backup_identity=str(identity),

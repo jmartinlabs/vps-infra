@@ -1,12 +1,12 @@
 # 02 — INFRA-TEST-01-HOST: host del entorno TEST de MyFinanzas — Specification
 
-Status: **DRAFT — actualizada con la auditoría de solo lectura (2026-11-05) y Caddy 2.11.9;
-pendiente de aprobación.** No autoriza DEV, acceso al VPS, DNS, Caddy, UFW,
-Podman/Quadlet, despliegue, datos reales ni merge.
+Status: **DRAFT — reconciliada con auditoría (2026-11-05), Caddy 2.11.9 y preflight de
+solo lectura (2026-11-07); pendiente de aprobación.** No autoriza DEV, acceso al VPS, DNS,
+Caddy, UFW, Podman/Quadlet, despliegue, datos reales ni merge.
 Approval source/date: PENDING
 Context and brainstorming: packet de coordinación `INFRA-TEST-01-HOST` (2026-11-04); sin
 brainstorming separado.
-Base: `vps-infra` `main` `b45ffeb9ceaae9b656a5db6e11f90b12d3a72198` (2026-11-05), sin
+Base: `vps-infra` `main` `c1f9f59312fd91120f96633857125554d7a9b624` (2026-11-07), sin
 cambios de infraestructura de TEST en esta rama.
 Auditoría y Caddy: [auditoría 2026-11-05](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md)
 y [cierre VPS-CADDY-UPGRADE-01](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
@@ -79,7 +79,7 @@ posteriores a la actualización son evidencia del usuario; el agente no accedió
 
 | Hecho | Evidencia | Estado |
 | --- | --- | --- |
-| `vps-infra` `main` en `b45ffeb` | `git rev-parse` local | `[CONFIRMADO]` Base documental. |
+| `vps-infra` `main` en `c1f9f59` | `git rev-parse` local | `[CONFIRMADO]` Base documental. |
 | Contrato de integración MyFinanzas ↔ `vps-infra` | SPEC34 §5 y manifiesto de cada release | `[INFORMADO]` La actualización de esquema/seed corresponde a MyFinanzas; `vps-infra` no rastrea PRs. |
 | Flujo actual `feature/* → main`; TEST desde SHA de `myfinanzas-app/main` | Decisión del usuario 2026-11-05 (rectificada) | `[PROPUESTA]` Sin rama `test`; deploy manual, sin automatización; `main` no es producción todavía. |
 | PR #7 de `vps-infra` cerrado sin merge | API de GitHub | `[CONFIRMADO]` Solo antecedente histórico. |
@@ -88,8 +88,8 @@ posteriores a la actualización son evidencia del usuario; el agente no accedió
 | SSH: root y contraseñas deshabilitados, clave pública; `X11Forwarding yes`, `AllowTcpForwarding yes`, `AuthenticationMethods any`, sin `AllowUsers` | Comprobación manual del usuario, 2026-11-05 | `[CONFIRMADO]` Hardening pendiente. |
 | UFW activo, entrada `deny`, solo 22/80/443 IPv4/IPv6; nftables coherente | Comprobación manual del usuario, 2026-11-05 | `[CONFIRMADO]` Reglas revisadas manualmente. |
 | Caddy **2.11.9** (Cloudsmith), `active`/`enabled`, HTTPS 200 verify 0, HTTP 308, solo `CAP_NET_BIND_SERVICE`, `apt-mark hold` | [cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md) | `[CONFIRMADO]` Evidencia del usuario posterior a la actualización. |
-| `Caddyfile` de 68 B: sitio `myfinanzas.pp.ua` y directiva `root` identificados; no se observó `reverse_proxy`; **contenido completo no leído**. Validación preliminar con 2.6.2 y definitiva con 2.11.9 | Auditoría, preflight y cierre Caddy | `[INFORMADO]` No asumir que solo contiene `root`; leerlo completo antes de la fase 4. |
-| Podman 5.4.2 rootless; sin contenedores/volúmenes/pods; imágenes `nginx`/`hello-world` | Auditoría | `[CONFIRMADO]` Quadlet y delegación cgroup sin revalidar. |
+| `Caddyfile` de 68 B: sitio `myfinanzas.pp.ua`, `root` y `file_server`; sin `reverse_proxy` ni bloque TEST; `caddy validate` OK | Preflight 2026-11-07 y cierre Caddy | `[CONFIRMADO]` Contenido completo leído; el bloque TEST sigue pendiente. |
+| Podman 5.4.2 rootless; sin contenedores/volúmenes/pods; imágenes `nginx`/`hello-world`; Quadlet presente y delegación `cpu memory pids` | Auditoría y preflight 2026-11-07 | `[CONFIRMADO]` Configuración verificada; unidad real y reboot pendientes. |
 | DNS apex con A y TTL 14400; sin AAAA/CAA; `test` NXDOMAIN; NS en `uadns.com` | Auditoría | `[CONFIRMADO]` IP pública no documentada aquí. |
 | Directorio `myfinanzas/backups` bajo el home del operador: existe `0700`, sin ficheros regulares visibles a profundidad 2 | Auditoría | `[CONFIRMADO]` Inventario y restore no verificados. |
 | Recuperación de Caddy: `/root/caddy-upgrade-20261105T151652Z` `0700`, retención hasta 2026-12-05 | Cierre Caddy | `[CONFIRMADO]` No es backup de la aplicación TEST. |
@@ -99,6 +99,34 @@ posteriores a la actualización son evidencia del usuario; el agente no accedió
 
 `[CONFIRMADO]` El runbook de MyFinanzas mantiene el despliegue como **NOT deployable** hasta
 cumplir sus gates. Esta spec no rebaja ni sustituye el gate Rootless sobre el SHA exacto.
+
+### 2.1 Preflight de solo lectura — 2026-11-07
+
+Sesión como `mfadmin`, sin `sudo`, sin cambios y sin leer secretos, bases ni contenido de
+backups. Evidencia redactada fuera del repositorio.
+
+| Comprobación | Resultado |
+| --- | --- |
+| Host | Debian 13.7, kernel 6.12.113, KVM/OpenStack, 2 vCPU, 3,8 GiB RAM, 35 GB libres, inodos 3 %, sin reboot pendiente. |
+| Administración | `mfadmin` UID/GID 1001, subuid/subgid 65536, `Linger=yes`, `systemd --user` activo. |
+| Delegación cgroup | `Delegate=yes`; controladores `cpu memory pids`. |
+| Podman | 5.4.2 rootless, cgroup systemd; Quadlet en `/usr/libexec/podman/quadlet`; sin unidades propias, contenedores ni volúmenes MyFinanzas; imágenes `nginx`/`hello-world`. |
+| `mftest` y rutas | `mftest` no existe; `/srv/myfinanzas-test` y `/var/www/myfinanzas-test` no existen. |
+| Puertos | 22/80/443 públicos; 2019 solo loopback; `18082`/`3001` ausentes. |
+| Caddy | 2.11.9 activo, `hold`, `NRestarts=0`; Caddyfile de 68 B con sitio raíz, `root` y `file_server`, sin `reverse_proxy` ni bloque TEST; `caddy validate` OK. |
+| DNS/HTTP | Apex A, HTTP 308 y HTTPS 200; `test` NXDOMAIN; sin AAAA/CAA observados. |
+| Backups | `~mfadmin/myfinanzas/backups` 0700 y vacío; inventario profundo y restore pendientes. |
+| SSH/UFW/fail2ban efectivos | **Pendientes de root**: `sshd -T` no pudo ejecutarse sin host keys; UFW/nft/fail2ban requieren privilegios. No se intentó elevar. |
+| Datasette | PR #22 pendiente: el wrapper debe usar `.../data/state`, no `.../data`. |
+
+Diferencias principales: el contenido del Caddyfile ya se leyó completo y es mínimo; Quadlet
+y la delegación cgroup están verificados a nivel de configuración, pero **no se ha probado
+una unidad real ni persistencia tras reboot**. `mftest`, rutas, DNS `test`, backups externos
+y release/seed siguen pendientes.
+
+`[PENDIENTE]` La ruta de estado `/srv/myfinanzas-test/data/state` es la asumida por esta spec
+y el preflight; MyFinanzas debe confirmarla antes de la fase 5. La corrección del wrapper
+Datasette se revisa en PR #22; no se instala ni se despliega desde esta spec.
 
 ## 3. Frontera de responsabilidades
 
@@ -149,7 +177,7 @@ TEST ni creó usuarios o rutas.
 | `release_ref` | `myfinanzas-app/main` (TEST y PROD futuro); release distinta por SHA | `[PROPUESTA]` Sin rama `test`; el host no gestiona ramas. |
 | `release_sha` | SHA de 40 caracteres seleccionado y registrado | `[PROPUESTA]` Se registra cuando exista release; inmutable y verificado por manifiesto. |
 | `seed_image` | ID inmutable propio, solo tareas efímeras | `[PROPUESTA]` SPEC34 §4.2. |
-| `schema_contract` | Declarado por el manifiesto de la release; hoy `C25-E49-CIERRE-FINANCIERO` | `[CONFIRMADO]` El host no fija el esquema; lo verifica por release. |
+| `schema_contract` | Declarado por el manifiesto de la release; el código actual declara v27 (`C27-E411-FOTOS-PERIODO`) | `[PENDIENTE]` El host no fija el esquema; el manifiesto de release debe declararlo. |
 | `resources` | 1 GiB RAM, 1 CPU, 128 pids, tmpfs 64 MiB | `[CONFIRMADO]` SPEC34 y RUNBOOK. |
 | `host_capacity` | 2 vCPU, 3,8 GiB RAM, 35 GB libres, inodos 3 % | `[CONFIRMADO]` Auditoría; sin prueba de carga. |
 | `disk_budget` | ≤ 5 GB para TEST; ≥ 20 % libre y ≥ 10 % de inodos | `[PROPUESTA]` 35 GB libres y 3 % de inodos medidos; confirmar en fase 2. |
@@ -239,7 +267,7 @@ Aquí solo se resume lo que el host consume:
 | `release_ref` | `myfinanzas-app/main` para TEST y PROD futuro | Sin rama `test`; release distinta por SHA. |
 | `release_sha` | SHA de 40 caracteres del candidato seleccionado | Se registra cuando exista release; no se infiere de una etiqueta. |
 | `seed_image` | ID inmutable propio; solo tareas efímeras | SPEC34 §4.2. |
-| `schema_contract` | Declarado por el manifiesto; hoy `C25-E49-CIERRE-FINANCIERO` | Se verifica por release; no se fija permanentemente. |
+| `schema_contract` | Declarado por el manifiesto; el código actual declara v27 (`C27-E411-FOTOS-PERIODO`) | Se verifica por release; el manifiesto debe declararlo; no se fija permanentemente en el host. |
 | `resources` | 1 GiB, 1 CPU, 128 pids, tmpfs 64 MiB | SPEC34. |
 | `backup` | CLI de la misma imagen/UID, `age`, montaje separado; restore a destino nuevo | SPEC34 §3.5. |
 | `rollback` | Solo al par exacto con prueba; si no, bloqueo y preservación | SPEC34. |
@@ -452,11 +480,10 @@ test.myfinanzas.pp.ua. 300 IN AAAA <IPv6_PUBLICA_VERIFICADA, si existe>
 `[CONFIRMADO]` Caddy 2.11.9 está activo, con `hold` y solo `CAP_NET_BIND_SERVICE`; no se
 modifica su *drop-in* ni el sitio raíz para TEST.
 
-`[INFORMADO]` El `Caddyfile` actual tiene 68 B; se identificaron el sitio `myfinanzas.pp.ua`
-y la directiva `root`, y no se observó `reverse_proxy`, pero **el contenido completo no se
-leyó**. La validación fue preliminar con 2.6.2 y definitiva con 2.11.9. Antes de la fase 4 hay
-que leer el fichero completo, registrar hash/diff y validar; no se asume que solo contenga
-`root`.
+`[CONFIRMADO]` El `Caddyfile` actual tiene 68 B; contiene el sitio `myfinanzas.pp.ua`, `root`
+y `file_server`, sin `reverse_proxy` ni bloque TEST. `caddy validate` con 2.11.9 devuelve
+configuración válida. No se modifica aún: el bloque TEST se prepara en la fase 4 con backup,
+hash/diff y validación, y no se recarga hasta que app/seed estén listos.
 
 `[PROPUESTA]` Bloque independiente para `test.myfinanzas.pp.ua`. La ubicación exacta
 (`Caddyfile` principal o fichero importado) se decide en la fase 4, con backup y validación.
@@ -675,7 +702,7 @@ acredita HTTPS, smoke y copias.
 | DNS real | Apex A/TTL 14400 conocido; `test` NXDOMAIN | Sin registro `test` no hay TLS ni entorno operativo. |
 | Flake SQLite **B3** | Sin reproducción Linux | Puede aparecer en el ensayo; no se oculta. |
 | VPS 2 vCPU / 3,8 GiB / 40 GB, 35 GB libres, inodos 3 % | `[CONFIRMADO]` auditoría | Presupuesto pequeño; límites y medición obligatorios. |
-| Quadlet y delegación cgroup | Podman 5.4.2 rootless; sin revalidar | H1/H5 no verificadas; bloquea fase 2/5. |
+| Quadlet y delegación cgroup | Delegación `cpu memory pids` y binario Quadlet verificados; unidad real y reboot no probados | H1/H5 parcialmente verificadas; la unidad bloquea fase 5. |
 | Acceso al host | Auditoría de solo lectura realizada; provisión y fases 2–8 no autorizadas | Fases 2–8 bloqueadas. |
 
 ### 10.2 Riesgos
@@ -685,7 +712,7 @@ acredita HTTPS, smoke y copias.
 | Caddy mal editado | Interrupción del sitio raíz | Backup, `caddy validate`, recarga controlada y rollback; Caddy 2.11.9 ya validado. |
 | Contrato de integración sin release/seed | Seed/schema no conformes | Construir release/seed desde `main` y verificar el contrato declarado. |
 | `hold` de Caddy sin revisión | Falta de parches | Revisión mensual registrada; `unhold` solo en ventana. |
-| Quadlet/cgroup no revalidado | Unidad no persiste | Preflight rootless y prueba de reboot antes de fase 5. |
+| Unidad Quadlet no probada | Unidad no persiste | Prueba aislada de unidad y reboot antes de fase 5; delegación ya verificada. |
 | DNS `test` con proxy/CDN heredado | TLS/routing incorrectos | No copiar el registro raíz sin decisión; verificar A/AAAA. |
 | Colisión de `18082` | Unidad no arranca | Auditoría de puertos; puerto reservado solo para TEST. |
 | `linger`/rootless mal configurado | Unidad no persiste tras logout/reboot | Verificar `loginctl`, `subuid`/`subgid` y `systemctl --user`. |

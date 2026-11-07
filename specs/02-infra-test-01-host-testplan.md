@@ -2,9 +2,10 @@
 
 Specification: [02 — host del entorno TEST de MyFinanzas](02-infra-test-01-host-specification.md)
 
-Status: **DRAFT — ejecución `UNRUN`; sin ningún `PASS`.** No autoriza DEV, acceso al VPS,
-auditoría, DNS, Caddy, UFW, Podman/Quadlet, despliegue, datos reales ni merge.
-Base: `vps-infra` `main` `b45ffeb9ceaae9b656a5db6e11f90b12d3a72198` (2026-11-05).
+Status: **DRAFT — ejecución `UNRUN`; preflight parcial 2026-11-07; sin ningún `PASS`.** No
+autoriza DEV, acceso al VPS, auditoría completa, DNS, Caddy, UFW, Podman/Quadlet,
+despliegue, datos reales ni merge.
+Base: `vps-infra` `main` `c1f9f59312fd91120f96633857125554d7a9b624` (2026-11-07).
 Auditoría y Caddy: [auditoría 2026-11-05](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md)
 y [cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
 Contrato de integración MyFinanzas ↔ `vps-infra`:
@@ -44,8 +45,12 @@ Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-inf
 
 ## 3. Matriz de criterios de aceptación
 
-Todos los estados son `UNRUN`. Los placeholders `<…>` se sustituyen solo con valores
-verificados y redactados.
+Todos los estados son `UNRUN`. El preflight de solo lectura 2026-11-07 cubrió identidad,
+SO, recursos, Podman/Quadlet, cgroup, Caddyfile completo, DNS/HTTP y estado de rutas/backups;
+no cubrió UFW/nftables, `sshd -T` efectivo ni inventario profundo de backups. AC02 sigue
+`UNRUN` hasta cerrar esos puntos.
+
+Los placeholders `<…>` se sustituyen solo con valores verificados y redactados.
 
 | ID | Precondiciones y acción | Resultado esperado | Método / comando previsto | Entorno | Owner | Fase | Evidencia | Estado |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

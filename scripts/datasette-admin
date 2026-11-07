@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""Start/stop the private Datasette SQLite admin for one environment.
+
+Run this script as the application UID (for example mftest or mfprod), not as
+root. It uses rootless Podman and mounts the real state directory; auth.key is
+masked only inside the container namespace with a dummy file.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import pwd
+import secrets
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PORTS = {"test": 18083, "prod": 18084}
+CONTAINER = "vps-datasette-admin-{env}"
+IMAGE_DEFAULT = "localhost/vps-datasette-admin:latest"
+DB_NAME = "database.sqlite"
+
+
+def die(message: str, code: int = 2) -> None:
+    print(f"datasette-admin: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(command, check=False, text=True, **kwargs)
+
+
+def podman_rootless() -> bool:
+    result = run(
+        ["podman", "info", "--format", "{{.Host.Security.Rootless}}"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        die("podman is not available or the machine is not running")
+    return result.stdout.strip() == "true"
+
+
+def check_private_path(path: Path, mode: int, uid: int, label: str) -> None:
+    if path.is_symlink():
+        die(f"{label} must not be a symlink")
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        die(f"{label} does not exist")
+    if stat.st_uid != uid:
+        die(f"{label} must be owned by the current UID ({uid})")
+    if (stat.st_mode & 0o777) != mode:
+        die(f"{label} must have mode {mode:04o}, found {stat.st_mode & 0o777:04o}")
+    if label.endswith("directory") and not path.is_dir():
+        die(f"{label} must be a directory")
+    if not label.endswith("directory") and not path.is_file():
+        die(f"{label} must be a regular file")
+
+
+def check_state(state: Path) -> None:
+    uid = os.getuid()
+    check_private_path(state, 0o700, uid, "state directory")
+    check_private_path(state / DB_NAME, 0o600, uid, "database file")
+    check_private_path(state / "auth.key", 0o600, uid, "auth.key")
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = state / (DB_NAME + suffix)
+        if sidecar.exists():
+            check_private_path(sidecar, 0o600, uid, f"{DB_NAME}{suffix}")
+
+
+def audit_directory(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    check_private_path(path, 0o700, os.getuid(), "audit directory")
+    return path
+
+
+def runtime_directory(env: str) -> Path:
+    base = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/vps-datasette-admin-{os.getuid()}"))
+    path = base / "vps-datasette-admin" / env
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    return path
+
+
+def container_exists(name: str) -> bool:
+    return run(["podman", "container", "exists", name], capture_output=True).returncode == 0
+
+
+def backup(env: str, command: str | None) -> None:
+    if env != "prod":
+        return
+    if not command:
+        die("PROD requires --backup-cmd with a verified age backup command")
+    result = run(shlex.split(command), capture_output=True)
+    if result.returncode != 0:
+        die(f"backup command failed; refusing to start PROD editor: {result.stderr.strip()}")
+    print("Backup command completed; verify the age backup before editing.")
+
+
+def wait_for_url(port: int, name: str, timeout: float = 30.0) -> str:
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        logs = run(["podman", "logs", name], capture_output=True)
+        if logs.returncode != 0:
+            last_error = logs.stderr.strip()
+        else:
+            for line in logs.stdout.splitlines():
+                if "127.0.0.1:8001/-/auth-token?token=" in line:
+                    return line.strip().replace(
+                        "127.0.0.1:8001", f"127.0.0.1:{port}"
+                    )
+        time.sleep(0.5)
+    die(f"editor did not become ready: {last_error or 'timeout'}")
+
+
+def start(args) -> None:
+    env = args.environment
+    state = Path(args.state).expanduser().resolve()
+    if not podman_rootless():
+        die("rootless Podman is required")
+    check_state(state)
+    if env == "prod" and not args.writer_stopped:
+        die("PROD requires --writer-stopped (stop MyFinanzas before editing)")
+    backup(env, args.backup_cmd)
+
+    name = CONTAINER.format(env=env)
+    if container_exists(name):
+        die(f"container {name} already exists; stop it first")
+    port = args.port
+    runtime = runtime_directory(env)
+    dummy = runtime / "auth.key"
+    dummy.write_text("MASKED-AUTH-KEY\n", encoding="utf-8")
+    os.chmod(dummy, 0o600)
+    audit_base = (
+        Path(args.audit_dir).expanduser().resolve()
+        if args.audit_dir
+        else Path.home() / ".local/state/vps-datasette-admin" / env
+    )
+    audit = audit_directory(audit_base)
+    session = secrets.token_hex(16)
+    secret = secrets.token_hex(32)
+    command = [
+        "podman",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        name,
+        "--userns=keep-id:uid=1000,gid=1000",
+        "--user",
+        "1000:1000",
+        "--security-opt",
+        "label=disable",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m",
+        "--cap-drop=ALL",
+        "--memory=512m",
+        "--cpus=1",
+        "--pids-limit=128",
+        "-v",
+        f"{state}:/data:rw",
+        "-v",
+        f"{dummy}:/data/auth.key:ro",
+        "-v",
+        f"{audit}:/audit:rw",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "-e",
+        "VPS_ADMIN_AUDIT_LOG=/audit/audit.jsonl",
+        "-e",
+        "VPS_ADMIN_ACTOR=owner",
+        "-e",
+        f"VPS_ADMIN_SESSION={session}",
+    ]
+    if env == "prod":
+        command += ["-e", "VPS_ADMIN_MAINTENANCE=1" if args.maintenance else "VPS_ADMIN_MAINTENANCE=0"]
+    elif args.maintenance:
+        command += ["-e", "VPS_ADMIN_MAINTENANCE=1"]
+    command += [
+        "-p",
+        f"127.0.0.1:{port}:8001",
+        args.image,
+        "datasette",
+        "serve",
+        f"/data/{DB_NAME}",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8001",
+        "--plugins-dir",
+        "/app/plugins",
+        "--config",
+        "/app/datasette.yaml",
+        "--setting",
+        "allow_download",
+        "off",
+        "--secret",
+        secret,
+        "--root",
+    ]
+    result = run(command, capture_output=True)
+    if result.returncode != 0:
+        die(f"could not start editor: {result.stderr.strip()}")
+    url = wait_for_url(port, name)
+    print(f"Editor {env} listo.")
+    print(f"Túnel: ssh -N -L {port}:127.0.0.1:{port} <usuario>@<vps>")
+    print(f"Abrir en Mac: {url}")
+    if env == "prod":
+        print("PROD: app detenida; cierra este editor antes de reanudar MyFinanzas.")
+    if args.maintenance:
+        print("Perfil mantenimiento: tablas protegidas permitidas; auditoría solo INSERT.")
+
+
+def stop(args) -> None:
+    name = CONTAINER.format(env=args.environment)
+    result = run(["podman", "stop", name], capture_output=True)
+    if result.returncode != 0:
+        die(f"could not stop {name}: {result.stderr.strip()}")
+    try:
+        (runtime_directory(args.environment) / "auth.key").unlink(missing_ok=True)
+    except OSError:
+        pass
+    print(f"Editor {args.environment} detenido.")
+
+
+def status(args) -> None:
+    name = CONTAINER.format(env=args.environment)
+    result = run(["podman", "ps", "--filter", f"name={name}", "--format", "{{.Names}} {{.Status}} {{.Ports}}"], capture_output=True)
+    if result.returncode != 0:
+        die(result.stderr.strip())
+    print(result.stdout.strip() or f"{name} no está en ejecución")
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Private Datasette SQLite admin")
+    sub = parser.add_subparsers(dest="command", required=True)
+    start_parser = sub.add_parser("start")
+    start_parser.add_argument("environment", choices=sorted(PORTS))
+    start_parser.add_argument("--state", required=True, help="real state directory")
+    start_parser.add_argument("--port", type=int, default=None)
+    start_parser.add_argument("--image", default=IMAGE_DEFAULT)
+    start_parser.add_argument("--audit-dir")
+    start_parser.add_argument("--maintenance", action="store_true", help="allow protected DML (except schema/audit)")
+    start_parser.add_argument("--backup-cmd", help="verified age backup command; required for PROD")
+    start_parser.add_argument("--writer-stopped", action="store_true", help="confirm app/writer is stopped (PROD)")
+    start_parser.set_defaults(func=start)
+    for name, function in (("stop", stop), ("status", status)):
+        item = sub.add_parser(name)
+        item.add_argument("environment", choices=sorted(PORTS))
+        item.set_defaults(func=function)
+    args = parser.parse_args(argv)
+    if args.command == "start":
+        args.port = args.port or PORTS[args.environment]
+        if args.port < 1024 or args.port > 65535:
+            parser.error("port must be between 1024 and 65535")
+    return args
+
+
+def main(argv=None) -> int:
+    os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    os.environ.setdefault("HOME", pwd.getpwuid(os.getuid()).pw_dir)
+    try:
+        os.chdir(Path.home())
+    except OSError:
+        os.chdir("/tmp")
+    args = parse_args(argv)
+    try:
+        args.func(args)
+        return 0
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

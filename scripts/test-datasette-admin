@@ -80,6 +80,8 @@ class PolicyTests(unittest.TestCase):
         self.assertDenied("ATTACH DATABASE '/tmp/side.db' AS side")
         self.assertDenied("PRAGMA foreign_keys=OFF")
         self.assertDenied("PRAGMA journal_mode=DELETE")
+        self.assertDenied("PRAGMA page_size=8192")
+        self.db.execute("PRAGMA table_info(movimientos)")
 
     def test_pragmas_are_set(self):
         self.db.execute("PRAGMA foreign_keys=ON")

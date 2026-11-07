@@ -176,13 +176,15 @@ def make_authorizer(maintenance: bool):
                 return sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_PRAGMA:
             name = str(arg1).lower()
-            if arg2 in (None, ""):
+            if name == "journal_mode":
                 return (
                     sqlite3.SQLITE_OK
-                    if name in SAFE_PRAGMAS
+                    if arg2 in (None, "")
                     else sqlite3.SQLITE_DENY
                 )
             if name in {"foreign_keys", "recursive_triggers"}:
+                if arg2 in (None, ""):
+                    return sqlite3.SQLITE_OK
                 return (
                     sqlite3.SQLITE_OK
                     if arg2 in (1, "1", "on", "ON", True)
@@ -191,6 +193,8 @@ def make_authorizer(maintenance: bool):
             if name == "busy_timeout":
                 return sqlite3.SQLITE_OK
             if name == "synchronous":
+                if arg2 in (None, ""):
+                    return sqlite3.SQLITE_OK
                 return (
                     sqlite3.SQLITE_OK
                     if arg2 in (2, "2", "FULL", "full")
@@ -198,7 +202,11 @@ def make_authorizer(maintenance: bool):
                 )
             if name in DANGEROUS_PRAGMAS:
                 return sqlite3.SQLITE_DENY
-            return sqlite3.SQLITE_OK
+            return (
+                sqlite3.SQLITE_OK
+                if name in SAFE_PRAGMAS
+                else sqlite3.SQLITE_DENY
+            )
         if action == sqlite3.SQLITE_FUNCTION and str(arg2).lower() in DANGEROUS_FUNCTIONS:
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK

@@ -21,6 +21,10 @@ PORTS = {"test": 18083, "prod": 18084}
 CONTAINER = "vps-datasette-admin-{env}"
 IMAGE_DEFAULT = "localhost/vps-datasette-admin:latest"
 DB_NAME = "database.sqlite"
+ENVIRONMENTS = {
+    "test": {"user": "mftest", "state": "/srv/myfinanzas-test/data"},
+    "prod": {"user": "mfprod", "state": "/srv/myfinanzas-prod/data"},
+}
 APP_UID = 10001
 APP_CLI = "apps/api/src/backup-cli.ts"
 
@@ -59,6 +63,61 @@ def check_private_path(path: Path, mode: int, uid: int, label: str) -> None:
         die(f"{label} must be a directory")
     if not label.endswith("directory") and not path.is_file():
         die(f"{label} must be a regular file")
+
+
+def reject_symlink_components(
+    path: Path, label: str, stop: Path | None = None
+) -> None:
+    if not path.is_absolute():
+        die(f"{label} must be an absolute path")
+    if ".." in path.parts:
+        die(f"{label} must not contain '..'")
+    stop = stop or Path("/")
+    current = path
+    while current != stop and current != current.parent:
+        if current.is_symlink():
+            die(f"{label} must not contain symlinks below {stop}: {current}")
+        current = current.parent
+
+
+def bind_environment(
+    environment: str,
+    state: Path,
+    *,
+    uid: int | None = None,
+    username: str | None = None,
+    expected: dict | None = None,
+) -> Path:
+    """Bind an environment to its authorized UID and canonical state path."""
+    expected = expected or ENVIRONMENTS[environment]
+    uid = os.getuid() if uid is None else uid
+    username = (
+        pwd.getpwuid(uid).pw_name if username is None else username
+    )
+    try:
+        expected_user = pwd.getpwnam(expected["user"])
+    except KeyError:
+        die(f"authorized user does not exist: {expected['user']}")
+    if uid == 0 or uid != expected_user.pw_uid or username != expected_user.pw_name:
+        die(
+            f"{environment} must run as {expected['user']}, "
+            f"not {username} (uid {uid})"
+        )
+    expected_state = Path(expected["state"])
+    stop = expected_state.parent.parent
+    reject_symlink_components(expected_state, "authorized state path", stop=stop)
+    reject_symlink_components(state, "state path", stop=stop)
+    try:
+        resolved = state.resolve(strict=True)
+        expected_resolved = expected_state.resolve(strict=True)
+    except OSError as error:
+        die(f"state path cannot be resolved: {error}")
+    if resolved != expected_resolved:
+        die(
+            f"{environment} state path {resolved} is not the authorized "
+            f"{expected_resolved}"
+        )
+    return resolved
 
 
 def check_state(state: Path) -> None:
@@ -335,7 +394,7 @@ def check_health(name: str, read_only: bool, port: int) -> None:
 
 def start(args) -> None:
     env = args.environment
-    state = Path(args.state).expanduser().resolve()
+    state = bind_environment(env, Path(args.state).expanduser())
     if not podman_rootless():
         die("rootless Podman is required")
     check_state(state)

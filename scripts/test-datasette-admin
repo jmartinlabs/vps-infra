@@ -7,6 +7,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import pwd
 import sqlite3
 import subprocess
 import sys
@@ -188,6 +189,95 @@ class WrapperTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 wrapper.backup_and_verify("prod", args, state)
+
+
+class EnvironmentBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.state = self.root / "state"
+        self.state.mkdir(mode=0o700)
+        self.other = self.root / "other"
+        self.other.mkdir(mode=0o700)
+        self.user = pwd.getpwuid(os.getuid())
+        self.expected = {"user": self.user.pw_name, "state": str(self.state)}
+
+    def test_authorized_binding(self):
+        self.assertEqual(
+            wrapper.bind_environment(
+                "test",
+                self.state,
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected=self.expected,
+            ),
+            self.state.resolve(),
+        )
+
+    def test_rejects_wrong_environment_path_and_identity(self):
+        cases = (
+            ("prod", self.other, self.user.pw_uid, self.user.pw_name, self.expected),
+            ("test", self.state, self.user.pw_uid, "not-the-user", self.expected),
+            ("test", self.state, self.user.pw_uid + 1, self.user.pw_name, self.expected),
+            ("test", self.state, 0, "root", self.expected),
+            (
+                "test",
+                self.state,
+                self.user.pw_uid,
+                self.user.pw_name,
+                {"user": "definitely-missing", "state": str(self.state)},
+            ),
+        )
+        for env, state, uid, username, expected in cases:
+            with self.assertRaises(SystemExit):
+                wrapper.bind_environment(
+                    env,
+                    state,
+                    uid=uid,
+                    username=username,
+                    expected=expected,
+                )
+
+    def test_rejects_symlinks_and_dotdot(self):
+        link = self.root / "link"
+        link.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            wrapper.bind_environment(
+                "test",
+                link,
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected=self.expected,
+            )
+        nested = self.root / "parent"
+        nested.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            wrapper.bind_environment(
+                "test",
+                nested / "child",
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected=self.expected,
+            )
+        with self.assertRaises(SystemExit):
+            wrapper.bind_environment(
+                "test",
+                self.state / ".." / "state",
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected=self.expected,
+            )
+        expected_link = self.root / "expected-link"
+        expected_link.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            wrapper.bind_environment(
+                "test",
+                self.state,
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected={"user": self.user.pw_name, "state": str(expected_link)},
+            )
 
 
 class PolicyTests(unittest.TestCase):

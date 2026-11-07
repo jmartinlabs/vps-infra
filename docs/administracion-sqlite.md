@@ -53,6 +53,37 @@ permanecer parcheada.
 El wrapper debe ejecutarse como el UID de la aplicación, no como root. El puerto
 solo escucha en loopback; el túnel es la única entrada desde Mac.
 
+La vinculación es estricta:
+
+- `test` solo se acepta como usuario `mftest` y estado
+  `/srv/myfinanzas-test/data`.
+- `prod` solo se acepta como usuario `mfprod` y estado
+  `/srv/myfinanzas-prod/data`.
+- Se rechazan rutas relativas, `..`, componentes symlink, rutas equivalentes por
+  symlink y cualquier combinación entorno/UID/ruta distinta. Si los directorios
+  reales del VPS cambian, debe revisarse `ENVIRONMENTS` en el wrapper como un
+  cambio explícito.
+
+## Transacciones y correcciones multi-sentencia
+
+El editor acepta una sola sentencia atómica. `BEGIN`, `COMMIT`, `SAVEPOINT` y los
+scripts de varias sentencias se rechazan: no se puede ejecutar un lote SQL
+arbitrario desde la web ni desde los callbacks.
+
+Para una corrección que requiera varias operaciones indivisibles:
+
+1. Preferir una sola sentencia (`UPSERT`, `INSERT ... SELECT`, `UPDATE` con
+   `CASE`) o un trigger/migración gestionado por la aplicación.
+2. Si no es posible, usar la CLI/migración de MyFinanzas con backup verificado y
+   ventana de escritor único, no el editor Datasette.
+
+Propuesta mínima futura, **no implementada**: una CLI `vps-admin-batch` que reciba
+un fichero SQL revisado, valide cada sentencia con la misma política, ejecute en
+`BEGIN IMMEDIATE` con savepoints, audite cada operación y haga rollback completo
+ante error; solo en mantenimiento, con escritor parado, backup verificado y
+autorización expresa. No se debe ampliar el endpoint web para aceptar SQL
+multi-sentencia.
+
 ### TEST de escritura
 
 ```bash
@@ -151,6 +182,18 @@ scripts/datasette-admin stop prod
 - El backup/restore real y la validación de identidad dependen de la imagen y la
   CLI de MyFinanzas; se prueban de forma aislada y se delegan a su agente.
 
+## Evidencia local aislada
+
+- TEST: cliente Mac → túnel SSH al host → Datasette → UPDATE directo → lectura
+  posterior con el UID de la app sobre la DB sintética.
+- Lectura PROD: estado en `:ro` con un escritor externo y WAL vivo; Datasette ve
+  la fila confirmada y rechaza escrituras, sin backup ni parada.
+- Recuperación sintética: snapshot `VACUUM INTO` en directorio nuevo, modificación
+  posterior, restore a otro directorio nuevo y comprobación de fila/`auth.key`.
+  No sustituye al backup age/CLI real de MyFinanzas.
+- Backup/restore real con la imagen y CLI de MyFinanzas: **PENDIENTE**, delegado
+  a su agente; no se declara PASS.
+
 ## Pruebas
 
 ```bash
@@ -159,10 +202,11 @@ python3 -m pip install 'datasette==1.0a41'
 ./scripts/test-datasette-admin-integration
 ```
 
-La primera suite (**31 pruebas**) cubre autorizador, parser string-aware, dos
-perfiles, solo lectura con WAL vivo, auditoría append-only/fail-closed y
-resultado, PRAGMAs, DDL/ATTACH, schema/origin, tablas desconocidas, la matriz v27
-completa (108 tablas; 72 protegidas y 36 de negocio) contrastada con
+La primera suite (**34 pruebas**) cubre vinculación entorno/UID/ruta/symlinks,
+autorizador, parser string-aware, dos perfiles, solo lectura con WAL vivo,
+auditoría append-only/fail-closed y resultado, PRAGMAs, DDL/ATTACH,
+schema/origin, tablas desconocidas, la matriz v27 completa (108 tablas; 72
+protegidas y 36 de negocio) contrastada con
 `infra/datasette-admin/v27_tables.json`, el esquema y los 176 triggers reales de
 `v27_schema.sql`, AUTOINCREMENT, triggers de negocio y enmascarado. La segunda
 (**12 pruebas**) importa el plugin real en Datasette 1.0a41 y comprueba

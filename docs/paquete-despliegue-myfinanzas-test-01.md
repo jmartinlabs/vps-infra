@@ -5,8 +5,9 @@ Estado: **DRAFT — no autorizado y no ejecutado.**
 Base: `vps-infra` `main` `c1f9f59`; Fase 2 de aprovisionamiento `PASS` (2A+2B).
 Referencias: [spec host 02](../specs/02-infra-test-01-host-specification.md),
 [test plan](../specs/02-infra-test-01-host-testplan.md),
-[evidencia 2A](evidencia-infra-test-02a.md) y
-[evidencia 2B](evidencia-infra-test-02b.md).
+[evidencia 2A](evidencia-infra-test-02a.md),
+[evidencia 2B](evidencia-infra-test-02b.md) y
+[preparación DNS/Caddy](preparacion-dns-caddy-test-01.md).
 
 ## 1. Objetivo
 
@@ -45,8 +46,9 @@ unidad, smoke y copia local**, no la creación de otro host ni PROD.
    SPEC34/testplan deben dejar de declarar v24/C25.
 5. **Seed test-only `FT-1` v27**: `seed init/apply/verify`, `test-instance.json`,
    `seed-manifest.json`, checksums e imagen/artefacto efímero. Sin datos reales.
-6. **Confirmación de la ruta canónica** `/srv/myfinanzas-test/data/state` para DB y
-   `auth.key`, con `data` montado en `/var/lib/myfinanzas`.
+6. **Ruta canónica confirmada a nivel de contrato:** `/srv/myfinanzas-test/data/state` para
+   DB y `auth.key`, con `data` montado en `/var/lib/myfinanzas`. `state/` sigue ausente y
+   PR #22 permanece pendiente de autorización de merge.
 7. **Plan de backup TEST**: inclusión de `test-instance.json`/manifiesto, revocación de
    sesiones y destino externo con custodia `age` (puede ser una autorización posterior).
 8. **Smoke esperado**: `/api/health` `200`, ruta protegida `401`, `FT-1` visible con MFA y
@@ -88,7 +90,8 @@ Orden obligatorio:
 8. Publicar el frontend y `current` de forma atómica; recargar Caddy solo al final.
 9. Smoke: loopback, HTTPS, `401`, `FT-1`, ausencia de `3001`, apex intacto.
 - **Bloqueos:** release/seed no disponibles, SHA/Rootless no confirmados, contrato v27
-  pendiente y `data/state` sin confirmar.
+  pendiente. La ruta `data/state` está confirmada a nivel de contrato, pero el estado aún no
+  existe y el despliegue no está autorizado.
 
 ### Gate 6 — copia y cierre
 
@@ -139,7 +142,7 @@ resultado `success` no acredita GitHub, QA, Rootless ni el VPS reales.
 | D2 | Seed `FT-1` v27 no disponible | Gate 5 bloqueado |
 | D3 | Contrato SPEC34/testplan sigue v24/C25 | Compatibilidad de esquema no declarada |
 | D4 | Rootless no ejecutado sobre el SHA elegido | Gate 5 bloqueado |
-| D5 | `data/state` sin confirmación de MyFinanzas | Ruta de estado no cerrada |
+| D5 | Ruta `data/state` confirmada a nivel de contrato; `state/` aún ausente y PR #22 sin merge | Ruta cerrada; despliegue y panel pendientes |
 | D6 | DNS `test` NXDOMAIN y sin autorización | Gate 3 bloqueado |
 | D7 | Caddy TEST sin preparar ni autorizar | Gate 4 bloqueado |
 | D8 | Unidad Quadlet real y reboot no probados | Persistencia no acreditada |
@@ -166,9 +169,26 @@ No se usa `reset-failed`, `chmod`/`chown`, `:U`, borrado de estado ni reintento 
 
 ## 9. Siguiente acción
 
-1. MyFinanzas responde con SHA, release, Rootless, contrato v27, seed `FT-1` y ruta
-   `data/state`.
+1. MyFinanzas responde con SHA congelado, release, Rootless sobre ese SHA, contrato v27 y
+   seed `FT-1`. La ruta `data/state` ya está confirmada a nivel de contrato.
 2. Revisar y aprobar el packet; generar `deploy-request.v1` cuando existan los artefactos.
 3. Autorizar DNS y Caddy por separado.
 4. Autorizar el despliegue TEST y el seed solo después de que el gate local esté en PASS.
 5. Mantener PROD, datos reales y apertura de puertos fuera de alcance.
+
+## 10. Prueba de reboot — separada
+
+El reboot real no forma parte del despliegue ni se ejecuta sin una autorización específica.
+
+- **Precondición:** unidad activa, seed verificado, smoke PASS y copia de línea base
+  verificada; ventana acordada con el usuario.
+- **Alcance:** reiniciar el VPS una sola vez y comprobar que `linger`, `systemd --user`,
+  Quadlet, Podman rootless, `127.0.0.1:18082`, health, `401` y el sitio raíz siguen
+  funcionando.
+- **Evidencia:** hora, motivo, servicios antes/después, estado de la unidad, puertos,
+  health y comparación del apex.
+- **Rollback:** si la unidad no arranca, detener, preservar logs y aplicar el procedimiento
+  de recuperación autorizado; no reintentar a ciegas.
+- **Autorización:** independiente del despliegue y del backup externo.
+
+No se reinicia el VPS en esta fase.

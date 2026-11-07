@@ -24,6 +24,7 @@ Test plan: [02 — test plan](02-infra-test-01-host-testplan.md).
 Evidencia Fase 2A: [02A — identidad rootless](../docs/evidencia-infra-test-02a.md).
 Evidencia Fase 2B: [02B — rutas y permisos](../docs/evidencia-infra-test-02b.md).
 Paquete de despliegue: [MyFinanzas TEST](../docs/paquete-despliegue-myfinanzas-test-01.md).
+Preparación DNS/Caddy: [fase 3/4 documental](../docs/preparacion-dns-caddy-test-01.md).
 
 
 Las marcas `[CONFIRMADO]`, `[INFORMADO]`, `[PROPUESTA]` y `[PENDIENTE]` distinguen hechos
@@ -127,9 +128,12 @@ y la delegación cgroup están verificados a nivel de configuración, pero **no 
 una unidad real ni persistencia tras reboot**. `mftest` y las rutas base se resolvieron en
 2A/2B; DNS `test`, backups externos, release/seed, estado y despliegue siguen pendientes.
 
-`[PENDIENTE]` La ruta de estado `/srv/myfinanzas-test/data/state` es la asumida por esta spec
-y el preflight; MyFinanzas debe confirmarla antes de la fase 5. La corrección del wrapper
-Datasette se revisa en PR #22; no se instala ni se despliega desde esta spec.
+`[CONFIRMADO]` La ruta de estado `/srv/myfinanzas-test/data/state` está confirmada a nivel
+de contrato físico/documental por MyFinanzas: el data root `/srv/myfinanzas-test/data` se
+monta en `/var/lib/myfinanzas`, con DB y `auth.key` en `state/`. Es coherente con PR #22 y
+con `infra/RUNBOOK.md` de la app. **No implica que `state/` exista ya en el VPS ni autoriza
+despliegue.** La ruta específica de PROD sigue pendiente. La corrección del wrapper Datasette
+se revisa en PR #22; no se instala ni se despliega desde esta spec.
 
 ### 2.2 Fase 2A ejecutada — 2026-11-07
 
@@ -227,7 +231,7 @@ TEST ni creó usuarios o rutas.
 | `release_ref` | `myfinanzas-app/main` (TEST y PROD futuro); release distinta por SHA | `[PROPUESTA]` Sin rama `test`; el host no gestiona ramas. |
 | `release_sha` | SHA de 40 caracteres seleccionado y registrado | `[PROPUESTA]` Se registra cuando exista release; inmutable y verificado por manifiesto. |
 | `seed_image` | ID inmutable propio, solo tareas efímeras | `[PROPUESTA]` SPEC34 §4.2. |
-| `schema_contract` | Declarado por el manifiesto de la release; el código actual declara v27 (`C27-E411-FOTOS-PERIODO`) | `[PENDIENTE]` El host no fija el esquema; el manifiesto de release debe declararlo. |
+| `schema_contract` | Declarado por el manifiesto de la release; el código actual declara `schemaVersion=27`; contract ID pendiente | `[PENDIENTE]` El host no fija el esquema; el manifiesto de release debe declarar el contrato exacto. |
 | `resources` | 1 GiB RAM, 1 CPU, 128 pids, tmpfs 64 MiB | `[CONFIRMADO]` SPEC34 y RUNBOOK. |
 | `host_capacity` | 2 vCPU, 3,8 GiB RAM, 35 GB libres, inodos 3 % | `[CONFIRMADO]` Auditoría; sin prueba de carga. |
 | `disk_budget` | ≤ 5 GB para TEST; ≥ 20 % libre y ≥ 10 % de inodos | `[PROPUESTA]` 35 GB libres y 3 % de inodos medidos; confirmar en fase 2. |
@@ -320,7 +324,7 @@ Aquí solo se resume lo que el host consume:
 | `release_ref` | `myfinanzas-app/main` para TEST y PROD futuro | Sin rama `test`; release distinta por SHA. |
 | `release_sha` | SHA de 40 caracteres del candidato seleccionado | Se registra cuando exista release; no se infiere de una etiqueta. |
 | `seed_image` | ID inmutable propio; solo tareas efímeras | SPEC34 §4.2. |
-| `schema_contract` | Declarado por el manifiesto; el código actual declara v27 (`C27-E411-FOTOS-PERIODO`) | Se verifica por release; el manifiesto debe declararlo; no se fija permanentemente en el host. |
+| `schema_contract` | Declarado por el manifiesto; el código actual declara `schemaVersion=27`; contract ID pendiente | Se verifica por release; el manifiesto debe declarar el contrato exacto; no se fija permanentemente en el host. |
 | `resources` | 1 GiB, 1 CPU, 128 pids, tmpfs 64 MiB | SPEC34. |
 | `backup` | CLI de la misma imagen/UID, `age`, montaje separado; restore a destino nuevo | SPEC34 §3.5. |
 | `rollback` | Solo al par exacto con prueba; si no, bloqueo y preservación | SPEC34. |

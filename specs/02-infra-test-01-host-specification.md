@@ -1,8 +1,8 @@
 # 02 — INFRA-TEST-01-HOST: host del entorno TEST de MyFinanzas — Specification
 
-Status: **DRAFT — reconciliada con auditoría (2026-11-05), Caddy 2.11.9 y preflight de
-solo lectura (2026-11-07); pendiente de aprobación.** No autoriza DEV, acceso al VPS, DNS,
-Caddy, UFW, Podman/Quadlet, despliegue, datos reales ni merge.
+Status: **DRAFT — reconciliada con auditoría (2026-11-05), Caddy 2.11.9, preflight de
+solo lectura y Fase 2A (2026-11-07); pendiente de aprobación.** No autoriza DEV, nuevas
+fases, DNS, Caddy, UFW, Podman/Quadlet, despliegue, datos reales ni merge.
 Approval source/date: PENDING
 Context and brainstorming: packet de coordinación `INFRA-TEST-01-HOST` (2026-11-04); sin
 brainstorming separado.
@@ -21,13 +21,14 @@ una sola `main`.
 Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-infra/pull/7)
 (CLOSED, no mergeado); no es contrato vigente ni autorización.
 Test plan: [02 — test plan](02-infra-test-01-host-testplan.md).
+Evidencia Fase 2A: [02A — identidad rootless](../docs/evidencia-infra-test-02a.md).
 
 
 Las marcas `[CONFIRMADO]`, `[INFORMADO]`, `[PROPUESTA]` y `[PENDIENTE]` distinguen hechos
 comprobados en repositorios o por consulta de solo lectura, información recibida no
 verificada, diseño sometido a aprobación y cuestiones sin decisión. Ninguna marca convierte
-una propuesta en autorización. **Esta spec no afirma que el VPS tenga ya ninguno de los
-elementos descritos.**
+una propuesta en autorización. **Esta spec distingue lo verificado de lo propuesto y no
+convierte una comprobación en autorización.**
 
 ## 1. Objetivo y alcance
 
@@ -128,6 +129,29 @@ y release/seed siguen pendientes.
 y el preflight; MyFinanzas debe confirmarla antes de la fase 5. La corrección del wrapper
 Datasette se revisa en PR #22; no se instala ni se despliega desde esta spec.
 
+### 2.2 Fase 2A ejecutada — 2026-11-07
+
+`[CONFIRMADO]` Fase 2A completada con **PASS** por el usuario en sesión SSH interactiva con
+`sudo` normal. Evidencia: [02A](../docs/evidencia-infra-test-02a.md).
+
+| Comprobación | Resultado |
+| --- | --- |
+| Identidad | `mftest` UID/GID `1002:1002`, usuario y grupo existentes; no se reutiliza `mfadmin`. |
+| Home y login | `~mftest` `0700` de `mftest:mftest`; shell `nologin`; contraseña bloqueada; sin `authorized_keys`. |
+| subuid/subgid | `231072:65536` en ambos ficheros; sin duplicados ni solapamiento. |
+| Linger | `Linger=yes`. |
+| systemd --user | `running`; `rc=0`. |
+| Podman / cgroup | `rootless=true`, `cgroup=systemd`, `Delegate=yes`, controladores `cpu memory pids`. |
+| Rutas y puertos | `/srv/myfinanzas-test`, `/var/www/myfinanzas-test` y `data/state` ausentes; `18082`/`3001` ausentes. |
+
+Consecuencias:
+
+- AC03 del test plan host pasa a `PASS`.
+- **2B no se ha ejecutado ni autorizado**: no se han creado las rutas de TEST.
+- La unidad Quadlet real y la persistencia tras reboot siguen sin probar; no se declaran
+  operativas.
+- No se ejecutó recuperación destructiva ni se repitieron las operaciones de 2A.
+
 ## 3. Frontera de responsabilidades
 
 | Elemento | Responsable | Límite |
@@ -161,8 +185,8 @@ TEST ni creó usuarios o rutas.
 | `public_host` | `test.myfinanzas.pp.ua` | `[CONFIRMADO]` Contrato del packet y SPEC34. |
 | `public_origin` | `https://test.myfinanzas.pp.ua` | `[CONFIRMADO]` SPEC34. |
 | `root_site` | `myfinanzas.pp.ua` | `[CONFIRMADO]` Debe permanecer intacto. |
-| `host_user` | `mftest`, sin login SSH ni contraseña, con `linger` | `[PROPUESTA]` Pendiente de aprobación y provisión; no existe todavía. |
-| `host_uid_gid` | Asignado por el host; se registra, no se fija aquí | `[PENDIENTE]` No inventar UID/GID. |
+| `host_user` | `mftest`, sin login SSH ni contraseña, con `linger` | `[CONFIRMADO]` Creado y verificado en Fase 2A (2026-11-07); ver [evidencia 02A](../docs/evidencia-infra-test-02a.md). |
+| `host_uid_gid` | `1002:1002` (asignado por el host; se registra) | `[CONFIRMADO]` Fase 2A; no se fija como regla de diseño. |
 | `container_uid_gid` | `10001:10001` con `keep-id:uid=10001,gid=10001` | `[CONFIRMADO]` SPEC34 y `Containerfile`. |
 | `unit_name` / `container_name` | `myfinanzas-test-api` | `[PROPUESTA]` |
 | `caddy_upstream` | `127.0.0.1:18082` | `[PROPUESTA]` SPEC34 lo deja pendiente de esta spec. |
@@ -703,7 +727,7 @@ acredita HTTPS, smoke y copias.
 | Flake SQLite **B3** | Sin reproducción Linux | Puede aparecer en el ensayo; no se oculta. |
 | VPS 2 vCPU / 3,8 GiB / 40 GB, 35 GB libres, inodos 3 % | `[CONFIRMADO]` auditoría | Presupuesto pequeño; límites y medición obligatorios. |
 | Quadlet y delegación cgroup | Delegación `cpu memory pids` y binario Quadlet verificados; unidad real y reboot no probados | H1/H5 parcialmente verificadas; la unidad bloquea fase 5. |
-| Acceso al host | Auditoría de solo lectura realizada; provisión y fases 2–8 no autorizadas | Fases 2–8 bloqueadas. |
+| Acceso al host | Auditoría de solo lectura y Fase 2A ejecutadas; 2B y fases 3–8 no autorizadas | 2B y fases 3–8 bloqueadas. |
 
 ### 10.2 Riesgos
 
@@ -734,9 +758,9 @@ acredita HTTPS, smoke y copias.
 
 | ID | Decisión | Recomendación | Estado tras revisión 2026-11-05 |
 | --- | --- | --- | --- |
-| H1 | Identidad | Usuario dedicado `mftest`, rootless, sin login SSH, con `linger`. | `[PROPUESTA]` Viable; exige verificar `subuid`/`subgid`, `linger` y `systemd --user`/Quadlet en Debian 13. |
+| H1 | Identidad | Usuario dedicado `mftest`, rootless, sin login SSH, con `linger`. | `[CONFIRMADO]` Fase 2A (2026-11-07): UID/GID 1002, subuid/subgid 231072:65536, linger y `systemd --user` operativos; Quadlet real y reboot pendientes. |
 | H2 | Exposición | Caddy → `127.0.0.1:18082` → `3001`; sin publicar API/DB/Vite. | `[PROPUESTA]` Compatible con Caddy 2.11.9 y UFW 22/80/443; no requiere puertos nuevos. |
-| H3 | Rutas | `/srv/myfinanzas-test/{data,releases,backups}` y `/var/www/myfinanzas-test/current`. | `[PROPUESTA]` Hay 35 GB libres; `/srv` aún no existe. No reutilizar backups de `mfadmin`. |
+| H3 | Rutas | `/srv/myfinanzas-test/{data,releases,backups}` y `/var/www/myfinanzas-test/current`. | `[PROPUESTA]` Hay 35 GB libres; `/srv` existe, pero las rutas TEST aún no se han creado (2B pendiente). No reutilizar backups de `mfadmin`. |
 | H4 | Seed | Consumir el artefacto test-only en orden `production-init → seed → setup`, con marcador/manifiesto y reset archivado. | `[CONFIRMADA]` SPEC34 D1–D5; bloqueada por la actualización del contrato en MyFinanzas y el artefacto de seed. |
 | H5 | Unidad | Unidad TEST propia de `vps-infra`; no reutilizar `runtime.py:render` de PROD. | `[CONFIRMADA]` D6; pendiente validar Quadlet/cgroup. |
 | H6 | Recuperación | Copia local+externa cifrada antes de habilitar Caddy; restore aislado en fase 7 antes de declarar TEST operativo. | `[PENDIENTE]` El destino externo y la custodia de `age` siguen sin aprobar; la copia de Caddy no cubre la app. |

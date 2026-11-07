@@ -132,50 +132,176 @@ def maintenance_enabled() -> bool:
     return os.environ.get("VPS_ADMIN_MAINTENANCE") == "1"
 
 
+def scan_sql(sql: str) -> str:
+    """Remove comments and replace single-quoted literals with ``?``.
+
+    The scan is string-aware, so ``--`` or ``/* */`` inside a literal does not
+    hide the rest of the statement. Double-quoted, backtick and bracket
+    identifiers are preserved so table references such as ``"audit"`` remain
+    visible to the policy.
+    """
+    output: list[str] = []
+    index = 0
+    length = len(sql)
+    while index < length:
+        char = sql[index]
+        following = sql[index + 1] if index + 1 < length else ""
+        if char == "'":
+            index += 1
+            while index < length:
+                if sql[index] == "'":
+                    if index + 1 < length and sql[index + 1] == "'":
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+            output.append("?")
+        elif char in {'"', "`"}:
+            quote = char
+            end = index + 1
+            while end < length:
+                if sql[end] == quote:
+                    if end + 1 < length and sql[end + 1] == quote:
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                end += 1
+            output.append(sql[index:end])
+            index = end
+        elif char == "[":
+            end = sql.find("]", index + 1)
+            if end == -1:
+                output.append(sql[index:])
+                break
+            output.append(sql[index : end + 1])
+            index = end + 1
+        elif char == "-" and following == "-":
+            end = sql.find("\n", index + 2)
+            index = length if end == -1 else end
+        elif char == "/" and following == "*":
+            end = sql.find("*/", index + 2)
+            index = length if end == -1 else end + 2
+        else:
+            output.append(char)
+            index += 1
+    return "".join(output)
+
+
 def strip_sql_comments(sql: str) -> str:
-    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
-    return re.sub(r"--[^\n]*", " ", sql)
+    return scan_sql(sql)
 
 
 def normalize_sql(sql: str) -> str:
-    sql = strip_sql_comments(sql)
-    sql = re.sub(r"'(?:''|[^'])*'", "?", sql)
+    sql = scan_sql(sql)
+    # Double quotes can behave as string literals in SQLite, so mask quoted
+    # identifiers and brackets as well before writing the audit record.
     sql = re.sub(r'"(?:""|[^"])*"', "?", sql)
+    sql = re.sub(r"`(?:``|[^`])*`", "?", sql)
+    sql = re.sub(r"\[[^\]]*\]", "?", sql)
     sql = re.sub(r"\b\d+(?:\.\d+)?\b", "?", sql)
     return re.sub(r"\s+", " ", sql).strip()
 
 
+def first_keyword(sql: str) -> str:
+    text = scan_sql(sql).strip()
+    match = re.match(r"([A-Za-z]+)", text)
+    return match.group(1).upper() if match else ""
+
+
+def write_operation(sql: str) -> str | None:
+    """Return the DML verb of a statement, including a CTE write."""
+    text = scan_sql(sql)
+    match = re.search(r"\b(INSERT|UPDATE|DELETE|REPLACE)\b", text, re.I)
+    return match.group(1).upper() if match else None
+
+
+def validate_read_sql(sql: str) -> None:
+    """Reject write operations before they reach a read connection."""
+    text = scan_sql(sql).strip()
+    verb = first_keyword(sql)
+    if not verb:
+        raise ValueError("empty or unclassifiable SQL")
+    if verb == "PRAGMA":
+        remainder = text[len(verb) :].strip()
+        if "=" in remainder:
+            raise ValueError("PRAGMA writes are not allowed")
+        return
+    if verb not in {"SELECT", "WITH", "EXPLAIN", "VALUES"}:
+        raise ValueError(f"read operation not allowed: {verb}")
+
+
 def validate_write_sql(sql: str) -> None:
     """Reject SQL that the authorizer alone cannot classify safely."""
-    text = strip_sql_comments(sql).strip()
-    match = re.match(r"([A-Za-z]+)", text)
-    if not match:
+    text = scan_sql(sql).strip()
+    verb = first_keyword(sql)
+    if not verb:
         raise ValueError("empty or unclassifiable SQL")
-    verb = match.group(1).upper()
     if verb in {
         "ALTER",
         "ANALYZE",
         "ATTACH",
+        "BEGIN",
+        "COMMIT",
         "CREATE",
         "DETACH",
         "DROP",
+        "END",
         "PRAGMA",
         "REINDEX",
+        "RELEASE",
+        "ROLLBACK",
+        "SAVEPOINT",
         "VACUUM",
     }:
         raise ValueError(f"SQL operation not allowed: {verb}")
     if verb == "WITH":
         raise ValueError("CTE writes are not supported")
+    if verb not in {"INSERT", "UPDATE", "DELETE", "REPLACE", "EXPLAIN"}:
+        raise ValueError(f"SQL operation not supported: {verb}")
     tokens = {token.lower() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)}
     if tokens & AUDIT:
-        if "replace" in tokens or "ON CONFLICT" in text.upper():
+        if verb in {"UPDATE", "DELETE"}:
+            raise ValueError("audit tables are append-only")
+        if "replace" in tokens or re.search(r"\bon\s+conflict\b", text, re.I):
             raise ValueError("audit tables are append-only")
 
 
+def validate_connection_sql(sql: str) -> None:
+    """Validation for callback writes that use a raw connection.
+
+    Allows read-only statements, transaction control and the two connection
+    setup PRAGMAs. Everything else goes through the write allowlist.
+    """
+    text = scan_sql(sql).strip()
+    verb = first_keyword(sql)
+    if not verb:
+        return
+    if verb in {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}:
+        return
+    if verb in {"SELECT", "VALUES", "EXPLAIN"}:
+        return
+    if verb == "PRAGMA":
+        setup = re.fullmatch(
+            r"PRAGMA\s+(?:foreign_keys|recursive_triggers)\s*=\s*(?:on|1)\s*;?",
+            text,
+            re.I,
+        )
+        timeout = re.fullmatch(
+            r"PRAGMA\s+busy_timeout\s*=\s*\d+\s*;?", text, re.I
+        )
+        if setup or timeout:
+            return
+        if "=" not in text:
+            return
+        raise ValueError("PRAGMA writes are not allowed")
+    validate_write_sql(sql)
+
+
 def log_write(database: str, sql: str, path: str | None = None) -> None:
-    text = strip_sql_comments(sql).strip()
-    operation = text.split(None, 1)[0].upper() if text else ""
-    if operation not in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
+    operation = write_operation(sql)
+    if operation is None:
         return
     destination = path or os.environ.get("VPS_ADMIN_AUDIT_LOG")
     if not destination:
@@ -186,12 +312,17 @@ def log_write(database: str, sql: str, path: str | None = None) -> None:
         "session": _session,
         "db": database,
         "op": operation,
-        "sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+        "sha256": hashlib.sha256(normalize_sql(sql).encode("utf-8")).hexdigest(),
         "sql": normalize_sql(sql),
     }
+    backup_ref = os.environ.get("VPS_ADMIN_BACKUP_REF")
+    if backup_ref:
+        record["backup"] = backup_ref
     with _lock:
         with open(destination, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def make_authorizer(maintenance: bool):
@@ -262,6 +393,26 @@ def make_authorizer(maintenance: bool):
     return authorizer
 
 
+def install_audit_triggers(conn: sqlite3.Connection) -> None:
+    for table in sorted(AUDIT):
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone():
+            continue
+        for suffix, action in (("update", "UPDATE"), ("delete", "DELETE")):
+            name = f"vps_audit_no_{suffix}_{table}"
+            if conn.execute(
+                "SELECT 1 FROM sqlite_temp_master WHERE type='trigger' AND name=?",
+                (name,),
+            ).fetchone():
+                continue
+            conn.execute(
+                f'CREATE TEMP TRIGGER "{name}" BEFORE {action} ON "{table}" '
+                "BEGIN SELECT RAISE(ABORT, 'audit append-only'); END"
+            )
+
+
 def install(
     conn: sqlite3.Connection,
     database: str,
@@ -280,8 +431,41 @@ def install(
     conn.execute("PRAGMA recursive_triggers=ON")
     conn.execute("PRAGMA busy_timeout=3000")
     conn.execute("PRAGMA synchronous=FULL")
+    install_audit_triggers(conn)
     conn.set_authorizer(make_authorizer(maintenance))
-    conn.set_trace_callback(lambda sql: log_write(database, sql, destination))
+    trace_state = {"sql": None, "changes": None}
+
+    def trace(sql: str) -> None:
+        operation = write_operation(sql)
+        if operation is None:
+            if first_keyword(sql) in {
+                "BEGIN",
+                "COMMIT",
+                "END",
+                "ROLLBACK",
+                "RELEASE",
+            }:
+                trace_state["sql"] = None
+                trace_state["changes"] = None
+            return
+        # SQLite 3.53 reports the authored statement once per trigger frame.
+        # The duplicates share the same total_changes counter; a new
+        # execution, including an identical statement, does not.
+        changes = conn.total_changes
+        if trace_state["sql"] == sql and trace_state["changes"] == changes:
+            return
+        trace_state["sql"] = sql
+        trace_state["changes"] = changes
+        try:
+            log_write(database, sql, destination)
+        except Exception:
+            # sqlite3 ignores exceptions raised by trace callbacks. Interrupt
+            # the statement as well so a failed audit write aborts the write
+            # instead of silently letting it through.
+            conn.interrupt()
+            raise
+
+    conn.set_trace_callback(trace)
 
 
 def is_sensitive(table: str, column: str) -> bool:

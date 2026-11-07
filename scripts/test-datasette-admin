@@ -2,6 +2,8 @@
 """Unit tests for the Datasette admin policy (no Datasette or Podman needed)."""
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import sqlite3
@@ -16,6 +18,30 @@ sys.path.insert(0, str(ROOT / "infra" / "datasette-admin"))
 os.environ.setdefault("VPS_ADMIN_ACTOR", "test-owner")
 os.environ.setdefault("VPS_ADMIN_SESSION", "test-session")
 import policy  # noqa: E402
+
+_loader = importlib.machinery.SourceFileLoader(
+    "datasette_admin_wrapper", str(ROOT / "scripts" / "datasette-admin")
+)
+_spec = importlib.util.spec_from_loader("datasette_admin_wrapper", _loader)
+wrapper = importlib.util.module_from_spec(_spec)
+_loader.exec_module(wrapper)
+
+
+class WrapperTests(unittest.TestCase):
+    def test_test_environment_does_not_require_backup(self):
+        wrapper.backup("test", None, None)
+
+    def test_prod_requires_backup_and_verification(self):
+        for command, verify in ((None, None), ("true", None), (None, "true")):
+            with self.assertRaises(SystemExit):
+                wrapper.backup("prod", command, verify)
+
+    def test_prod_backup_and_verification_must_both_succeed(self):
+        wrapper.backup("prod", "true", "true")
+        with self.assertRaises(SystemExit):
+            wrapper.backup("prod", "false", "true")
+        with self.assertRaises(SystemExit):
+            wrapper.backup("prod", "true", "false")
 
 
 class PolicyTests(unittest.TestCase):
@@ -82,6 +108,9 @@ class PolicyTests(unittest.TestCase):
         self.assertDenied("PRAGMA journal_mode=DELETE")
         self.assertDenied("PRAGMA page_size=8192")
         self.assertDenied("CREATE VIRTUAL TABLE vt USING fts5(content)")
+        self.assertDenied("VACUUM")
+        self.assertDenied("VACUUM INTO '/tmp/vacuum-copy.db'")
+        self.assertDenied("ANALYZE")
         self.db.execute("PRAGMA table_info(movimientos)")
         self.db.execute("PRAGMA schema_version")
 
@@ -103,9 +132,83 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy.validate_write_sql("INSERT OR REPLACE INTO audit(entidad) VALUES ('x')")
         with self.assertRaises(ValueError):
-            policy.validate_write_sql("WITH x AS (SELECT 1) INSERT INTO audit(entidad) VALUES ('x')")
+            policy.validate_write_sql('INSERT OR REPLACE INTO "audit"(entidad) VALUES ("x")')
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql(
+                "INSERT INTO audit(entidad) VALUES ('x') ON CONFLICT(id) DO UPDATE SET detalle='x'"
+            )
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql(
+                "WITH x AS (SELECT 1) INSERT INTO audit(entidad) VALUES ('x')"
+            )
         with self.assertRaises(ValueError):
             policy.validate_write_sql("VACUUM INTO '/tmp/x.db'")
+
+    def test_sql_scanner_is_string_aware(self):
+        self.assertEqual(
+            policy.normalize_sql(
+                "INSERT INTO movimientos(importe) VALUES ('a--b', 'replace') -- audit"
+            ),
+            "INSERT INTO movimientos(importe) VALUES (?, ?)",
+        )
+        # Literals containing SQL keywords must not cause false positives.
+        policy.validate_write_sql(
+            "INSERT INTO movimientos(importe) VALUES ('audit -- replace')"
+        )
+        policy.validate_write_sql(
+            "INSERT INTO movimientos(importe) VALUES ('x') /* audit replace */"
+        )
+        self.assertNotIn(
+            "secret-value",
+            policy.normalize_sql(
+                'INSERT INTO movimientos(importe) VALUES ("secret-value")'
+            ),
+        )
+        self.assertEqual(
+            policy.write_operation(
+                "WITH x AS (SELECT 1) INSERT INTO movimientos(importe) VALUES ('x')"
+            ),
+            "INSERT",
+        )
+        policy.validate_read_sql("SELECT 1 -- VACUUM")
+        policy.validate_read_sql("PRAGMA schema_version")
+        with self.assertRaises(ValueError):
+            policy.validate_read_sql("VACUUM")
+        with self.assertRaises(ValueError):
+            policy.validate_read_sql("PRAGMA journal_mode=WAL")
+
+    def test_repeated_identical_writes_are_audited(self):
+        self.install()
+        self.db.execute("INSERT INTO movimientos(importe) VALUES ('1.00')")
+        self.db.execute("INSERT INTO movimientos(importe) VALUES ('1.00')")
+        with open(self.audit, encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
+        authored = [r for r in records if "movimientos" in r["sql"]]
+        self.assertEqual(len(authored), 2, records)
+
+    def test_cte_write_is_audited(self):
+        self.install()
+        self.db.execute(
+            "WITH x AS (SELECT '5.00' AS importe) "
+            "INSERT INTO movimientos(importe) SELECT importe FROM x"
+        )
+        with open(self.audit, encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
+        self.assertTrue(any(record["op"] == "INSERT" for record in records))
+        self.assertTrue(any("WITH" in record["sql"] for record in records))
+
+    def test_audit_failure_aborts_write(self):
+        self.install()
+        os.chmod(self.audit, 0o400)
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                self.db.execute("INSERT INTO movimientos(importe) VALUES ('99.00')")
+        finally:
+            os.chmod(self.audit, 0o600)
+        self.assertEqual(
+            self.db.execute("SELECT count(*) FROM movimientos").fetchone()[0], 0
+        )
+
 
     def test_pragmas_are_set(self):
         self.db.execute("PRAGMA foreign_keys=ON")
@@ -133,6 +236,15 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(len(records[0]["sha256"]), 64)
         self.assertNotIn("987.65", json.dumps(records))
 
+    def test_audit_log_records_backup_reference(self):
+        os.environ["VPS_ADMIN_BACKUP_REF"] = "backup-2026-11-07"
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_BACKUP_REF", None)
+        self.install()
+        self.db.execute("INSERT INTO movimientos(importe) VALUES ('1.00')")
+        with open(self.audit, encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
+        self.assertEqual(records[0]["backup"], "backup-2026-11-07")
+
     def test_sensitive_columns_are_masked(self):
         self.assertTrue(policy.is_sensitive("owner", "password"))
         self.assertTrue(policy.is_sensitive("sessions", "csrf"))
@@ -140,6 +252,124 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(policy.masked("secret"), "••••")
         self.assertIsNone(policy.masked(None))
 
+
+class MatrixTests(unittest.TestCase):
+    """Regression coverage for the v27 allowlist and trigger interactions."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.data = json.loads(
+            (ROOT / "infra" / "datasette-admin" / "protected_tables.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.tables = sorted(
+            set(self.data["business"])
+            | set(self.data["app_only"])
+            | set(self.data["auth"])
+            | set(self.data["audit"])
+            | set(self.data["technical"])
+            | set(self.data["immutable"])
+        )
+        self.audit = str(Path(self.temp.name) / "audit.jsonl")
+        self.db_path = Path(self.temp.name) / "matrix.db"
+        connection = sqlite3.connect(self.db_path)
+        for table in self.tables:
+            autoincrement = " AUTOINCREMENT" if table == "movimientos" else ""
+            audit_columns = (
+                ", entidad TEXT, detalle TEXT"
+                if table in set(self.data["audit"])
+                else ""
+            )
+            connection.execute(
+                f'CREATE TABLE "{table}" '
+                f"(id INTEGER PRIMARY KEY{autoincrement}, valor TEXT{audit_columns})"
+            )
+        connection.execute(
+            """
+            CREATE TRIGGER mov_audit AFTER INSERT ON movimientos
+            BEGIN INSERT INTO audit(entidad, detalle)
+            VALUES ('movimientos', 'insert'); END
+            """
+        )
+        connection.execute("CREATE TABLE unknown_table(id INTEGER, valor TEXT)")
+        connection.commit()
+        connection.close()
+
+    def open(self, maintenance=False):
+        db = sqlite3.connect(self.db_path)
+        self.addCleanup(db.close)
+        policy.install(db, "matrix", maintenance=maintenance, audit_path=self.audit)
+        return db
+
+    def test_matrix_counts_and_classification(self):
+        total = len(self.tables)
+        protected = (
+            set(self.data["app_only"])
+            | set(self.data["auth"])
+            | set(self.data["audit"])
+            | set(self.data["technical"])
+            | set(self.data["immutable"])
+        )
+        self.assertEqual(total, 108)
+        self.assertEqual(len(protected), 72)
+        self.assertEqual(len(self.data["business"]), 36)
+        self.assertEqual(len(protected & set(self.data["business"])), 0)
+        self.assertIn("v27", self.data["source"])
+
+    def test_habitual_allowlist_across_all_tables(self):
+        db = self.open()
+        for table in self.data["business"]:
+            db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("business",))
+        for table in self.data["business"]:
+            db.execute(f'UPDATE "{table}" SET valor=? WHERE valor=?', ("changed", "business"))
+        for table in self.data["business"]:
+            db.execute(f'DELETE FROM "{table}" WHERE valor=?', ("changed",))
+        for table in set(self.data["app_only"]) | set(self.data["auth"]) | set(
+            self.data["audit"]
+        ) | set(self.data["technical"]) | set(self.data["immutable"]):
+            with self.assertRaises(sqlite3.DatabaseError, msg=table):
+                db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("blocked",))
+        with self.assertRaises(sqlite3.DatabaseError):
+            db.execute("INSERT INTO unknown_table(valor) VALUES ('blocked')")
+
+    def test_maintenance_profile_across_all_tables(self):
+        db = self.open(maintenance=True)
+        for table in set(self.data["auth"]) | set(self.data["technical"]) | set(
+            self.data["immutable"]
+        ):
+            db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("maintenance",))
+        for table in self.data["audit"]:
+            db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("append",))
+            with self.assertRaises(sqlite3.DatabaseError, msg=table):
+                db.execute(f'UPDATE "{table}" SET valor=? WHERE valor=?', ("x", "append"))
+            with self.assertRaises(sqlite3.DatabaseError, msg=table):
+                db.execute(f'DELETE FROM "{table}" WHERE valor=?', ("append",))
+        for table in self.data["app_only"]:
+            with self.assertRaises(sqlite3.DatabaseError, msg=table):
+                db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("blocked",))
+
+    def test_autoincrement_and_business_trigger_write_audit(self):
+        db = self.open()
+        db.execute('INSERT INTO movimientos(valor) VALUES (?)', ("10.00",))
+        row = db.execute(
+            "SELECT id, valor FROM movimientos ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row[0], 1)
+        self.assertEqual(
+            db.execute(
+                "SELECT count(*) FROM audit WHERE entidad='movimientos'"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertGreater(
+            db.execute(
+                "SELECT count(*) FROM sqlite_temp_master "
+                "WHERE type='trigger' AND name LIKE 'vps_audit_no_%'"
+            ).fetchone()[0],
+            0,
+        )
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Integration test for the Datasette plugin, without Podman or a VPS."""
+"""Integration tests for the Datasette plugin, without Podman or a VPS."""
 from __future__ import annotations
 
 import os
@@ -19,8 +19,8 @@ except ImportError as error:  # pragma: no cover - CI installs Datasette
     raise SystemExit(f"Datasette is required for this test: {error}")
 
 
-class PluginIntegrationTests(unittest.TestCase):
-    def setUp(self):
+class PluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.audit = Path(self.temp.name) / "audit.jsonl"
@@ -33,7 +33,10 @@ class PluginIntegrationTests(unittest.TestCase):
         connection.executescript(
             """
             PRAGMA journal_mode=WAL;
-            CREATE TABLE movimientos(id INTEGER PRIMARY KEY, importe TEXT);
+            CREATE TABLE movimientos(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                importe TEXT
+            );
             CREATE TABLE audit(id INTEGER PRIMARY KEY, entidad TEXT, detalle TEXT);
             CREATE TABLE owner(id INTEGER PRIMARY KEY, password TEXT, secret TEXT);
             CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
@@ -43,18 +46,29 @@ class PluginIntegrationTests(unittest.TestCase):
             """
         )
         connection.close()
-        self.datasette = Datasette([str(self.db_path)], plugins_dir=str(PLUGIN_DIR))
+        self.datasette = Datasette(
+            [str(self.db_path)],
+            plugins_dir=str(PLUGIN_DIR),
+            settings={"allow_download": False},
+        )
+        self.datasette.root_enabled = True
         self.database = self.datasette.get_database("poc")
 
-    def tearDown(self):
+    async def asyncTearDown(self):
         self.datasette.close()
 
-    def test_plugin_prepares_connections_and_authorizer(self):
+    async def test_plugin_prepares_connections_and_authorizer(self):
         connection = self.database.connect(write=True)
         try:
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             self.assertEqual(
                 connection.execute("PRAGMA recursive_triggers").fetchone()[0], 1
+            )
+            self.assertGreater(
+                connection.execute(
+                    "SELECT count(*) FROM sqlite_temp_master WHERE type='trigger'"
+                ).fetchone()[0],
+                0,
             )
             connection.execute("INSERT INTO movimientos(importe) VALUES ('10.00')")
             self.assertEqual(
@@ -69,7 +83,103 @@ class PluginIntegrationTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_maintenance_is_append_only_for_audit(self):
+    async def test_read_connection_is_prepared_and_read_only(self):
+        connection = self.database.connect()
+        try:
+            self.assertGreater(
+                connection.execute(
+                    "SELECT count(*) FROM sqlite_temp_master WHERE type='trigger'"
+                ).fetchone()[0],
+                0,
+            )
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("INSERT INTO movimientos(importe) VALUES ('ro')")
+        finally:
+            connection.close()
+
+    async def test_execute_write_guards_business_and_protected_tables(self):
+        await self.database.execute_write(
+            "INSERT INTO movimientos(importe) VALUES ('20.00')"
+        )
+        count = await self.database.execute("SELECT count(*) FROM audit")
+        self.assertEqual(count.first()[0], 1)
+        for sql in (
+            "INSERT INTO audit(entidad) VALUES ('x')",
+            "UPDATE audit SET detalle='x' WHERE id=1",
+            "DELETE FROM audit WHERE id=1",
+            "INSERT INTO schema_version(version) VALUES (28)",
+            "CREATE TABLE blocked(id INTEGER)",
+            "VACUUM",
+            "WITH x AS (SELECT 1) INSERT INTO movimientos(importe) VALUES ('x')",
+        ):
+            with self.assertRaises((ValueError, sqlite3.DatabaseError)):
+                await self.database.execute_write(sql)
+
+    async def test_other_write_entry_points_are_guarded(self):
+        with self.assertRaises(ValueError):
+            await self.database.execute_write_script(
+                "INSERT INTO movimientos(importe) VALUES ('x'); "
+                "INSERT INTO audit(entidad) VALUES ('y')"
+            )
+        await self.database.execute_write_many(
+            "INSERT INTO movimientos(importe) VALUES (?)", [("30.00",)]
+        )
+        with self.assertRaises(ValueError):
+            await self.database.execute_write_many("VACUUM", [()])
+        with self.assertRaises(ValueError):
+            await self.database.execute("VACUUM")
+
+    async def test_health_endpoint_reports_loaded_policy(self):
+        response = await self.datasette.client.get("/-/vps-admin-health")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["policy"], "loaded")
+        self.assertEqual(payload["foreign_keys"], 1)
+        self.assertEqual(payload["recursive_triggers"], 1)
+        self.assertGreater(payload["protected_tables"], 0)
+
+    async def test_http_execute_write_route(self):
+        response = await self.datasette.client.post(
+            "/poc/-/execute-write",
+            data={"sql": "INSERT INTO movimientos(importe) VALUES ('40.00')"},
+            actor={"id": "root"},
+        )
+        self.assertEqual(response.status_code, 200)
+        response = await self.datasette.client.post(
+            "/poc/-/execute-write",
+            data={"sql": "INSERT INTO audit(entidad) VALUES ('http')"},
+            actor={"id": "root"},
+        )
+        self.assertNotEqual(response.status_code, 200)
+        response = await self.datasette.client.post(
+            "/poc/-/execute-write",
+            data={"sql": "VACUUM"},
+            actor={"id": "root"},
+        )
+        self.assertNotEqual(response.status_code, 200)
+
+    async def test_structured_write_route_uses_guarded_connection(self):
+        response = await self.datasette.client.post(
+            "/poc/movimientos/-/insert",
+            json={"row": {"importe": "50.00"}},
+            actor={"id": "root"},
+        )
+        self.assertIn(response.status_code, (200, 201))
+        self.assertTrue(response.json().get("ok"))
+        payloads = {
+            "audit": {"id": 99, "entidad": "structured", "detalle": "x"},
+            "owner": {"id": 99, "password": "x"},
+            "schema_version": {"version": 99},
+        }
+        for table, payload in payloads.items():
+            response = await self.datasette.client.post(
+                f"/poc/{table}/-/insert",
+                json={"row": payload},
+                actor={"id": "root"},
+            )
+            self.assertFalse(response.json().get("ok"), table)
+
+    async def test_maintenance_is_append_only_for_audit(self):
         os.environ["VPS_ADMIN_MAINTENANCE"] = "1"
         connection = self.database.connect(write=True)
         try:

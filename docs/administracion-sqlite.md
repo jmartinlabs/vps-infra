@@ -22,9 +22,16 @@ Dos perfiles:
 | `--maintenance` | correcciones técnicas excepcionales | permitido en protegidas, salvo `schema_version`/`database_origin`; auditoría solo INSERT |
 
 Siempre denegados desde el visor: DDL, migraciones, `ATTACH`, `PRAGMA` peligroso,
-`VACUUM INTO`, `load_extension`, CTE de escritura, tablas no clasificadas y escritura
-de `schema_version`, `user_version`, `application_id` o `database_origin`.
-La auditoría es append-only: nunca UPDATE/DELETE ni `INSERT OR REPLACE`/upsert.
+`VACUUM INTO`, `load_extension`, CTE de escritura, scripts multi-sentencia, tablas
+no clasificadas y escritura de `schema_version`, `user_version`, `application_id`
+o `database_origin`. La auditoría es append-only: nunca UPDATE/DELETE ni
+`INSERT OR REPLACE`/upsert.
+
+El mismo filtro se aplica al editor SQL, a las rutas HTTP de escritura por filas y
+a las conexiones de escritura usadas por callbacks de Datasette. No se puede
+saltar la política usando una ruta distinta del formulario SQL. Si el log de
+auditoría no se puede escribir, la sentencia se interrumpe antes de confirmar el
+cambio.
 
 ## Construcción
 
@@ -56,12 +63,15 @@ Detener MyFinanzas, ejecutar un backup age verificado y arrancar el editor:
 sudo -u mfprod scripts/datasette-admin start prod \
   --state /srv/myfinanzas-prod/data \
   --writer-stopped \
-  --backup-cmd '/ruta/backup-cli create /ruta/backup-nuevo /ruta/recipient.age'
+  --backup-cmd '/ruta/backup-cli create /ruta/backup-nuevo /ruta/recipient.age' \
+  --backup-verify-cmd '/ruta/backup-cli verify-restore /ruta/backup-nuevo /ruta/restore-nuevo' \
+  --backup-ref '/ruta/backup-nuevo'
 ```
 
-El wrapper comprueba que el comando termina en 0, pero la verificación real del
-backup/restore es responsabilidad de la CLI de MyFinanzas. Si el backup falla, no
-se abre el editor.
+El segundo comando debe restaurar el backup a un destino **nuevo** y verificar
+que la copia es legible/consistente; el wrapper exige que ambos terminen en 0.
+Sustituir los ejemplos por la interfaz real de la CLI de MyFinanzas. Si el backup
+o su verificación fallan, no se abre el editor.
 
 ### Desde el Mac
 
@@ -79,6 +89,22 @@ app. Para una corrección técnica:
 sudo -u mfprod scripts/datasette-admin start prod ... --maintenance
 ```
 
+### Cierre y comprobación PROD
+
+1. Cerrar el editor antes de reanudar la app.
+2. Comprobar la base con el UID de la app:
+
+   ```bash
+   sudo -u mfprod sqlite3 /srv/myfinanzas-prod/data/database.sqlite \
+     'PRAGMA integrity_check; PRAGMA foreign_key_check;'
+   ```
+
+   `integrity_check` debe devolver `ok` y `foreign_key_check` no debe devolver
+   filas.
+3. Arrancar MyFinanzas y ejecutar el smoke habitual.
+4. Ante un incidente, restaurar el backup **solo a un destino nuevo**; no
+   sobrescribir la base original.
+
 ### Parada
 
 ```bash
@@ -95,6 +121,10 @@ scripts/datasette-admin stop prod
 - El SQL directo no ejecuta validaciones ni auditoría de dominio de MyFinanzas.
   No se promete que un UPDATE sea funcionalmente válido solo por pasar
   `integrity_check`.
+- El log privado registra actor, sesión, timestamp, operación, hash y forma del
+  SQL, y en PROD la referencia de backup. No registra valores literales ni el
+  resultado final de cada sentencia; los errores se muestran en la interfaz y en
+  los logs del contenedor.
 - `schema_version` y `database_origin` solo cambian por migración de la app.
 - En PROD se usa una ventana de escritor único: app detenida antes de editar y
   editor detenido antes de reanudar. No se asume concurrencia de writers.
@@ -109,8 +139,11 @@ python3 -m pip install 'datasette==1.0a41'
 ./scripts/test-datasette-admin-integration
 ```
 
-La primera suite cubre autorizador, dos perfiles, auditoría append-only, PRAGMAs,
-DDL/ATTACH, schema/origin, tablas desconocidas y enmascarado. La segunda importa
-el plugin real en Datasette 1.0a41 y comprueba `Database.connect()` y las rutas
-principales. Las pruebas de contenedor rootless, SSH y backup age se ejecutan en
-un entorno Linux aislado antes de desplegar.
+La primera suite cubre autorizador, parser string-aware, dos perfiles, auditoría
+append-only y fail-closed, PRAGMAs, DDL/ATTACH, schema/origin, tablas desconocidas,
+la matriz v27 completa (108 tablas; 72 protegidas y 36 de negocio), AUTOINCREMENT,
+triggers de negocio y enmascarado. La segunda importa el plugin real en Datasette
+1.0a41 y comprueba `Database.connect()`, `execute`, `execute_write`, escrituras
+por callback, health y las rutas HTTP principales. Las pruebas de contenedor
+rootless, SSH y backup age se ejecutan en un entorno Linux aislado antes de
+desplegar.

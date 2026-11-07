@@ -116,15 +116,24 @@ def container_exists(name: str) -> bool:
     return run(["podman", "container", "exists", name], capture_output=True).returncode == 0
 
 
-def backup(env: str, command: str | None) -> None:
+def backup(env: str, command: str | None, verify_command: str | None) -> None:
     if env != "prod":
         return
-    if not command:
-        die("PROD requires --backup-cmd with a verified age backup command")
+    if not command or not verify_command:
+        die(
+            "PROD requires --backup-cmd and --backup-verify-cmd; "
+            "verification must restore to a new destination and check integrity"
+        )
     result = run(shlex.split(command), capture_output=True)
     if result.returncode != 0:
         die(f"backup command failed; refusing to start PROD editor: {result.stderr.strip()}")
-    print("Backup command completed; verify the age backup before editing.")
+    verify = run(shlex.split(verify_command), capture_output=True)
+    if verify.returncode != 0:
+        die(
+            "backup verification failed; refusing to start PROD editor: "
+            f"{verify.stderr.strip()}"
+        )
+    print("Backup created and verified before opening the PROD editor.")
 
 
 def wait_for_url(port: int, name: str, timeout: float = 30.0) -> str:
@@ -176,7 +185,9 @@ def start(args) -> None:
     check_state(state)
     if env == "prod" and not args.writer_stopped:
         die("PROD requires --writer-stopped (stop MyFinanzas before editing)")
-    backup(env, args.backup_cmd)
+    if env == "prod" and not args.backup_ref:
+        die("PROD requires --backup-ref to identify the backup in the audit log")
+    backup(env, args.backup_cmd, args.backup_verify_cmd)
 
     name = CONTAINER.format(env=env)
     if container_exists(name):
@@ -231,7 +242,12 @@ def start(args) -> None:
         f"VPS_ADMIN_SESSION={session}",
     ]
     if env == "prod":
-        command += ["-e", "VPS_ADMIN_MAINTENANCE=1" if args.maintenance else "VPS_ADMIN_MAINTENANCE=0"]
+        command += [
+            "-e",
+            "VPS_ADMIN_MAINTENANCE=1" if args.maintenance else "VPS_ADMIN_MAINTENANCE=0",
+            "-e",
+            f"VPS_ADMIN_BACKUP_REF={args.backup_ref}",
+        ]
     elif args.maintenance:
         command += ["-e", "VPS_ADMIN_MAINTENANCE=1"]
     command += [
@@ -259,8 +275,13 @@ def start(args) -> None:
     result = run(command, capture_output=True)
     if result.returncode != 0:
         die(f"could not start editor: {result.stderr.strip()}")
-    url = wait_for_url(port, name)
-    check_health(name)
+    try:
+        url = wait_for_url(port, name)
+        check_health(name)
+    except SystemExit:
+        run(["podman", "stop", name], capture_output=True)
+        dummy.unlink(missing_ok=True)
+        raise
     print(f"Editor {env} listo.")
     print(f"Túnel: ssh -N -L {port}:127.0.0.1:{port} <usuario>@<vps>")
     print(f"Abrir en Mac: {url}")
@@ -300,7 +321,14 @@ def parse_args(argv=None):
     start_parser.add_argument("--image", default=IMAGE_DEFAULT)
     start_parser.add_argument("--audit-dir")
     start_parser.add_argument("--maintenance", action="store_true", help="allow protected DML (except schema/audit)")
-    start_parser.add_argument("--backup-cmd", help="verified age backup command; required for PROD")
+    start_parser.add_argument("--backup-cmd", help="age backup command; required for PROD")
+    start_parser.add_argument(
+        "--backup-verify-cmd",
+        help="restore-to-new-destination verification command; required for PROD",
+    )
+    start_parser.add_argument(
+        "--backup-ref", help="backup identifier recorded in the audit log; required for PROD"
+    )
     start_parser.add_argument("--writer-stopped", action="store_true", help="confirm app/writer is stopped (PROD)")
     start_parser.set_defaults(func=start)
     for name, function in (("stop", stop), ("status", status)):

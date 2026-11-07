@@ -95,6 +95,7 @@ async def _guarded_execute_write(self, sql, params=None, *args, **kwargs):
         try:
             policy.validate_write_sql(sql)
         except Exception as error:
+            policy.log_attempt(self.name, sql)
             policy.log_result(self.name, sql, "rejected", type(error).__name__)
             raise
     try:
@@ -113,6 +114,7 @@ async def _guarded_execute_write_many(self, sql, params_seq, *args, **kwargs):
         try:
             policy.validate_write_sql(sql)
         except Exception as error:
+            policy.log_attempt(self.name, sql)
             policy.log_result(self.name, sql, "rejected", type(error).__name__)
             raise
     try:
@@ -130,6 +132,7 @@ async def _guarded_execute_write_many(self, sql, params_seq, *args, **kwargs):
 
 async def _guarded_execute_write_script(self, sql, *args, **kwargs):
     if _is_app_database(self):
+        policy.log_attempt(self.name, sql)
         policy.log_result(self.name, sql, "rejected", "MultiStatement")
         raise ValueError("multi-statement writes are not supported")
     return await _ORIGINAL_EXECUTE_WRITE_SCRIPT(self, sql, *args, **kwargs)

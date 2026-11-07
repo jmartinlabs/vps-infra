@@ -134,14 +134,33 @@ def check_artifact_directory(path: Path, names: tuple[str, ...], label: str) -> 
 def check_writer_stopped(service: str) -> None:
     try:
         result = run(
-            ["systemctl", "--user", "show", service, "-p", "ActiveState", "--value"],
+            [
+                "systemctl",
+                "--user",
+                "show",
+                service,
+                "-p",
+                "LoadState",
+                "-p",
+                "ActiveState",
+            ],
             capture_output=True,
         )
     except OSError as error:
         die(f"cannot verify writer service {service}: {error}")
-    state = result.stdout.strip()
     if result.returncode != 0:
         die(f"cannot verify writer service {service}: {result.stderr.strip()}")
+    properties = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            properties[key] = value
+    if properties.get("LoadState") != "loaded":
+        die(
+            f"writer service {service} is not loaded "
+            f"({properties.get('LoadState', 'unknown')}); refusing to write"
+        )
+    state = properties.get("ActiveState", "unknown")
     if state not in {"inactive", "failed"}:
         die(f"writer service {service} is {state}; stop it before editing")
 
@@ -170,7 +189,7 @@ def app_podman_command(
         "--cpus=1",
         "--pids-limit=128",
         "--tmpfs",
-        "/tmp:rw,noexec,nosuid,nodev,tmpcopyup,mode=0711,size=64m",
+        "/tmp:rw,noexec,nosuid,nodev,tmpcopyup,mode=1777,size=64m",
     ]
     for volume in volumes:
         command += ["-v", volume]

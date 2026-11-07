@@ -124,6 +124,12 @@ class PluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await self.database.execute_write(
                 "INSERT INTO audit(entidad) VALUES ('http')"
             )
+        rejected_sql = (
+            "WITH x AS (SELECT 1) "
+            "INSERT INTO movimientos(importe) VALUES ('x')"
+        )
+        with self.assertRaises(Exception):
+            await self.database.execute_write(rejected_sql)
         records = [
             json.loads(line)
             for line in self.audit.read_text(encoding="utf-8").splitlines()
@@ -144,6 +150,21 @@ class PluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
             any(
                 record.get("phase") == "result"
                 and record.get("status") in {"error", "rejected"}
+                for record in records
+            ),
+            records,
+        )
+        cte_phases = {
+            record.get("phase")
+            for record in records
+            if "WITH" in record.get("sql", "")
+        }
+        self.assertEqual(cte_phases, {"attempt", "result"}, records)
+        self.assertTrue(
+            any(
+                record.get("phase") == "result"
+                and record.get("status") == "rejected"
+                and "WITH" in record.get("sql", "")
                 for record in records
             ),
             records,

@@ -379,6 +379,21 @@ def log_write(database: str, sql: str, path: str | None = None) -> None:
     append_audit_record(record, destination)
 
 
+def log_attempt(database: str, sql: str) -> None:
+    operation = write_operation(sql)
+    if operation is None:
+        return
+    destination = os.environ.get("VPS_ADMIN_AUDIT_LOG")
+    if not destination:
+        return
+    record = base_audit_record(database, sql, operation)
+    record["phase"] = "attempt"
+    try:
+        append_audit_record(record, destination)
+    except OSError as failure:
+        print(f"datasette-admin audit attempt log failed: {failure}", file=sys.stderr)
+
+
 def log_result(
     database: str, sql: str, status: str, error: str | None = None
 ) -> None:

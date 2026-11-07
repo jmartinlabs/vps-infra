@@ -59,6 +59,10 @@ class WrapperTests(unittest.TestCase):
         self.assertIn("--read-only", command)
         self.assertIn("--pull=never", command)
         self.assertIn("apps/api/src/backup-cli.ts", command)
+        self.assertIn(
+            "/tmp:rw,noexec,nosuid,nodev,tmpcopyup,mode=1777,size=64m",
+            command,
+        )
         self.assertEqual(command[-3:], ["create", "/backup/new", "age1recipient"])
         self.assertIn("/state:/var/lib/myfinanzas/state:rw", command)
 
@@ -77,20 +81,29 @@ class WrapperTests(unittest.TestCase):
                 empty, ("database.age", "access-key.age"), "backup"
             )
 
-    def test_writer_service_must_be_inactive(self):
-        def result(state, code=0):
-            return subprocess.CompletedProcess([], code, state, "")
+    def test_writer_service_must_be_loaded_and_inactive(self):
+        def result(load_state, active_state, code=0):
+            output = f"LoadState={load_state}\nActiveState={active_state}\n"
+            return subprocess.CompletedProcess([], code, output, "")
 
-        with mock.patch.object(wrapper, "run", return_value=result("inactive")):
-            wrapper.check_writer_stopped("myfinanzas-api.service")
-        with mock.patch.object(wrapper, "run", return_value=result("failed")):
-            wrapper.check_writer_stopped("myfinanzas-api.service")
-        for state in ("active", "activating", "deactivating", "unknown"):
-            with mock.patch.object(wrapper, "run", return_value=result(state)):
+        for active in ("inactive", "failed"):
+            with mock.patch.object(
+                wrapper, "run", return_value=result("loaded", active)
+            ):
+                wrapper.check_writer_stopped("myfinanzas-api.service")
+        for active in ("active", "activating", "deactivating", "unknown"):
+            with mock.patch.object(
+                wrapper, "run", return_value=result("loaded", active)
+            ):
                 with self.assertRaises(SystemExit):
                     wrapper.check_writer_stopped("myfinanzas-api.service")
         with mock.patch.object(
-            wrapper, "run", return_value=result("", code=1)
+            wrapper, "run", return_value=result("not-found", "inactive")
+        ):
+            with self.assertRaises(SystemExit):
+                wrapper.check_writer_stopped("myfinanzas-api.service")
+        with mock.patch.object(
+            wrapper, "run", return_value=result("loaded", "inactive", code=1)
         ):
             with self.assertRaises(SystemExit):
                 wrapper.check_writer_stopped("myfinanzas-api.service")
@@ -107,7 +120,12 @@ class WrapperTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             if "systemctl" in command:
-                return subprocess.CompletedProcess(command, 0, "inactive\n", "")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "LoadState=loaded\nActiveState=inactive\n",
+                    "",
+                )
             if "create" in command:
                 os.mkdir(backup_path, 0o700)
                 self.make_private_file(backup_path / "database.age", b"db")
@@ -154,7 +172,9 @@ class WrapperTests(unittest.TestCase):
         with mock.patch.object(
             wrapper,
             "run",
-            return_value=subprocess.CompletedProcess([], 0, "inactive\n", ""),
+            return_value=subprocess.CompletedProcess(
+                [], 0, "LoadState=loaded\nActiveState=inactive\n", ""
+            ),
         ):
             with self.assertRaises(SystemExit):
                 wrapper.backup_and_verify("prod", args, state)
@@ -162,7 +182,9 @@ class WrapperTests(unittest.TestCase):
         with mock.patch.object(
             wrapper,
             "run",
-            return_value=subprocess.CompletedProcess([], 0, "active\n", ""),
+            return_value=subprocess.CompletedProcess(
+                [], 0, "LoadState=loaded\nActiveState=active\n", ""
+            ),
         ):
             with self.assertRaises(SystemExit):
                 wrapper.backup_and_verify("prod", args, state)
@@ -473,6 +495,30 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy.validate_write_sql("INSERT INTO movimientos(importe) VALUES ('x')")
 
+    def test_read_only_wal_with_live_writer(self):
+        db_path = Path(self.temp.name) / "wal-readonly.db"
+        setup = sqlite3.connect(db_path)
+        setup.execute("CREATE TABLE movimientos(id INTEGER PRIMARY KEY, importe TEXT)")
+        setup.commit()
+        setup.close()
+        writer = sqlite3.connect(db_path)
+        self.addCleanup(writer.close)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO movimientos(importe) VALUES ('live-wal')")
+        writer.commit()
+        reader = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        self.addCleanup(reader.close)
+        os.environ["VPS_ADMIN_READ_ONLY"] = "1"
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_READ_ONLY", None)
+        policy.install(reader, "wal", audit_path=self.audit)
+        self.assertEqual(
+            reader.execute("SELECT importe FROM movimientos").fetchone()[0],
+            "live-wal",
+        )
+        with self.assertRaises(sqlite3.DatabaseError):
+            reader.execute("INSERT INTO movimientos(importe) VALUES ('blocked')")
+
     def test_audit_log_records_backup_reference(self):
         os.environ["VPS_ADMIN_BACKUP_REF"] = "backup-2026-11-07"
         self.addCleanup(os.environ.pop, "VPS_ADMIN_BACKUP_REF", None)
@@ -694,6 +740,35 @@ class RealSchemaTests(unittest.TestCase):
             ).fetchone()[0],
             176,
         )
+        actual_tables = sorted(
+            row[0]
+            for row in self.db.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        fixture = json.loads(
+            (ROOT / "infra" / "datasette-admin" / "v27_tables.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(actual_tables, sorted(fixture["tables"]))
+        for category in (
+            "app_only",
+            "auth",
+            "audit",
+            "technical",
+            "immutable",
+            "business",
+        ):
+            expected = {
+                table
+                for table, value in fixture["categories"].items()
+                if value == category
+            }
+            self.assertEqual(expected, set(policy.DATA[category]), category)
+        self.assertEqual(fixture["categories"]["owner"], "auth")
+        self.assertEqual(fixture["categories"]["database_origin"], "app_only")
         self.assertEqual(
             self.db.execute(
                 "SELECT count(*) FROM sqlite_temp_master "

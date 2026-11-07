@@ -94,7 +94,7 @@ aprovisionamiento ya está ejecutada.
 | --- | --- | --- | --- | --- |
 | 0 | Aprobar esta spec y su test plan | Documento revisado | Aprobación registrada | UNRUN |
 | 1 | Auditoría de solo lectura | Autorización de acceso de lectura | Inventario redactado y diferencias | UNRUN |
-| 2 | Provisión del host | Auditoría completada y aprobada | Usuario, rutas, permisos, `linger`, UFW y versiones | PASS — aprovisionamiento 2A+2B; no incluye despliegue |
+| 2 | Provisión del host | Auditoría completada y aprobada | Usuario, rutas, permisos y `linger`; UFW sin cambios; `sshd -T`/UFW efectivo pendiente de root | PASS — aprovisionamiento 2A+2B; no incluye despliegue |
 | 3 | DNS `test` | Auditoría de DNS/proveedor | Registro A/AAAA, resolución y raíz intacta | UNRUN |
 | 4 | Caddy y HTTPS | Backup y ubicación real de Caddy | `caddy validate`, bloque validado y raíz intacta | UNRUN |
 | 5 | Despliegue y seed | Release/seed desde SHA de `myfinanzas-app/main`; gate Rootless; rutas listas | Seed `0`, unidad activa, frontend y ruta preparada | UNRUN |

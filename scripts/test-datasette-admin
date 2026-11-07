@@ -67,6 +67,15 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(command[-3:], ["create", "/backup/new", "age1recipient"])
         self.assertIn("/state:/var/lib/myfinanzas/state:rw", command)
 
+    def test_private_file_rejects_hardlinks(self):
+        private = self.make_private_file(self.root / "private", b"x")
+        linked = self.root / "linked"
+        os.link(private, linked)
+        with self.assertRaises(SystemExit):
+            wrapper.check_private_path(
+                linked, 0o600, os.getuid(), "hardlinked file"
+            )
+
     def test_artifact_directory_checks_mode_and_content(self):
         backup = self.make_private_dir("backup")
         self.make_private_file(backup / "database.age", b"db")
@@ -424,6 +433,10 @@ class PolicyTests(unittest.TestCase):
             "audit",
         )
         policy.validate_connection_sql("WITH x AS (SELECT 1) SELECT * FROM x")
+        policy.validate_connection_sql("BEGIN IMMEDIATE")
+        policy.validate_connection_sql("COMMIT")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("BEGIN IMMEDIATE")
         with self.assertRaises(ValueError):
             policy.validate_connection_sql(
                 "WITH x AS (SELECT 1) INSERT INTO movimientos(importe) VALUES ('x')"

@@ -61,8 +61,11 @@ def check_private_path(path: Path, mode: int, uid: int, label: str) -> None:
         die(f"{label} must have mode {mode:04o}, found {stat.st_mode & 0o777:04o}")
     if label.endswith("directory") and not path.is_dir():
         die(f"{label} must be a directory")
-    if not label.endswith("directory") and not path.is_file():
-        die(f"{label} must be a regular file")
+    if not label.endswith("directory"):
+        if not path.is_file():
+            die(f"{label} must be a regular file")
+        if stat.st_nlink != 1:
+            die(f"{label} must not be a hardlink")
 
 
 def reject_symlink_components(

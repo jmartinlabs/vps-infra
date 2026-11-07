@@ -66,9 +66,12 @@ La vinculación es estricta:
 
 ## Transacciones y correcciones multi-sentencia
 
-El editor acepta una sola sentencia atómica. `BEGIN`, `COMMIT`, `SAVEPOINT` y los
-scripts de varias sentencias se rechazan: no se puede ejecutar un lote SQL
-arbitrario desde la web ni desde los callbacks.
+El editor/endpoint web acepta una sola sentencia atómica. `BEGIN`, `COMMIT`,
+`SAVEPOINT` y los scripts de varias sentencias se rechazan: no se puede ejecutar
+un lote SQL arbitrario desde la web. Los callbacks internos de confianza de
+Datasette (el CRUD por filas) pueden usar control transaccional dentro del proxy,
+pero no aceptan SQL multi-sentencia del usuario y siguen pasando por el mismo
+filtro. No hay una API que exponga `BEGIN`/`COMMIT` al usuario.
 
 Para una corrección que requiera varias operaciones indivisibles:
 
@@ -193,6 +196,8 @@ scripts/datasette-admin stop prod
   No sustituye al backup age/CLI real de MyFinanzas.
 - Backup/restore real con la imagen y CLI de MyFinanzas: **PENDIENTE**, delegado
   a su agente; no se declara PASS.
+
+Detalle de las ejecuciones: [evidencia local aislada](evidencia-datasette-admin.md).
 
 ## Pruebas
 

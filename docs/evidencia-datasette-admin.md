@@ -1,8 +1,9 @@
 # Evidencia local aislada · Datasette admin
 
 Fecha: 2026-11-07. Entorno: Podman rootless local, VM sintética, DB v27/estado
-sintético. **No es el VPS real, no contiene datos reales y no sustituye la
-validación de la CLI de backup/restore de MyFinanzas.**
+sintético. **No es el VPS real ni la imagen oficial de release; no sustituye la validación
+en producción. El ciclo local con CLI/`age` está documentado más abajo como PASS
+aislado.**
 
 ## TEST · Mac → túnel SSH → Datasette → UPDATE → lectura app
 
@@ -43,8 +44,8 @@ Resultado: **PASS** (sintético; sin backup ni parada).
   - fila restaurada: `tunnel-updated`
   - hash de `auth.key` restaurada: `f64065aa…c0716a` (coincide).
 
-Resultado: **PASS** de la recuperación de datos sintética. **No es** el backup age
-ni la CLI de MyFinanzas.
+Resultado: **PASS** de la recuperación de datos sintética con `VACUUM INTO`.
+Esta prueba no usa `age`/CLI; el ciclo real con CLI/`age` se documenta abajo.
 
 ## Vinculación negativa
 

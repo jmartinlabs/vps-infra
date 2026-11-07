@@ -81,7 +81,31 @@ class PolicyTests(unittest.TestCase):
         self.assertDenied("PRAGMA foreign_keys=OFF")
         self.assertDenied("PRAGMA journal_mode=DELETE")
         self.assertDenied("PRAGMA page_size=8192")
+        self.assertDenied("CREATE VIRTUAL TABLE vt USING fts5(content)")
         self.db.execute("PRAGMA table_info(movimientos)")
+        self.db.execute("PRAGMA schema_version")
+
+    def test_schema_and_user_version_writes_denied(self):
+        self.install(maintenance=True)
+        self.assertDenied("PRAGMA schema_version=99")
+        self.assertDenied("PRAGMA user_version=99")
+        self.assertDenied("PRAGMA application_id=99")
+        self.assertDenied("PRAGMA query_only=ON")
+        self.db.execute("PRAGMA schema_version")
+
+    def test_unknown_table_and_audit_replace_denied(self):
+        # DDL is blocked after install, so create the unknown table before install.
+        self.db.close()
+        self.db = sqlite3.connect(str(Path(self.temp.name) / "policy.db"))
+        self.db.execute("CREATE TABLE unknown_table(id INTEGER)")
+        self.install()
+        self.assertDenied("INSERT INTO unknown_table(id) VALUES (1)")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("INSERT OR REPLACE INTO audit(entidad) VALUES ('x')")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("WITH x AS (SELECT 1) INSERT INTO audit(entidad) VALUES ('x')")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("VACUUM INTO '/tmp/x.db'")
 
     def test_pragmas_are_set(self):
         self.db.execute("PRAGMA foreign_keys=ON")

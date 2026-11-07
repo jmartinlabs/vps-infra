@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Integration test for the Datasette plugin, without Podman or a VPS."""
+from __future__ import annotations
+
+import os
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_DIR = ROOT / "infra" / "datasette-admin" / "plugins"
+sys.path.insert(0, str(PLUGIN_DIR.parent))
+
+try:
+    from datasette.app import Datasette
+except ImportError as error:  # pragma: no cover - CI installs Datasette
+    raise SystemExit(f"Datasette is required for this test: {error}")
+
+
+class PluginIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.audit = Path(self.temp.name) / "audit.jsonl"
+        os.environ["VPS_ADMIN_AUDIT_LOG"] = str(self.audit)
+        os.environ["VPS_ADMIN_ACTOR"] = "integration-owner"
+        os.environ["VPS_ADMIN_SESSION"] = "integration-session"
+        os.environ.pop("VPS_ADMIN_MAINTENANCE", None)
+        self.db_path = Path(self.temp.name) / "poc.db"
+        connection = sqlite3.connect(self.db_path)
+        connection.executescript(
+            """
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE movimientos(id INTEGER PRIMARY KEY, importe TEXT);
+            CREATE TABLE audit(id INTEGER PRIMARY KEY, entidad TEXT, detalle TEXT);
+            CREATE TABLE owner(id INTEGER PRIMARY KEY, password TEXT, secret TEXT);
+            CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version VALUES(27);
+            CREATE TRIGGER mov_audit AFTER INSERT ON movimientos
+            BEGIN INSERT INTO audit(entidad,detalle) VALUES ('movimientos','insert'); END;
+            """
+        )
+        connection.close()
+        self.datasette = Datasette([str(self.db_path)], plugins_dir=str(PLUGIN_DIR))
+        self.database = self.datasette.get_database("poc")
+
+    def tearDown(self):
+        self.datasette.close()
+
+    def test_plugin_prepares_connections_and_authorizer(self):
+        connection = self.database.connect(write=True)
+        try:
+            self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+            self.assertEqual(
+                connection.execute("PRAGMA recursive_triggers").fetchone()[0], 1
+            )
+            connection.execute("INSERT INTO movimientos(importe) VALUES ('10.00')")
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM audit").fetchone()[0], 1
+            )
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("INSERT INTO audit(entidad) VALUES ('direct')")
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("CREATE TABLE blocked(id INTEGER)")
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("PRAGMA schema_version=99")
+        finally:
+            connection.close()
+
+    def test_maintenance_is_append_only_for_audit(self):
+        os.environ["VPS_ADMIN_MAINTENANCE"] = "1"
+        connection = self.database.connect(write=True)
+        try:
+            connection.execute("INSERT INTO audit(entidad,detalle) VALUES ('x','manual')")
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("UPDATE audit SET detalle='changed' WHERE id=1")
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("DELETE FROM audit WHERE id=1")
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("CREATE TABLE blocked(id INTEGER)")
+        finally:
+            connection.close()
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

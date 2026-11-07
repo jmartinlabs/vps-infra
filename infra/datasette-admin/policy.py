@@ -54,6 +54,8 @@ DENIED_ACTIONS = {
     sqlite3.SQLITE_DROP_TEMP_VIEW,
     sqlite3.SQLITE_DROP_TRIGGER,
     sqlite3.SQLITE_DROP_VIEW,
+    sqlite3.SQLITE_CREATE_VTABLE,
+    sqlite3.SQLITE_DROP_VTABLE,
     sqlite3.SQLITE_REINDEX,
     sqlite3.SQLITE_ANALYZE,
 }
@@ -130,14 +132,49 @@ def maintenance_enabled() -> bool:
     return os.environ.get("VPS_ADMIN_MAINTENANCE") == "1"
 
 
+def strip_sql_comments(sql: str) -> str:
+    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
+    return re.sub(r"--[^\n]*", " ", sql)
+
+
 def normalize_sql(sql: str) -> str:
+    sql = strip_sql_comments(sql)
     sql = re.sub(r"'(?:''|[^'])*'", "?", sql)
+    sql = re.sub(r'"(?:""|[^"])*"', "?", sql)
     sql = re.sub(r"\b\d+(?:\.\d+)?\b", "?", sql)
     return re.sub(r"\s+", " ", sql).strip()
 
 
+def validate_write_sql(sql: str) -> None:
+    """Reject SQL that the authorizer alone cannot classify safely."""
+    text = strip_sql_comments(sql).strip()
+    match = re.match(r"([A-Za-z]+)", text)
+    if not match:
+        raise ValueError("empty or unclassifiable SQL")
+    verb = match.group(1).upper()
+    if verb in {
+        "ALTER",
+        "ANALYZE",
+        "ATTACH",
+        "CREATE",
+        "DETACH",
+        "DROP",
+        "PRAGMA",
+        "REINDEX",
+        "VACUUM",
+    }:
+        raise ValueError(f"SQL operation not allowed: {verb}")
+    if verb == "WITH":
+        raise ValueError("CTE writes are not supported")
+    tokens = {token.lower() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)}
+    if tokens & AUDIT:
+        if "replace" in tokens or "ON CONFLICT" in text.upper():
+            raise ValueError("audit tables are append-only")
+
+
 def log_write(database: str, sql: str, path: str | None = None) -> None:
-    operation = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
+    text = strip_sql_comments(sql).strip()
+    operation = text.split(None, 1)[0].upper() if text else ""
     if operation not in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
         return
     destination = path or os.environ.get("VPS_ADMIN_AUDIT_LOG")
@@ -165,17 +202,28 @@ def make_authorizer(maintenance: bool):
             table = str(arg1).lower()
             if table in APP_ONLY:
                 return sqlite3.SQLITE_DENY
-            if table in AUDIT and action in {
-                sqlite3.SQLITE_UPDATE,
-                sqlite3.SQLITE_DELETE,
-            }:
-                return sqlite3.SQLITE_DENY
-            if table in AUDIT and not maintenance and trigger is None:
-                return sqlite3.SQLITE_DENY
-            if table in PROTECTED and not maintenance and trigger is None:
-                return sqlite3.SQLITE_DENY
+            if table in AUDIT:
+                if action in {sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}:
+                    return sqlite3.SQLITE_DENY
+                if action == sqlite3.SQLITE_INSERT:
+                    if trigger is not None or maintenance:
+                        return sqlite3.SQLITE_OK
+                    return sqlite3.SQLITE_DENY
+            if table in PROTECTED:
+                if not maintenance and trigger is None:
+                    return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+            if table in BUSINESS:
+                return sqlite3.SQLITE_OK
+            return sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_PRAGMA:
             name = str(arg1).lower()
+            if name in {"schema_version", "user_version", "application_id", "query_only"}:
+                return (
+                    sqlite3.SQLITE_OK
+                    if arg2 in (None, "")
+                    else sqlite3.SQLITE_DENY
+                )
             if name == "journal_mode":
                 return (
                     sqlite3.SQLITE_OK
@@ -222,12 +270,18 @@ def install(
     audit_path: str | None = None,
 ) -> None:
     maintenance = maintenance_enabled() if maintenance is None else maintenance
+    destination = audit_path or os.environ.get("VPS_ADMIN_AUDIT_LOG")
+    if not destination:
+        raise RuntimeError("VPS_ADMIN_AUDIT_LOG is required")
+    with open(destination, "a", encoding="utf-8"):
+        pass
+    os.chmod(destination, 0o600)
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA recursive_triggers=ON")
     conn.execute("PRAGMA busy_timeout=3000")
     conn.execute("PRAGMA synchronous=FULL")
     conn.set_authorizer(make_authorizer(maintenance))
-    conn.set_trace_callback(lambda sql: log_write(database, sql, audit_path))
+    conn.set_trace_callback(lambda sql: log_write(database, sql, destination))
 
 
 def is_sensitive(table: str, column: str) -> bool:

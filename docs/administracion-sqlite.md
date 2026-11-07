@@ -22,8 +22,9 @@ Dos perfiles:
 | `--maintenance` | correcciones técnicas excepcionales | permitido en protegidas, salvo `schema_version`/`database_origin`; auditoría solo INSERT |
 
 Siempre denegados desde el visor: DDL, migraciones, `ATTACH`, `PRAGMA` peligroso,
-`VACUUM INTO`, `load_extension` y escritura de `schema_version`/`database_origin`.
-La auditoría es append-only: nunca UPDATE/DELETE.
+`VACUUM INTO`, `load_extension`, CTE de escritura, tablas no clasificadas y escritura
+de `schema_version`, `user_version`, `application_id` o `database_origin`.
+La auditoría es append-only: nunca UPDATE/DELETE ni `INSERT OR REPLACE`/upsert.
 
 ## Construcción
 
@@ -104,8 +105,12 @@ scripts/datasette-admin stop prod
 
 ```bash
 ./scripts/test-datasette-admin
+python3 -m pip install 'datasette==1.0a41'
+./scripts/test-datasette-admin-integration
 ```
 
-Cubren autorizador, dos perfiles, auditoría append-only, PRAGMAs, DDL/ATTACH,
-schema/origin y enmascarado. Las pruebas de contenedor rootless, SSH y WAL se
-ejecutan en un entorno Linux aislado antes de desplegar.
+La primera suite cubre autorizador, dos perfiles, auditoría append-only, PRAGMAs,
+DDL/ATTACH, schema/origin, tablas desconocidas y enmascarado. La segunda importa
+el plugin real en Datasette 1.0a41 y comprueba `Database.connect()` y las rutas
+principales. Las pruebas de contenedor rootless, SSH y backup age se ejecutan en
+un entorno Linux aislado antes de desplegar.

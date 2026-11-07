@@ -8,6 +8,7 @@ masked only inside the container namespace with a dummy file.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pwd
 import secrets
@@ -77,8 +78,34 @@ def audit_directory(path: Path) -> Path:
     return path
 
 
+def prepare_runtime_environment() -> None:
+    uid = os.getuid()
+    candidate = os.environ.get("XDG_RUNTIME_DIR")
+    if candidate:
+        path = Path(candidate)
+        try:
+            stat = path.lstat()
+            if (
+                path.is_dir()
+                and not path.is_symlink()
+                and stat.st_uid == uid
+                and stat.st_mode & 0o777 == 0o700
+            ):
+                return
+        except OSError:
+            pass
+    fallback = Path("/tmp") / f"vps-datasette-admin-{uid}"
+    if fallback.exists() or fallback.is_symlink():
+        stat = fallback.lstat()
+        if fallback.is_symlink() or stat.st_uid != uid:
+            die("unsafe runtime fallback directory")
+    fallback.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(fallback, 0o700)
+    os.environ["XDG_RUNTIME_DIR"] = str(fallback)
+
+
 def runtime_directory(env: str) -> Path:
-    base = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/vps-datasette-admin-{os.getuid()}"))
+    base = Path(os.environ["XDG_RUNTIME_DIR"])
     path = base / "vps-datasette-admin" / env
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path, 0o700)
@@ -115,6 +142,30 @@ def wait_for_url(port: int, name: str, timeout: float = 30.0) -> str:
                     )
         time.sleep(0.5)
     die(f"editor did not become ready: {last_error or 'timeout'}")
+
+
+def check_health(name: str) -> None:
+    code = (
+        "import urllib.request; "
+        "print(urllib.request.urlopen("
+        "'http://127.0.0.1:8001/-/vps-admin-health', timeout=3).read().decode())"
+    )
+    result = run(["podman", "exec", name, "python", "-c", code], capture_output=True)
+    if result.returncode != 0:
+        run(["podman", "stop", name], capture_output=True)
+        die("editor health check failed; the policy plugin is not loaded")
+    try:
+        health = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        run(["podman", "stop", name], capture_output=True)
+        die("editor health check returned invalid JSON")
+    if (
+        health.get("policy") != "loaded"
+        or health.get("foreign_keys") != 1
+        or health.get("recursive_triggers") != 1
+    ):
+        run(["podman", "stop", name], capture_output=True)
+        die("editor policy is not active; refusing to expose the editor")
 
 
 def start(args) -> None:
@@ -209,6 +260,7 @@ def start(args) -> None:
     if result.returncode != 0:
         die(f"could not start editor: {result.stderr.strip()}")
     url = wait_for_url(port, name)
+    check_health(name)
     print(f"Editor {env} listo.")
     print(f"Túnel: ssh -N -L {port}:127.0.0.1:{port} <usuario>@<vps>")
     print(f"Abrir en Mac: {url}")
@@ -264,12 +316,12 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
-    os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     os.environ.setdefault("HOME", pwd.getpwuid(os.getuid()).pw_dir)
     try:
         os.chdir(Path.home())
     except OSError:
         os.chdir("/tmp")
+    prepare_runtime_environment()
     args = parse_args(argv)
     try:
         args.func(args)

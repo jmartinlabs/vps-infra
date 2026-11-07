@@ -207,7 +207,7 @@ python3 -m pip install 'datasette==1.0a41'
 ./scripts/test-datasette-admin-integration
 ```
 
-La primera suite (**34 pruebas**) cubre vinculación entorno/UID/ruta/symlinks,
+La primera suite (**35 pruebas**) cubre vinculación entorno/UID/ruta/symlinks,
 autorizador, parser string-aware, dos perfiles, solo lectura con WAL vivo,
 auditoría append-only/fail-closed y resultado, PRAGMAs, DDL/ATTACH,
 schema/origin, tablas desconocidas, la matriz v27 completa (108 tablas; 72

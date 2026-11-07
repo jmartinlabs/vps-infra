@@ -95,6 +95,8 @@ oficial de release de MyFinanzas y el VPS real siguen sin probarse.
 
 ## Bloqueos
 
-- Backup/restore real con imagen, `age` y CLI de MyFinanzas: **PENDIENTE**;
-  delegado por relay 0018/0019. No se declara PASS.
-- VPS real, SSH `permitopen`, app MyFinanzas real: no probados.
+- Backup/restore con CLI/`age` de MyFinanzas: **PASS local aislado** con el árbol
+  `origin/main`, estado v27 sintético `production`, Bun 1.4.3/SQLite 3.53.4 y age
+  1.2.1, incluyendo el ciclo a través de `backup_and_verify` del wrapper.
+- Imagen oficial de release, VPS real, SSH `permitopen` y app MyFinanzas real:
+  **pendientes**; no se declara PASS sobre ellos.

@@ -180,10 +180,11 @@ scripts/datasette-admin stop prod
   valores literales; el resultado se registra de forma best-effort después de la
   operación.
 - `schema_version` y `database_origin` solo cambian por migración de la app.
-- En PROD se usa una ventana de escritor único. El wrapper consulta
-  `systemctl --user show <servicio> -p ActiveState` y rechaza `active`,
-  `activating`, `deactivating` o `unknown`; `--writer-stopped` sigue siendo una
-  confirmación adicional del operador. No se asume concurrencia de writers.
+- En PROD se usa una ventana de escritor único. El servicio está fijado a
+  `myfinanzas-api.service`; el wrapper consulta `LoadState` y `ActiveState`, exige
+  `LoadState=loaded` y `ActiveState=inactive|failed`, y rechaza `not-found`,
+  `active`, `activating`, `deactivating` o `unknown`. `--writer-stopped` sigue
+  siendo una confirmación adicional del operador. No se asume concurrencia.
 - `--security-opt label=disable` evita conflictos SELinux; la política de labels
   del VPS queda pendiente de validación.
 - El backup/restore real y la validación de identidad dependen de la imagen y la
@@ -198,8 +199,10 @@ scripts/datasette-admin stop prod
 - Recuperación sintética: snapshot `VACUUM INTO` en directorio nuevo, modificación
   posterior, restore a otro directorio nuevo y comprobación de fila/`auth.key`.
   No sustituye al backup age/CLI real de MyFinanzas.
-- Backup/restore real con la imagen y CLI de MyFinanzas: **PENDIENTE**, delegado
-  a su agente; no se declara PASS.
+- Backup/restore con CLI/`age` de MyFinanzas: **PASS local aislado** con árbol
+  `origin/main`, Bun 1.4.3/SQLite 3.53.4, age 1.2.1 y estado v27 sintético
+  `production`. Quedan pendientes la imagen oficial de release, el VPS real y la
+  app real.
 
 Detalle de las ejecuciones: [evidencia local aislada](evidencia-datasette-admin.md).
 

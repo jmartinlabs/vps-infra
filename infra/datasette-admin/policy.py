@@ -221,7 +221,7 @@ def write_operation(sql: str) -> str | None:
 def unquote_identifier(value: str) -> str:
     value = value.strip()
     if "." in value:
-        value = value.rsplit(".", 1)[1]
+        value = value.rsplit(".", 1)[1].strip()
     if len(value) >= 2 and value[0] in {"'", '"', "`"} and value[-1] == value[0]:
         quote = value[0]
         return value[1:-1].replace(quote * 2, quote)
@@ -233,13 +233,16 @@ def unquote_identifier(value: str) -> str:
 def target_table(sql: str) -> str:
     """Return the table targeted by a top-level INSERT/UPDATE/DELETE/REPLACE."""
     text = scan_sql(sql, mask_literals=False)
+    identifier = (
+        r"(?:[A-Za-z_][A-Za-z0-9_$]*|\"[^\"]*\"|`[^`]*`|\[[^\]]*\]|'[^']*')"
+    )
     match = re.search(
-        r"\b(?:"
-        r"INSERT(?:\s+OR\s+\w+)?\s+INTO"
-        r"|REPLACE\s+INTO"
-        r"|UPDATE(?:\s+OR\s+\w+)?"
-        r"|DELETE\s+FROM"
-        r")\s+([^\s(;,]+)",
+        rf"\b(?:"
+        rf"INSERT(?:\s+OR\s+\w+)?\s+INTO"
+        rf"|REPLACE\s+INTO"
+        rf"|UPDATE(?:\s+OR\s+\w+)?"
+        rf"|DELETE\s+FROM"
+        rf")\s+({identifier}(?:\s*\.\s*{identifier})?)",
         text,
         re.I,
     )
@@ -431,13 +434,37 @@ def quote_identifier(name: str) -> str:
 
 
 def audit_insert_condition(conn: sqlite3.Connection, table: str) -> str:
+    conditions: list[tuple[str, ...]] = []
     rows = conn.execute(f"PRAGMA table_info({quote_identifier(table)})").fetchall()
-    keys = [row[1] for row in rows if row[5]]
+    keys = tuple(row[1] for row in rows if row[5])
     if keys:
-        return " AND ".join(
-            f"{quote_identifier(key)} IS NEW.{quote_identifier(key)}" for key in keys
+        conditions.append(keys)
+    for index in conn.execute(
+        f"PRAGMA index_list({quote_identifier(table)})"
+    ).fetchall():
+        # (seq, name, unique, origin, partial)
+        if not index[2] or index[3] == "pk":
+            continue
+        columns = tuple(
+            column[2]
+            for column in conn.execute(
+                f"PRAGMA index_info({quote_identifier(index[1])})"
+            ).fetchall()
+            if column[2] is not None
         )
-    return "rowid = NEW.rowid"
+        if columns and columns not in conditions:
+            conditions.append(columns)
+    if not conditions:
+        return "rowid = NEW.rowid"
+    clauses = []
+    for columns in conditions:
+        equality = " AND ".join(
+            f"{quote_identifier(column)} IS NEW.{quote_identifier(column)}"
+            f" AND NEW.{quote_identifier(column)} IS NOT NULL"
+            for column in columns
+        )
+        clauses.append(f"({equality})")
+    return " OR ".join(clauses)
 
 
 def install_audit_triggers(conn: sqlite3.Connection) -> None:

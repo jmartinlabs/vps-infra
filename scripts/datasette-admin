@@ -13,6 +13,7 @@ import os
 import pwd
 import secrets
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -116,26 +117,63 @@ def container_exists(name: str) -> bool:
     return run(["podman", "container", "exists", name], capture_output=True).returncode == 0
 
 
+def require_artifact(path: Path, label: str) -> None:
+    if not path.exists():
+        die(f"{label} was not created; refusing to start PROD editor")
+    if path.is_file() and path.stat().st_size == 0:
+        die(f"{label} is empty; refusing to start PROD editor")
+    if path.is_dir() and not any(path.iterdir()):
+        die(f"{label} is empty; refusing to start PROD editor")
+
+
+def check_restored_database(path: Path) -> None:
+    if not path.is_file():
+        die("--restore-path must be a restored SQLite file, not a directory")
+    try:
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            integrity = connection.execute("PRAGMA integrity_check").fetchall()
+            if integrity != [("ok",)]:
+                die(f"restored database integrity_check failed: {integrity[:3]}")
+            if connection.execute("PRAGMA foreign_key_check").fetchall():
+                die("restored database foreign_key_check returned rows")
+            version = connection.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()
+            if not version or version[0] < 1:
+                die("restored database has no valid schema_version")
+        finally:
+            connection.close()
+    except sqlite3.DatabaseError as error:
+        die(f"restored artifact is not a valid SQLite database: {error}")
+
+
 def backup(
     env: str,
     command: str | None,
     verify_command: str | None,
+    backup_path: str | None,
     restore_path: str | None,
 ) -> None:
     if env != "prod":
         return
-    if not command or not verify_command or not restore_path:
+    if not command or not verify_command or not backup_path or not restore_path:
         die(
-            "PROD requires --backup-cmd, --backup-verify-cmd and --restore-path; "
-            "verification must restore to a new destination and check integrity"
+            "PROD requires --backup-cmd, --backup-verify-cmd, --backup-path "
+            "and --restore-path; verification must restore to a new destination"
         )
+    backup_file = Path(backup_path).expanduser()
     restore = Path(restore_path).expanduser()
+    if backup_file.exists():
+        die("--backup-path must not exist; create a new backup for this session")
     if restore.exists():
         die("--restore-path must not exist; use a new destination for verification")
     result = run(shlex.split(command), capture_output=True)
     if result.returncode != 0:
         die(f"backup command failed; refusing to start PROD editor: {result.stderr.strip()}")
+    require_artifact(backup_file, "backup")
     verify_env = os.environ.copy()
+    verify_env["VPS_ADMIN_BACKUP_PATH"] = str(backup_file)
     verify_env["VPS_ADMIN_RESTORE_PATH"] = str(restore)
     verify = run(shlex.split(verify_command), capture_output=True, env=verify_env)
     if verify.returncode != 0:
@@ -143,13 +181,9 @@ def backup(
             "backup verification failed; refusing to start PROD editor: "
             f"{verify.stderr.strip()}"
         )
-    if not restore.exists():
-        die("backup verification produced no restored artifact; refusing to start")
-    if restore.is_file() and restore.stat().st_size == 0:
-        die("restored artifact is empty; refusing to start PROD editor")
-    if restore.is_dir() and not any(restore.iterdir()):
-        die("restored directory is empty; refusing to start PROD editor")
-    print("Backup created and restored to a new destination before opening the PROD editor.")
+    require_artifact(restore, "restored artifact")
+    check_restored_database(restore)
+    print("Backup created and restored database verified before opening the PROD editor.")
 
 
 def wait_for_url(port: int, name: str, timeout: float = 30.0) -> str:
@@ -203,9 +237,17 @@ def start(args) -> None:
         die("PROD requires --writer-stopped (stop MyFinanzas before editing)")
     if env == "prod" and not args.backup_ref:
         die("PROD requires --backup-ref to identify the backup in the audit log")
+    if env == "prod" and not args.backup_path:
+        die("PROD requires --backup-path for the new backup artifact")
     if env == "prod" and not args.restore_path:
         die("PROD requires --restore-path for the verification restore")
-    backup(env, args.backup_cmd, args.backup_verify_cmd, args.restore_path)
+    backup(
+        env,
+        args.backup_cmd,
+        args.backup_verify_cmd,
+        args.backup_path,
+        args.restore_path,
+    )
 
     name = CONTAINER.format(env=env)
     if container_exists(name):
@@ -346,6 +388,10 @@ def parse_args(argv=None):
     )
     start_parser.add_argument(
         "--backup-ref", help="backup identifier recorded in the audit log; required for PROD"
+    )
+    start_parser.add_argument(
+        "--backup-path",
+        help="new backup artifact path; required for PROD",
     )
     start_parser.add_argument(
         "--restore-path",

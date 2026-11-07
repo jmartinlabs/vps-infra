@@ -64,16 +64,19 @@ sudo -u mfprod scripts/datasette-admin start prod \
   --state /srv/myfinanzas-prod/data \
   --writer-stopped \
   --backup-cmd '/ruta/backup-cli create /ruta/backup-nuevo /ruta/recipient.age' \
-  --backup-verify-cmd '/ruta/backup-cli verify-restore /ruta/backup-nuevo' \
+  --backup-verify-cmd '/ruta/backup-cli verify-restore' \
   --backup-ref '/ruta/backup-nuevo' \
-  --restore-path /ruta/restore-nuevo
+  --backup-path /ruta/backup-nuevo \
+  --restore-path /ruta/restore-nuevo.sqlite
 ```
 
-El comando de verificación recibe `VPS_ADMIN_RESTORE_PATH` y debe restaurar el
-backup a ese destino **nuevo**, comprobar que la copia es legible/consistente y
-terminar en 0. El wrapper exige que el destino no existiera antes y que contenga
-un artefacto no vacío. Sustituir los ejemplos por la interfaz real de la CLI de
-MyFinanzas. Si el backup o su verificación fallan, no se abre el editor.
+El comando de verificación recibe `VPS_ADMIN_BACKUP_PATH` y
+`VPS_ADMIN_RESTORE_PATH`; debe restaurar el backup a ese fichero SQLite **nuevo**
+y terminar en 0. El wrapper exige que ni el backup ni el restore existieran
+antes, que ambos contengan artefactos no vacíos y que la base restaurada pase
+`PRAGMA integrity_check`, `PRAGMA foreign_key_check` y tenga `schema_version`
+válido. Sustituir los ejemplos por la interfaz real de la CLI de MyFinanzas. Si
+el backup o su verificación fallan, no se abre el editor.
 
 ### Desde el Mac
 
@@ -129,7 +132,9 @@ scripts/datasette-admin stop prod
   los logs del contenedor.
 - `schema_version` y `database_origin` solo cambian por migración de la app.
 - En PROD se usa una ventana de escritor único: app detenida antes de editar y
-  editor detenido antes de reanudar. No se asume concurrencia de writers.
+  editor detenido antes de reanudar. `--writer-stopped` es una confirmación del
+  operador; el wrapper no inspecciona el servicio de la app. No se asume
+  concurrencia de writers.
 - `--security-opt label=disable` evita conflictos SELinux; la política de labels
   del VPS queda pendiente de validación.
 

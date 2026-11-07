@@ -2,12 +2,14 @@
 
 Specification: [02 — host del entorno TEST de MyFinanzas](02-infra-test-01-host-specification.md)
 
-Status: **DRAFT — ejecución parcial: AC03 `PASS`; resto `UNRUN`. Preflight y Fase 2A
-2026-11-07; 2B no autorizada.** No autoriza DEV, nuevas fases, DNS, Caddy, UFW,
+Status: **DRAFT — Fase 2 de aprovisionamiento `PASS` (AC03/AC04); resto `UNRUN`.
+Despliegue no autorizado.** No autoriza DEV, nuevas fases, DNS, Caddy, UFW,
 Podman/Quadlet, despliegue, datos reales ni merge.
 Base: `vps-infra` `main` `c1f9f59312fd91120f96633857125554d7a9b624` (2026-11-07).
 Auditoría y Caddy: [auditoría 2026-11-05](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md)
 y [cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
+Evidencias: [2A — identidad rootless](../docs/evidencia-infra-test-02a.md) y
+[2B — rutas y permisos](../docs/evidencia-infra-test-02b.md).
 Contrato de integración MyFinanzas ↔ `vps-infra`:
 [SPEC34 §5](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md#5-contrato-de-despliegue-con-vps-infra-solo-interfaz)
 y manifiesto de cada release. `vps-infra` no rastrea PRs de la aplicación. Flujo actual
@@ -21,9 +23,9 @@ Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-inf
 
 ## 1. Cómo leer este plan
 
-- **Estado.** Todos los criterios empiezan en `UNRUN`, salvo AC03, que pasa a `PASS` con la
-  evidencia de Fase 2A. `UNRUN` no es `PASS` ni `FAIL`; solo indica que no hay evidencia
-  ejecutada. Un `PASS` exige comando real, entorno, candidato y evidencia enlazada.
+- **Estado.** Todos los criterios empiezan en `UNRUN`, salvo AC03 y AC04, que pasan a
+  `PASS` con las evidencias 2A/2B. `UNRUN` no es `PASS` ni `FAIL`; solo indica que no hay
+  evidencia ejecutada. Un `PASS` exige comando real, entorno, candidato y evidencia enlazada.
 - **Entorno.** Cada criterio declara dónde se ejecuta. Un runner efímero no acredita el VPS
   Debian ni Caddy/DNS reales.
 - **Owner.** Quién ejecuta y quién revisa. El owner operativo no aprueba la fase.
@@ -45,11 +47,11 @@ Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-inf
 
 ## 3. Matriz de criterios de aceptación
 
-Todos los estados son `UNRUN` salvo AC03, que pasa a `PASS` con la evidencia
-[02A](../docs/evidencia-infra-test-02a.md). El preflight de solo lectura 2026-11-07 cubrió
-identidad, SO, recursos, Podman/Quadlet, cgroup, Caddyfile completo, DNS/HTTP y estado de
-rutas/backups; no cubrió UFW/nftables, `sshd -T` efectivo ni inventario profundo de backups.
-AC02 sigue `UNRUN` hasta cerrar esos puntos.
+Todos los estados son `UNRUN` salvo AC03 y AC04, que pasan a `PASS` con las evidencias
+[02A](../docs/evidencia-infra-test-02a.md) y [02B](../docs/evidencia-infra-test-02b.md). El
+preflight de solo lectura 2026-11-07 cubrió identidad, SO, recursos, Podman/Quadlet, cgroup,
+Caddyfile completo, DNS/HTTP y estado de rutas/backups; no cubrió UFW/nftables, `sshd -T`
+efectivo ni inventario profundo de backups. AC02 sigue `UNRUN` hasta cerrar esos puntos.
 
 Los placeholders `<…>` se sustituyen solo con valores verificados y redactados.
 
@@ -58,7 +60,7 @@ Los placeholders `<…>` se sustituyen solo con valores verificados y redactados
 | `INFRA-TEST-01-HOST-AC01` | Revisar el diff de la rama y la lista de archivos; comprobar que solo se añaden spec y test plan | Sin cambios de código, `infra/`, workflows, `docs/` operativos ni VPS; sin deploy ni merge | `git status --short`; `git diff --stat main...HEAD` (tras el commit de la rama); `git diff --check main...HEAD`; `python3 scripts/check_harness.py`; `./scripts/validate-template` | E0 | vps-infra / QA | 0 | Diff, lista de archivos y salida de checks | UNRUN |
 | `INFRA-TEST-01-HOST-AC02` | Auditoría de solo lectura autorizada; registrar sin secretos | Inventario redactado de SO/recursos/servicios/puertos/SSH/UFW/Caddy/DNS/Podman/Quadlet/usuarios/disco/backups; diferencias frente a lo informado; ningún cambio | `hostnamectl`; `cat /etc/os-release`; `timedatectl`; `ss -ltnp`; `ufw status verbose`; `podman info`; `systemctl --user list-units`; `caddy version`; `dig`; `df -h`; `df -i`; `findmnt`; `getent passwd`; `loginctl list-users`; `ls -ld` | E2 | vps-infra / QA | 1 | Informe redactado con fecha, comandos y diferencias; sin volcar secretos | UNRUN |
 | `INFRA-TEST-01-HOST-AC03` | Autorizar provisión; crear/verificar usuario dedicado | `mftest` existe, sin login SSH ni contraseña, con `subuid`/`subgid`, `linger` y `systemd --user` operativo; UID/GID registrados; `mfadmin` no se reutiliza | `id mftest`; `getent passwd mftest`; `grep -E '^mftest:' /etc/subuid /etc/subgid`; `loginctl show-user mftest -p Linger`; `sudo -iu mftest systemctl --user status`; revisión de `sshd_config`/`AllowUsers` | E2 | vps-infra / QA | 2 | [Evidencia 02A](../docs/evidencia-infra-test-02a.md): identidad, `linger`, subuid/subgid y `systemd --user`; `sshd_config`/`AllowUsers` no revisado en 2A | PASS |
-| `INFRA-TEST-01-HOST-AC04` | Verificar rutas y permisos antes de sembrar | Raíz privada `0700`; `data`/`state` `0700`; DB y `auth.key` `0600`; `releases`/`backups` `0700`; estático `0755` de `root`; `current` atómico dentro de la raíz; sin symlinks/hardlinks en estado | `namei -l`; `stat -c '%a %U:%G %n'`; `find`; `readlink -f`; `findmnt`; `getfacl` si aplica | E2 | vps-infra / QA | 2, 5 | Árbol de rutas, propietarios, modos y destino de `current` | UNRUN |
+| `INFRA-TEST-01-HOST-AC04` | Verificar rutas y permisos de aprovisionamiento (2B) | Raíz privada `0700`; `data` `0700`; `releases`/`backups` `0700`; estático `0755` de `root`; Quadlet `0700`; sin `data/state`, `current`, symlinks ni archivos inesperados | `namei -l`; `stat -c '%a %U:%G %n'`; `find`; `readlink -f` | E2 | vps-infra / QA | 2 | [Evidencia 02B](../docs/evidencia-infra-test-02b.md): árbol de rutas, propietarios, modos, `data/state` y `current` ausentes | PASS |
 | `INFRA-TEST-01-HOST-AC05` | Autorizar DNS; consultar antes/después | `test` resuelve A/AAAA a la IP pública verificada, sin wildcard; el registro raíz no cambia; resolución coherente en resolutores públicos | `dig +short test.myfinanzas.pp.ua A`; `dig +short test.myfinanzas.pp.ua AAAA`; `dig @1.1.1.1`; `dig @8.8.8.8`; `dig +short myfinanzas.pp.ua` antes/después | E3 | vps-infra / usuario | 3 | Respuestas DNS antes/después, proveedor, TTL y comparación del registro raíz | UNRUN |
 | `INFRA-TEST-01-HOST-AC06` | Caddy preparado y validado; unidad y seed listos para la recarga que publica TEST | Bloque independiente válido; HTTPS válido; HTTP→HTTPS; CSP/HSTS corto/noindex/nosniff; `/api/*` a `127.0.0.1:18082` sin fallback SPA; estático desde `current`; sitio raíz intacto | `caddy validate --config <CADDYFILE>`; `caddy reload`; `curl -D- https://test.myfinanzas.pp.ua/api/health`; `curl -I http://test.myfinanzas.pp.ua`; `openssl s_client -connect test.myfinanzas.pp.ua:443 -servername test.myfinanzas.pp.ua`; `curl -D- https://myfinanzas.pp.ua` | E2, E3 | vps-infra / usuario | 4, 6 | Backup y diff de Caddy, `validate`, cabeceras, certificado y respuesta del sitio raíz | UNRUN |
 | `INFRA-TEST-01-HOST-AC07` | Unidad autorizada e instalada con imagen verificada | Unidad activa y habilitada al arranque por `linger`; `Pull=never`; `keep-id` 10001; publica `127.0.0.1:18082:3001`; 1 GiB/1 CPU/128 pids; rootfs solo lectura; tmpfs 64 MiB; sin imagen de seed | `systemctl --user cat myfinanzas-test-api`; `systemctl --user show myfinanzas-test-api -p ActiveState,UnitFileState,MainPID`; `podman inspect myfinanzas-test-api`; `systemd-analyze verify` si aplica; `loginctl show-user mftest -p Linger` | E2 | vps-infra / QA | 5 | Unit file, estado, `podman inspect`, límites y reinicio tras logout/reboot | UNRUN |
@@ -73,6 +75,7 @@ Los placeholders `<…>` se sustituyen solo con valores verificados y redactados
 | `INFRA-TEST-01-HOST-AC16` | TEST en marcha; umbrales de disco acordados | Dentro de ≤ 5 GB propuestos y márgenes ≥ 20 % libre / ≥ 10 % inodos; 1 GiB/1 CPU/128 pids medidos; sin impacto en otros servicios | `systemctl --user show -p MemoryCurrent,CPUUsageNSec,TasksCurrent`; `podman stats --no-stream`; `df -h`; `df -i`; comparación antes/después | E2 | vps-infra / QA | 6 | Métricas, umbrales y comparación con otros servicios | UNRUN |
 | `INFRA-TEST-01-HOST-AC17` | Revisar host, repo, logs y copias | Solo `FT-1`; sin Excel, bases reales, exportaciones, credenciales, TOTP, cookies, claves ni datos personales; evidencia redactada | `seed verify`; inventario de rutas; `find` de `.xlsx`, `.sqlite`, `.env`, claves y exportaciones; revisión de logs; grep de secretos | E0, E2, E4 | usuario / QA | 5, 6 | Inventario redactado, `seed verify` y ausencia de datos ajenos | UNRUN |
 | `INFRA-TEST-01-HOST-AC18` | Selección de release TEST desde `myfinanzas-app/main` | SHA de 40 caracteres, `release_ref=myfinanzas-app/main`, `release_sha` registrado; SHA ancestro de `origin/main`; sin etiqueta móvil; PROD futuro desde `main`; el host no gestiona ramas | `git merge-base --is-ancestor <SHA> origin/main`; `git rev-parse`; manifiesto; `release_ref`/`release_sha`; gate Rootless | E0, E1 | myfinanzas-app / vps-infra / QA | 5 | SHA, rama, manifiesto y gate; sin deploy | UNRUN |
+| `INFRA-TEST-01-HOST-AC19` | Verificar estado y artefactos de despliegue antes de sembrar | `data/state` `0700`; DB y `auth.key` `0600`; `current` atómico dentro de la raíz; sin symlinks/hardlinks en estado | `namei -l`; `stat -c '%a %U:%G %n'`; `find`; `readlink -f`; `findmnt`; `getfacl` si aplica | E2 | vps-infra / QA | 5 | Árbol de estado, DB, `auth.key` y destino de `current` | UNRUN |
 
 `AC-17`/`AC-18` del cierre de Caddy son independientes de los AC host `AC17`/`AC18`; todos
 siguen `UNRUN` y no se cubren con el contador de AC host.
@@ -84,19 +87,24 @@ AC10 queda pendiente de la release/seed desde `main`; el contrato de integració
 ## 4. Fases y gates de autorización
 
 Cada fila exige autorización explícita e identificable del usuario. Una autorización no
-habilita las siguientes. Todos los estados empiezan en `UNRUN`.
+habilita las siguientes. Las fases no autorizadas empiezan en `UNRUN`; la fase 2 de
+aprovisionamiento ya está ejecutada.
 
 | Fase | Objetivo | Precondición | Evidencia de salida | Estado |
 | --- | --- | --- | --- | --- |
 | 0 | Aprobar esta spec y su test plan | Documento revisado | Aprobación registrada | UNRUN |
 | 1 | Auditoría de solo lectura | Autorización de acceso de lectura | Inventario redactado y diferencias | UNRUN |
-| 2 | Provisión del host | Auditoría completada y aprobada | Usuario, rutas, permisos, `linger`, UFW y versiones | PARTIAL — 2A PASS; 2B pendiente |
+| 2 | Provisión del host | Auditoría completada y aprobada | Usuario, rutas, permisos, `linger`, UFW y versiones | PASS — aprovisionamiento 2A+2B; no incluye despliegue |
 | 3 | DNS `test` | Auditoría de DNS/proveedor | Registro A/AAAA, resolución y raíz intacta | UNRUN |
 | 4 | Caddy y HTTPS | Backup y ubicación real de Caddy | `caddy validate`, bloque validado y raíz intacta | UNRUN |
 | 5 | Despliegue y seed | Release/seed desde SHA de `myfinanzas-app/main`; gate Rootless; rutas listas | Seed `0`, unidad activa, frontend y ruta preparada | UNRUN |
 | 6 | Smoke y copias | TEST operativo | HTTPS/health/401, `FT-1`, límites y copia local/externa | UNRUN |
 | 7 | Restauración y rollback | Copia externa verificada | Restore aislado, rollback bloqueado/ensayado y RTO | UNRUN |
 | 8 | Retirada | Autorización específica e inventario | Unidad/Caddy/DNS retirados, datos preservados, raíz intacta | UNRUN |
+
+`[CONFIRMADO]` La fase 2 completada es solo **aprovisionamiento**: usuario, directorios y
+permisos. No crea `data/state`, DB, `auth.key`, `current`, unidad, release, seed ni servicio;
+tampoco declara TEST operativo. El despliegue y el seed son la fase 5.
 
 `[PROPUESTA]` La fase 4 puede preparar y validar Caddy, pero la recarga que publica TEST se
 ejecuta al final de la fase 5, cuando la unidad está activa y el seed verificado. La fase 6
@@ -155,9 +163,10 @@ y el manifiesto de cada release. `vps-infra` no rastrea PRs de MyFinanzas. Este 
   su sucesora) y se revisa aquí antes de la fase 5. No se acepta una unidad desincronizada.
 - La app debe entregar release y seed verificados antes de la fase 5. Las fases 1–4 pueden
   preparar el host, pero no declaran TEST operativo.
-- Los AC de la app (`INFRA-TEST-01-AC04…AC09`, `AC12`, `AC14`, `AC15`, `AC17`, `AC19`) y los host de §3 se
-  enlazan en la trazabilidad de la [spec](02-infra-test-01-host-specification.md#81-trazabilidad-con-spec34).
-  Ningún resultado se hereda.
+- Los AC de la app (`INFRA-TEST-01-AC04…AC09`, `AC12`, `AC14`, `AC15`, `AC17`, `AC19` de
+  la app) y los host de §3 se enlazan en la trazabilidad de la
+  [spec](02-infra-test-01-host-specification.md#81-trazabilidad-con-spec34). Ningún resultado
+  se hereda.
 - El estado de las PRs de la app se consulta en su repositorio; no se infiere permiso
   operativo.
 
@@ -250,7 +259,7 @@ Por cada ejecución se registra, fuera del repositorio y sin secretos:
 - Fecha UTC, fase, operador, autorización aplicable y entorno.
 - SHA de la app, SHA del manifiesto, ID de imagen app y ID de imagen seed.
 - Resultado por AC: `PASS` / `FAIL` / `BLOCKED` / `UNRUN`, comando y salida redactada.
-  AC03 es `PASS`; el resto empieza en `UNRUN`.
+  AC03/AC04 son `PASS`; el resto empieza en `UNRUN`.
 - Para seed: `dataset_sha256`, `seed_manifest_sha256`, checksums lógicos y resultado
   `verify`.
 - Para copias: ruta lógica, checksums origen/destino, retención, resultado de restauración
@@ -268,7 +277,7 @@ claves, bases, importes reales, IPs privadas ni logs crudos.
 | ID | Bloqueo | Efecto | Desbloqueo |
 | --- | --- | --- | --- |
 | B01 | Spec y test plan sin aprobar | Ninguna fase ejecutable | Aprobación del usuario |
-| B02 | 2B sin autorización; fase 1 incompleta (Quadlet real y backups) | Fase 2B y fases 3–8 bloqueadas | Autorizar 2B y completar las comprobaciones pendientes de la fase 1 |
+| B02 | Fase 2 de aprovisionamiento completada; fase 1 incompleta (Quadlet real y backups) y fases 3–8 sin autorización | Fases 3–8 bloqueadas | Autorizaciones de DNS/Caddy/despliegue y completar las comprobaciones pendientes de la fase 1 |
 | B03 | Release y artefacto de seed no construidos desde `main` | Fases 5–8 bloqueadas | Entrega verificada de `myfinanzas-app/main` |
 | B15 | Contrato de integración pendiente de actualización en MyFinanzas | El esquema/seed no está declarado en el manifiesto | MyFinanzas actualice su SPEC34/test plan y entregue release/seed |
 | B05 | DT6/T-BKP abierto | Backup/restore limitados | Copia externa mínima y decisión |
@@ -277,7 +286,7 @@ claves, bases, importes reales, IPs privadas ni logs crudos.
 | B08 | Caddy 2.11.9 auditado; bloque TEST pendiente | Edición del `Caddyfile` puede afectar al sitio raíz | Backup, `caddy validate`, bloque independiente y rollback |
 | B09 | Apex DNS conocido; `test` NXDOMAIN | Sin TLS ni entorno operativo | Autorización y creación del registro `test` |
 | B10 | Destino externo no aprobado | Activación bloqueada | Decisión del usuario |
-| B11 | 35 GB libres y 3 % de inodos medidos | El presupuesto ≤5 GB cabe; revalidar en fase 6 | Medición antes/después |
+| B11 | 35 GB libres y 3 % de inodos medidos en 2B | El presupuesto ≤5 GB cabe; revalidar en fase 6 | Medición antes/después |
 | B12 | `mftest`/`linger` verificados en 2A; unidad y reboot no probados | Unidad no persiste | Prueba de unidad y reboot en fase 5 |
 | B13 | Delegación/cgroup verificados en 2A; unidad Quadlet real no probada | Unidad no arranca o no persiste | Prueba de unidad y reboot en fase 5 |
 
@@ -300,18 +309,21 @@ No se usa `reset-failed`, `chmod`/`chown`, `:U`, borrado de estado ni reintento 
 
 ## 11. Estado actual
 
-- Documentos creados: spec 02 y este test plan. Sin código, sin `infra/`, sin cambios en el
-  VPS.
+- Documentos y evidencias: spec 02, este test plan y las evidencias 2A/2B. Sin cambios de
+  código en esta rama y sin nuevas operaciones en el VPS.
 - Comprobaciones locales reportadas por el desarrollador: `git diff --check`,
   `python3 scripts/check_harness.py` y `./scripts/validate-template` con exit 0; CI `validate`
   en PASS revisado. No acreditan el VPS, Caddy, DNS ni Podman y no sustituyen la QA independiente.
-- Comprobaciones de host: auditoría de solo lectura 2026-11-05, Caddy 2.11.9 y Fase 2A
-  (2026-11-07) documentadas; 2B no ejecutada; seed, backup/restore y TEST desplegado siguen
-  **UNRUN**.
-- AC: **17 / 18 `UNRUN`; AC03 `PASS`** con la evidencia 02A. La auditoría no completa AC02 y
-  AC18 depende del SHA de `main`. Los checks locales no convierten AC01 en `PASS` sin
-  revisión independiente y aprobación.
-- Fases: **0 / 9 completas**; fase 2 parcial (2A `PASS`, 2B pendiente); fases 3–8 no
-  autorizadas. La auditoría de 2026-11-05 cubrió parte de la fase 1, sin declararla completa.
-- Próxima acción independiente: revisión y autorización de 2B; actualización del contrato en
-  MyFinanzas; selección del SHA de `main` antes de la fase 5.
+- Comprobaciones de host: auditoría de solo lectura 2026-11-05, Caddy 2.11.9 y Fases 2A/2B
+  (2026-11-07) documentadas. El aprovisionamiento está completo; seed, backup/restore y TEST
+  desplegado siguen **UNRUN**.
+- AC: **2 / 19 `PASS` (AC03/AC04); 17 / 19 `UNRUN`**. La auditoría no completa AC02 y AC18
+  depende del SHA de `main`. Los checks locales no convierten AC01 en `PASS` sin revisión
+  independiente y aprobación.
+- Fases: fase 2 de **aprovisionamiento** completada (2A+2B); ninguna fase de despliegue
+  completada; fases 3–8 no autorizadas. La auditoría de 2026-11-05 cubrió parte de la fase 1,
+  sin declararla completa.
+- Próxima acción independiente: revisar el
+  [paquete de despliegue](../docs/paquete-despliegue-myfinanzas-test-01.md); obtener de
+  MyFinanzas el SHA/release/seed v27 y la confirmación de `data/state`; autorizar DNS, Caddy
+  y despliegue por separado.

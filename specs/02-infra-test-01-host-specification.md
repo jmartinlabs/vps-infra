@@ -1,7 +1,7 @@
 # 02 — INFRA-TEST-01-HOST: host del entorno TEST de MyFinanzas — Specification
 
 Status: **DRAFT — reconciliada con auditoría (2026-11-05), Caddy 2.11.9, preflight de
-solo lectura y Fase 2A (2026-11-07); pendiente de aprobación.** No autoriza DEV, nuevas
+solo lectura y Fases 2A/2B (2026-11-07); pendiente de aprobación.** No autoriza DEV, nuevas
 fases, DNS, Caddy, UFW, Podman/Quadlet, despliegue, datos reales ni merge.
 Approval source/date: PENDING
 Context and brainstorming: packet de coordinación `INFRA-TEST-01-HOST` (2026-11-04); sin
@@ -22,6 +22,8 @@ Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-inf
 (CLOSED, no mergeado); no es contrato vigente ni autorización.
 Test plan: [02 — test plan](02-infra-test-01-host-testplan.md).
 Evidencia Fase 2A: [02A — identidad rootless](../docs/evidencia-infra-test-02a.md).
+Evidencia Fase 2B: [02B — rutas y permisos](../docs/evidencia-infra-test-02b.md).
+Paquete de despliegue: [MyFinanzas TEST](../docs/paquete-despliegue-myfinanzas-test-01.md).
 
 
 Las marcas `[CONFIRMADO]`, `[INFORMADO]`, `[PROPUESTA]` y `[PENDIENTE]` distinguen hechos
@@ -122,8 +124,8 @@ backups. Evidencia redactada fuera del repositorio.
 
 Diferencias principales: el contenido del Caddyfile ya se leyó completo y es mínimo; Quadlet
 y la delegación cgroup están verificados a nivel de configuración, pero **no se ha probado
-una unidad real ni persistencia tras reboot**. `mftest`, rutas, DNS `test`, backups externos
-y release/seed siguen pendientes.
+una unidad real ni persistencia tras reboot**. `mftest` y las rutas base se resolvieron en
+2A/2B; DNS `test`, backups externos, release/seed, estado y despliegue siguen pendientes.
 
 `[PENDIENTE]` La ruta de estado `/srv/myfinanzas-test/data/state` es la asumida por esta spec
 y el preflight; MyFinanzas debe confirmarla antes de la fase 5. La corrección del wrapper
@@ -147,10 +149,34 @@ Datasette se revisa en PR #22; no se instala ni se despliega desde esta spec.
 Consecuencias:
 
 - AC03 del test plan host pasa a `PASS`.
-- **2B no se ha ejecutado ni autorizado**: no se han creado las rutas de TEST.
+- **2B se ejecutó después con PASS**; ver §2.3.
 - La unidad Quadlet real y la persistencia tras reboot siguen sin probar; no se declaran
   operativas.
 - No se ejecutó recuperación destructiva ni se repitieron las operaciones de 2A.
+
+### 2.3 Fase 2B ejecutada — 2026-11-07
+
+`[CONFIRMADO]` Fase 2B completada con **PASS** por el usuario en sesión SSH interactiva con
+`sudo` normal. Evidencia: [02B](../docs/evidencia-infra-test-02b.md).
+
+| Comprobación | Resultado |
+| --- | --- |
+| Identidad | `mftest` UID/GID `1002:1002`. |
+| Raíz privada | `/srv/myfinanzas-test` de `mftest:mftest` `0700`. |
+| Datos | `/srv/myfinanzas-test/data` `0700`; `data/state` ausente. |
+| Releases y backups | Directorios `0700` de `mftest:mftest`, vacíos. |
+| Raíz estática | `/var/www/myfinanzas-test` de `root:root` `0755`; `current` ausente. |
+| Quadlet | `~mftest/.config/containers/systemd` `0700` de `mftest:mftest`. |
+| Recursos | 35 GB libres; inodos utilizados 3 %. |
+| Alcance | Sin cambios en DNS, Caddy, UFW, MyFinanzas, Datasette ni PROD. |
+
+Consecuencias:
+
+- AC04 de **aprovisionamiento** pasa a `PASS`.
+- La **Fase 2 de aprovisionamiento** queda completada (2A + 2B).
+- **No implica despliegue**: `data/state`, DB, `auth.key`, `current`, unidad, release, seed,
+  DNS, Caddy, smoke y copias siguen pendientes de las fases 3–7.
+- No se ejecutó recuperación destructiva.
 
 ## 3. Frontera de responsabilidades
 
@@ -246,8 +272,11 @@ TEST; no se asume que Caddy y el contenedor compartan red o permisos.
 | `/var/www/myfinanzas-test/current` | `root:root`, symlink | Release estática activa | Cambio atómico; el destino no sale de la raíz. |
 | `~mftest/.config/containers/systemd` | `mftest:mftest` `0700` | Unidad Quadlet | Sin secretos en la unidad. |
 
-`[CONFIRMADO]` Ninguna ruta `/srv/myfinanzas-test` existe todavía; se crea en la fase 2. No se
-reutiliza el directorio de backups del operador para TEST.
+`[CONFIRMADO]` La raíz privada, `data`, `releases`, `backups`, la raíz estática y los
+directorios Quadlet se crearon con los propietarios y modos indicados en la Fase 2B. No se
+crearon `data/state`, DB, `auth.key` ni `current`; pertenecen a las fases 5–6. No se
+reutiliza el directorio de backups del operador para TEST. Evidencia:
+[02B](../docs/evidencia-infra-test-02b.md).
 
 `[CONFIRMADO]` El propietario efectivo del host no tiene por qué coincidir con el UID
 interno 10001; `keep-id` mapea la identidad. La verificación debe comprobar el mapeo real y
@@ -259,7 +288,7 @@ que los archivos son legibles/escriturables por el UID efectivo de la app, no so
 - `[CONFIRMADO]` Memoria 1 GiB, CPU 1, pids 128 y tmpfs 64 MiB para el contenedor.
 - `[PROPUESTA]` Presupuesto de disco ≤ 5 GB para TEST, con márgenes mínimos de 20 % libre
   y 10 % de inodos antes de desplegar. `[CONFIRMADO]` El host tiene 35 GB libres y 3 % de
-  inodos; el valor final se vuelve a medir en la fase 2.
+  inodos según la Fase 2B; se vuelve a medir antes del despliegue.
 - `[PROPUESTA]` La release actual y la anterior se conservan; no hay poda global ni
   automática de copias.
 - `[CONFIRMADO]` Sin secretos en Git, PR, chat, logs, imagen o variables públicas.
@@ -628,7 +657,9 @@ restauración no se han verificado y no se borra ni modifica sin autorización.
 ## 8. Criterios de aceptación host
 
 Todos son **documentales** hasta que se ejecuten en la fase indicada del
-[test plan](02-infra-test-01-host-testplan.md). Estado inicial: `UNRUN`.
+[test plan](02-infra-test-01-host-testplan.md). AC03 y AC04 pasan a `PASS` con las evidencias
+2A/2B; el resto sigue `UNRUN`. La Fase 2 de **aprovisionamiento** está completada, pero no
+implica despliegue ni declara TEST operativo.
 
 La auditoría de 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de
 backups, pero **no completó** la revalidación de Quadlet/cgroup ni el inventario profundo de
@@ -640,7 +671,7 @@ backups. Por eso AC02 no se marca `PASS`. AC10 queda pendiente de la release/see
 | `INFRA-TEST-01-HOST-AC01` | La rama solo añade esta spec y su test plan; no toca código, `infra/`, workflows, `docs/` operativos ni el VPS; no hay acceso remoto, deploy ni merge. | 0 |
 | `INFRA-TEST-01-HOST-AC02` | Auditoría de solo lectura completada y redactada: identidad/SO/recursos, servicios, puertos, SSH, UFW, Caddy, DNS, Podman/Quadlet, usuarios, disco/inodos y backups; sin cambios y con diferencias frente a lo informado. | 1 |
 | `INFRA-TEST-01-HOST-AC03` | `mftest` existe como usuario dedicado, sin login SSH ni contraseña, con `subuid`/`subgid`, `linger` y `systemd --user` operativo; UID/GID registrados y sin reutilizar `mfadmin`. | 2 |
-| `INFRA-TEST-01-HOST-AC04` | Rutas y permisos: raíz privada `0700`, `data`/`state` `0700`, DB y `auth.key` `0600`, `releases`/`backups` `0700`, estático `0755` de `root`, `current` atómico dentro de la raíz y sin symlinks/hardlinks en el estado. | 2 |
+| `INFRA-TEST-01-HOST-AC04` | Rutas y permisos de aprovisionamiento: raíz privada `0700`, `data` `0700`, `releases`/`backups` `0700`, estático `0755` de `root`, Quadlet `0700`; sin `data/state`, `current`, symlinks ni archivos inesperados. | 2 |
 | `INFRA-TEST-01-HOST-AC05` | `test.myfinanzas.pp.ua` resuelve A/AAAA a la IP pública verificada, sin wildcard; el registro raíz y el proveedor no cambian; la resolución se confirma con resolutores públicos. | 3 |
 | `INFRA-TEST-01-HOST-AC06` | Caddy valida un bloque independiente para TEST, sirve HTTPS válido, redirige HTTP→HTTPS, aplica CSP/HSTS corto/noindex/nosniff, proxyfica `/api/*` a `127.0.0.1:18082` sin fallback SPA y sirve el estático desde `current`; el sitio raíz sigue intacto. | 4, 6 |
 | `INFRA-TEST-01-HOST-AC07` | La unidad Quadlet está activa y habilitada al arranque por `linger`, usa imagen inmutable `Pull=never`, `keep-id` 10001, publica `127.0.0.1:18082:3001`, limita 1 GiB/1 CPU/128 pids, rootfs de solo lectura, tmpfs 64 MiB y no referencia la imagen de seed. | 5 |
@@ -655,13 +686,15 @@ backups. Por eso AC02 no se marca `PASS`. AC10 queda pendiente de la release/see
 | `INFRA-TEST-01-HOST-AC16` | TEST respeta el presupuesto de disco acordado y los márgenes de espacio/inodos; memoria, CPU y pids se miden dentro de los límites y sin afectar a otros servicios. | 6 |
 | `INFRA-TEST-01-HOST-AC17` | No hay Excel, bases reales, exportaciones, credenciales, TOTP, cookies, claves ni datos personales en host, repo, logs o copias; solo `FT-1` identificable y evidencia redactada. | 5, 6 |
 | `INFRA-TEST-01-HOST-AC18` | La release TEST se construye desde un SHA inmutable de `myfinanzas-app/main`, registrado con `release_ref=myfinanzas-app/main` y `release_sha`; se comprueba que el SHA es ancestro de `origin/main` y no se usa una etiqueta móvil; PROD futuro usará `main`; el host no gestiona ramas. | 5 |
+| `INFRA-TEST-01-HOST-AC19` | Estado y artefactos de despliegue: `data/state` `0700`, DB y `auth.key` `0600`, `current` atómico dentro de la raíz y sin symlinks/hardlinks en el estado. | 5 |
 
 ### 8.1 Trazabilidad con SPEC34
 
 | Host AC | SPEC34 AC relacionadas | Relación |
 | --- | --- | --- |
 | AC01 | AC01 | Alcance documental y ausencia de cambios. |
-| AC02–AC04 | — | Controles propios del host (auditoría, identidad, rutas). |
+| AC02–AC04 | — | Controles propios del host (auditoría, identidad, rutas de aprovisionamiento). |
+| AC19 | — | Estado, DB, `auth.key` y `current` antes de sembrar. |
 | AC05 | AC17 | DNS `test` sin tocar el dominio raíz. |
 | AC06 | AC12, AC17 | HTTPS, cabeceras, cookies y sitio raíz. |
 | AC07 | AC11, AC18 | Unidad, UID y límites. |
@@ -726,8 +759,8 @@ acredita HTTPS, smoke y copias.
 | DNS real | Apex A/TTL 14400 conocido; `test` NXDOMAIN | Sin registro `test` no hay TLS ni entorno operativo. |
 | Flake SQLite **B3** | Sin reproducción Linux | Puede aparecer en el ensayo; no se oculta. |
 | VPS 2 vCPU / 3,8 GiB / 40 GB, 35 GB libres, inodos 3 % | `[CONFIRMADO]` auditoría | Presupuesto pequeño; límites y medición obligatorios. |
-| Quadlet y delegación cgroup | Delegación `cpu memory pids` y binario Quadlet verificados; unidad real y reboot no probados | H1/H5 parcialmente verificadas; la unidad bloquea fase 5. |
-| Acceso al host | Auditoría de solo lectura y Fase 2A ejecutadas; 2B y fases 3–8 no autorizadas | 2B y fases 3–8 bloqueadas. |
+| Quadlet y delegación cgroup | Delegación `cpu memory pids` y binario Quadlet verificados; unidad real y reboot no probados | H1 confirmada; H5 pendiente de la unidad real; bloquea fase 5. |
+| Acceso al host | Auditoría de solo lectura y Fases 2A/2B ejecutadas; fases 3–8 no autorizadas | Fases 3–8 bloqueadas. |
 
 ### 10.2 Riesgos
 
@@ -756,19 +789,20 @@ acredita HTTPS, smoke y copias.
 
 ### 10.3 Decisiones de host propuestas
 
-| ID | Decisión | Recomendación | Estado tras revisión 2026-11-05 |
+| ID | Decisión | Recomendación | Estado tras revisiones 2026-11-05 y Fases 2A/2B (2026-11-07) |
 | --- | --- | --- | --- |
 | H1 | Identidad | Usuario dedicado `mftest`, rootless, sin login SSH, con `linger`. | `[CONFIRMADO]` Fase 2A (2026-11-07): UID/GID 1002, subuid/subgid 231072:65536, linger y `systemd --user` operativos; Quadlet real y reboot pendientes. |
 | H2 | Exposición | Caddy → `127.0.0.1:18082` → `3001`; sin publicar API/DB/Vite. | `[PROPUESTA]` Compatible con Caddy 2.11.9 y UFW 22/80/443; no requiere puertos nuevos. |
-| H3 | Rutas | `/srv/myfinanzas-test/{data,releases,backups}` y `/var/www/myfinanzas-test/current`. | `[PROPUESTA]` Hay 35 GB libres; `/srv` existe, pero las rutas TEST aún no se han creado (2B pendiente). No reutilizar backups de `mfadmin`. |
+| H3 | Rutas | `/srv/myfinanzas-test/{data,releases,backups}` y `/var/www/myfinanzas-test/current`. | `[CONFIRMADO]` Fase 2B: raíz, datos, releases, backups y raíz estática creados con los modos indicados; `data/state` y `current` siguen pendientes de despliegue. No reutilizar backups de `mfadmin`. |
 | H4 | Seed | Consumir el artefacto test-only en orden `production-init → seed → setup`, con marcador/manifiesto y reset archivado. | `[CONFIRMADA]` SPEC34 D1–D5; bloqueada por la actualización del contrato en MyFinanzas y el artefacto de seed. |
 | H5 | Unidad | Unidad TEST propia de `vps-infra`; no reutilizar `runtime.py:render` de PROD. | `[CONFIRMADA]` D6; pendiente validar Quadlet/cgroup. |
 | H6 | Recuperación | Copia local+externa cifrada antes de habilitar Caddy; restore aislado en fase 7 antes de declarar TEST operativo. | `[PENDIENTE]` El destino externo y la custodia de `age` siguen sin aprobar; la copia de Caddy no cubre la app. |
 
 `[PROPUESTA]` Revisión H1–H6: la arquitectura sigue siendo la más simple para 2 vCPU/3,8 GiB;
-no añade contenedores ni puertos. H2/H3 son compatibles con lo auditado; H1 y H5 dependen de
-la validación rootless/Quadlet; H4 depende del contrato de app; **H6 es la decisión material
-pendiente** junto con el destino externo. Esta revisión no aprueba H1–H6.
+no añade contenedores ni puertos. H1 y las rutas base de H3 están confirmadas por 2A/2B; H5
+sigue pendiente de la unidad Quadlet real y reboot; H4 depende del contrato de app; **H6 es
+la decisión material pendiente** junto con el destino externo. Esta revisión no aprueba
+H1–H6 ni autoriza despliegue.
 
 ### 10.4 Aprobaciones que requieren al usuario
 
@@ -776,7 +810,7 @@ pendiente** junto con el destino externo. Esta revisión no aprueba H1–H6.
 | --- | --- | --- |
 | Contrato de integración | MyFinanzas actualice SPEC34/test plan y entregue release/seed con el contrato declarado | Fase 5; sin release/seed AC10 no es válido |
 | Backup externo y recuperación (H6) | Destino, custodia de la identidad `age`, retención, RPO/RTO mínimo y prueba de restore | Fase 6 (copia) y fase 7 (restore) |
-| Diseño host H1–H3 | `mftest`, loopback `18082`, rutas `/srv` y `/var/www` | Fase 2 |
+| Diseño host H1–H3 | `mftest`, loopback `18082`, rutas `/srv` y `/var/www` | Fase 2 completada; despliegue en fase 5 |
 | Quadlet/cgroup | Validar Podman 5.4.2, `linger`, `systemd --user` y arranque tras reboot | Fases 2 y 5 |
 | DNS TEST | Crear `test` A/AAAA sin tocar el apex | Fase 3 |
 | Ventana y operador | Quién ejecuta cada fase y cuándo | Fases 2–8 |
@@ -802,8 +836,8 @@ gestiona ramas.
 - **Secuencia:** la app debe entregar release y seed verificados antes de la fase 5 del
   host. Las fases 1–4 del host pueden preparar el terreno, pero no declaran TEST operativo.
 - **Test plans:** el de la app cubre sus AC, incluidas AC04–AC09, AC12, AC14, AC15, AC17 y
-  AC19; este plan cubre los AC host y enlaza la trazabilidad de §8.1. Ningún resultado se
-  hereda.
+  AC19 de la app; este plan cubre los AC host y enlaza la trazabilidad de §8.1. Ningún
+  resultado se hereda.
 - **Merge:** la aprobación de SPEC34 no autoriza DEV, release, despliegue ni merge. El
   estado de sus PRs se consulta en el repositorio de la app; no se infiere permiso operativo.
 

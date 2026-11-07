@@ -34,9 +34,11 @@ unidad, smoke y copia local**, no la creación de otro host ni PROD.
 ## 3. Artefactos que debe entregar MyFinanzas
 
 1. **SHA candidato exacto** de `myfinanzas-app/main` (40 caracteres), congelado para TEST.
-   Hoy se observa `41a7971` con `schemaVersion=27`, pero no se asume como candidato final.
+   Al preparar este paquete, `origin/main` estaba en
+   `de9597e8a2170149c84bdd1a641b3d5a8b28164c` con `schemaVersion=27`; no se asume que siga
+   siendo el candidato final si hay nuevos merges.
 2. **Gate Rootless `SUCCESS` sobre ese SHA exacto**. El único `SUCCESS` reciente observado
-   corresponde a `f800965`; no sirve para otro SHA.
+   corresponde a `f800965`; no sirve para `de9597e` ni para otro SHA sin rerun.
 3. **Release privada** con `image.oci.tar`, frontend, `manifest.json`, `manifest.sha256`,
    `index.json`, blobs OCI, IDs inmutables y `release_ref=myfinanzas-app/main`.
 4. **Contrato de esquema/seed v27** declarado en el manifiesto, no solo en el código.

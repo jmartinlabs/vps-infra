@@ -1,0 +1,957 @@
+#!/usr/bin/env python3
+"""Unit tests for the Datasette admin policy (no Datasette or Podman needed)."""
+from __future__ import annotations
+
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import pwd
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "infra" / "datasette-admin"))
+
+os.environ.setdefault("VPS_ADMIN_ACTOR", "test-owner")
+os.environ.setdefault("VPS_ADMIN_SESSION", "test-session")
+import policy  # noqa: E402
+
+_loader = importlib.machinery.SourceFileLoader(
+    "datasette_admin_wrapper", str(ROOT / "scripts" / "datasette-admin")
+)
+_spec = importlib.util.spec_from_loader("datasette_admin_wrapper", _loader)
+wrapper = importlib.util.module_from_spec(_spec)
+_loader.exec_module(wrapper)
+
+
+class WrapperTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        os.chmod(self.root, 0o700)
+
+    def make_private_dir(self, name):
+        path = self.root / name
+        path.mkdir(mode=0o700)
+        return path
+
+    def make_private_file(self, path, content=b"x"):
+        path.write_bytes(content)
+        os.chmod(path, 0o600)
+        return path
+
+    def test_writer_service_is_fixed(self):
+        self.assertEqual(wrapper.APP_SERVICE, "myfinanzas-api.service")
+        with self.assertRaises(SystemExit):
+            wrapper.parse_args(
+                [
+                    "start",
+                    "test",
+                    "--state",
+                    "/srv/myfinanzas-test/data",
+                    "--app-service",
+                    "other.service",
+                ]
+            )
+
+    def test_app_command_uses_myfinanzas_cli_and_hardening(self):
+        command = wrapper.app_podman_command(
+            "sha256:" + "a" * 64,
+            ["/state:/var/lib/myfinanzas/state:rw"],
+            {"NODE_ENV": "production"},
+            ["create", "/backup/new", "age1recipient"],
+        )
+        self.assertIn("--network=none", command)
+        self.assertIn("--read-only", command)
+        self.assertIn("--pull=never", command)
+        self.assertIn("label=disable", command)
+        self.assertIn("apps/api/src/backup-cli.ts", command)
+        self.assertIn(
+            "/tmp:rw,noexec,nosuid,nodev,tmpcopyup,mode=1777,size=64m",
+            command,
+        )
+        self.assertEqual(command[-3:], ["create", "/backup/new", "age1recipient"])
+        self.assertIn("/state:/var/lib/myfinanzas/state:rw", command)
+
+    def test_private_file_rejects_hardlinks(self):
+        private = self.make_private_file(self.root / "private", b"x")
+        linked = self.root / "linked"
+        os.link(private, linked)
+        with self.assertRaises(SystemExit):
+            wrapper.check_private_path(
+                linked, 0o600, os.getuid(), "hardlinked file"
+            )
+
+    def test_artifact_directory_checks_mode_and_content(self):
+        backup = self.make_private_dir("backup")
+        self.make_private_file(backup / "database.age", b"db")
+        self.make_private_file(backup / "access-key.age", b"key")
+        wrapper.check_artifact_directory(
+            backup, ("database.age", "access-key.age"), "backup"
+        )
+        empty = self.make_private_dir("empty")
+        for name in ("database.age", "access-key.age"):
+            self.make_private_file(empty / name, b"")
+        with self.assertRaises(SystemExit):
+            wrapper.check_artifact_directory(
+                empty, ("database.age", "access-key.age"), "backup"
+            )
+
+    def test_writer_service_must_be_loaded_and_inactive(self):
+        def result(load_state, active_state, code=0):
+            output = f"LoadState={load_state}\nActiveState={active_state}\n"
+            return subprocess.CompletedProcess([], code, output, "")
+
+        for active in ("inactive", "failed"):
+            with mock.patch.object(
+                wrapper, "run", return_value=result("loaded", active)
+            ):
+                wrapper.check_writer_stopped()
+        for active in ("active", "activating", "deactivating", "unknown"):
+            with mock.patch.object(
+                wrapper, "run", return_value=result("loaded", active)
+            ):
+                with self.assertRaises(SystemExit):
+                    wrapper.check_writer_stopped()
+        with mock.patch.object(
+            wrapper, "run", return_value=result("not-found", "inactive")
+        ):
+            with self.assertRaises(SystemExit):
+                wrapper.check_writer_stopped()
+        with mock.patch.object(
+            wrapper, "run", return_value=result("loaded", "inactive", code=1)
+        ):
+            with self.assertRaises(SystemExit):
+                wrapper.check_writer_stopped()
+
+    def test_backup_and_restore_orchestration(self):
+        state = self.make_private_dir("state")
+        self.make_private_file(state / "database.sqlite", b"db")
+        self.make_private_file(state / "auth.key", b"key")
+        backup_parent = self.make_private_dir("backups")
+        restore_parent = self.make_private_dir("restores")
+        identity = self.make_private_file(self.root / "identity", b"age")
+        backup_path = backup_parent / "copia"
+        restore_path = restore_parent / "restaurada"
+
+        def fake_run(command, **kwargs):
+            if "systemctl" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "LoadState=loaded\nActiveState=inactive\n",
+                    "",
+                )
+            if "create" in command:
+                os.mkdir(backup_path, 0o700)
+                self.make_private_file(backup_path / "database.age", b"db")
+                self.make_private_file(backup_path / "access-key.age", b"key")
+            elif "restore" in command:
+                os.mkdir(restore_path, 0o700)
+                self.make_private_file(restore_path / "database.sqlite", b"db")
+                self.make_private_file(restore_path / "auth.key", b"key")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        args = SimpleNamespace(
+            myfinanzas_image="sha256:" + "a" * 64,
+            app_origin="https://myfinanzas.example",
+            backup_path=str(backup_path),
+            restore_path=str(restore_path),
+            backup_identity=str(identity),
+            backup_recipient="age1recipient",
+        )
+        with mock.patch.object(wrapper, "run", side_effect=fake_run):
+            result = wrapper.backup_and_verify("prod", args, state)
+        self.assertEqual(result, backup_path.resolve())
+        self.assertTrue((backup_path / "database.age").is_file())
+        self.assertTrue((restore_path / "database.sqlite").is_file())
+
+    def test_backup_rejects_existing_destinations_and_inactive_writer(self):
+        state = self.make_private_dir("state")
+        self.make_private_file(state / "database.sqlite", b"db")
+        self.make_private_file(state / "auth.key", b"key")
+        backup_parent = self.make_private_dir("backups")
+        restore_parent = self.make_private_dir("restores")
+        identity = self.make_private_file(self.root / "identity", b"age")
+        existing = backup_parent / "existing"
+        existing.mkdir(mode=0o700)
+        args = SimpleNamespace(
+            myfinanzas_image="sha256:" + "a" * 64,
+            app_origin="https://myfinanzas.example",
+            backup_path=str(existing),
+            restore_path=str(restore_parent / "restore"),
+            backup_identity=str(identity),
+            backup_recipient="age1recipient",
+        )
+        with mock.patch.object(
+            wrapper,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                [], 0, "LoadState=loaded\nActiveState=inactive\n", ""
+            ),
+        ):
+            with self.assertRaises(SystemExit):
+                wrapper.backup_and_verify("prod", args, state)
+        args.backup_path = str(backup_parent / "new")
+        with mock.patch.object(
+            wrapper,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                [], 0, "LoadState=loaded\nActiveState=active\n", ""
+            ),
+        ):
+            with self.assertRaises(SystemExit):
+                wrapper.backup_and_verify("prod", args, state)
+
+
+class EnvironmentBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.state = self.root / "state"
+        self.state.mkdir(mode=0o700)
+        self.other = self.root / "other"
+        self.other.mkdir(mode=0o700)
+        self.user = pwd.getpwuid(os.getuid())
+        self.expected = {"user": self.user.pw_name, "state": str(self.state)}
+
+    def test_authorized_binding(self):
+        self.assertEqual(
+            wrapper.bind_environment(
+                "test",
+                self.state,
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected=self.expected,
+            ),
+            self.state.resolve(),
+        )
+
+    def test_rejects_wrong_environment_path_and_identity(self):
+        cases = (
+            ("prod", self.other, self.user.pw_uid, self.user.pw_name, self.expected),
+            ("test", self.state, self.user.pw_uid, "not-the-user", self.expected),
+            ("test", self.state, self.user.pw_uid + 1, self.user.pw_name, self.expected),
+            ("test", self.state, 0, "root", self.expected),
+            (
+                "test",
+                self.state,
+                self.user.pw_uid,
+                self.user.pw_name,
+                {"user": "definitely-missing", "state": str(self.state)},
+            ),
+        )
+        for env, state, uid, username, expected in cases:
+            with self.assertRaises(SystemExit):
+                wrapper.bind_environment(
+                    env,
+                    state,
+                    uid=uid,
+                    username=username,
+                    expected=expected,
+                )
+
+    def test_rejects_symlinks_and_dotdot(self):
+        link = self.root / "link"
+        link.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            wrapper.bind_environment(
+                "test",
+                link,
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected=self.expected,
+            )
+        nested = self.root / "parent"
+        nested.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            wrapper.bind_environment(
+                "test",
+                nested / "child",
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected=self.expected,
+            )
+        with self.assertRaises(SystemExit):
+            wrapper.bind_environment(
+                "test",
+                self.state / ".." / "state",
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected=self.expected,
+            )
+        expected_link = self.root / "expected-link"
+        expected_link.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            wrapper.bind_environment(
+                "test",
+                self.state,
+                uid=self.user.pw_uid,
+                username=self.user.pw_name,
+                expected={"user": self.user.pw_name, "state": str(expected_link)},
+            )
+
+
+class PolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.audit = str(Path(self.temp.name) / "audit.jsonl")
+        self.db = sqlite3.connect(str(Path(self.temp.name) / "policy.db"))
+        self.addCleanup(self.db.close)
+        self.db.executescript(
+            """
+            CREATE TABLE movimientos(id INTEGER PRIMARY KEY, importe TEXT NOT NULL);
+            CREATE TABLE audit(id INTEGER PRIMARY KEY, entidad TEXT NOT NULL, detalle TEXT);
+            CREATE TABLE owner(id INTEGER PRIMARY KEY, password TEXT, secret TEXT);
+            CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+            CREATE TRIGGER mov_audit AFTER INSERT ON movimientos
+            BEGIN INSERT INTO audit(entidad, detalle) VALUES ('movimientos','insert'); END;
+            INSERT INTO schema_version(version) VALUES (27);
+            INSERT INTO owner(id,password,secret) VALUES (1,'hash','secret');
+            """
+        )
+
+    def install(self, maintenance=False):
+        policy.install(self.db, "poc", maintenance=maintenance, audit_path=self.audit)
+
+    def assertDenied(self, sql):
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute(sql)
+
+    def test_business_dml_and_trigger_audit(self):
+        self.install()
+        self.db.execute("INSERT INTO movimientos(importe) VALUES ('10.00')")
+        self.assertEqual(
+            self.db.execute("SELECT count(*) FROM audit").fetchone()[0], 1
+        )
+        self.db.execute("UPDATE movimientos SET importe='11.00' WHERE id=1")
+        self.assertEqual(
+            self.db.execute("SELECT importe FROM movimientos").fetchone()[0], "11.00"
+        )
+
+    def test_habitual_denies_protected_dml(self):
+        self.install()
+        self.assertDenied("INSERT INTO audit(entidad) VALUES ('x')")
+        self.assertDenied("UPDATE audit SET detalle='x' WHERE id=1")
+        self.assertDenied("DELETE FROM audit WHERE id=1")
+        self.assertDenied("INSERT INTO owner(password,secret) VALUES ('x','y')")
+        self.assertDenied("UPDATE owner SET password='x' WHERE id=1")
+        self.assertDenied("INSERT INTO schema_version(version) VALUES (28)")
+
+    def test_maintenance_allows_protected_but_not_audit_mutation_or_schema(self):
+        self.install(maintenance=True)
+        self.db.execute("INSERT INTO audit(entidad,detalle) VALUES ('x','manual')")
+        self.assertDenied("UPDATE audit SET detalle='changed' WHERE id=1")
+        self.assertDenied("DELETE FROM audit WHERE id=1")
+        self.assertDenied("INSERT INTO schema_version(version) VALUES (28)")
+        self.assertDenied("UPDATE schema_version SET version=28")
+
+    def test_ddl_and_attach_denied(self):
+        self.install()
+        self.assertDenied("CREATE TABLE blocked(id INTEGER)")
+        self.assertDenied("ALTER TABLE movimientos ADD COLUMN extra TEXT")
+        self.assertDenied("ATTACH DATABASE '/tmp/side.db' AS side")
+        self.assertDenied("PRAGMA foreign_keys=OFF")
+        self.assertDenied("PRAGMA journal_mode=DELETE")
+        self.assertDenied("PRAGMA page_size=8192")
+        self.assertDenied("CREATE VIRTUAL TABLE vt USING fts5(content)")
+        self.assertDenied("VACUUM")
+        self.assertDenied("VACUUM INTO '/tmp/vacuum-copy.db'")
+        self.assertDenied("ANALYZE")
+        self.db.execute("PRAGMA table_info(movimientos)")
+        self.db.execute("PRAGMA schema_version")
+
+    def test_schema_and_user_version_writes_denied(self):
+        self.install(maintenance=True)
+        self.assertDenied("PRAGMA schema_version=99")
+        self.assertDenied("PRAGMA user_version=99")
+        self.assertDenied("PRAGMA application_id=99")
+        self.assertDenied("PRAGMA query_only=ON")
+        self.db.execute("PRAGMA schema_version")
+
+    def test_unknown_table_and_audit_replace_denied(self):
+        # DDL is blocked after install, so create the unknown table before install.
+        self.db.close()
+        self.db = sqlite3.connect(str(Path(self.temp.name) / "policy.db"))
+        self.db.execute("CREATE TABLE unknown_table(id INTEGER)")
+        self.install()
+        self.assertDenied("INSERT INTO unknown_table(id) VALUES (1)")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("INSERT OR REPLACE INTO audit(entidad) VALUES ('x')")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql('INSERT OR REPLACE INTO "audit"(entidad) VALUES ("x")')
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql(
+                "INSERT INTO audit(entidad) VALUES ('x') ON CONFLICT(id) DO UPDATE SET detalle='x'"
+            )
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql(
+                "WITH x AS (SELECT 1) INSERT INTO audit(entidad) VALUES ('x')"
+            )
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("VACUUM INTO '/tmp/x.db'")
+
+    def test_sql_scanner_is_string_aware(self):
+        self.assertEqual(
+            policy.normalize_sql(
+                "INSERT INTO movimientos(importe) VALUES ('a--b', 'replace') -- audit"
+            ),
+            "INSERT INTO movimientos(importe) VALUES (?, ?)",
+        )
+        # Literals containing SQL keywords must not cause false positives.
+        policy.validate_write_sql(
+            "INSERT INTO movimientos(importe) VALUES ('audit -- replace')"
+        )
+        policy.validate_write_sql(
+            "INSERT INTO movimientos(importe) VALUES ('x') /* audit replace */"
+        )
+        policy.validate_write_sql(
+            'INSERT INTO movimientos(importe) VALUES ("audit replace")'
+        )
+        self.assertNotIn(
+            "secret-value",
+            policy.normalize_sql(
+                'INSERT INTO movimientos(importe) VALUES ("secret-value")'
+            ),
+        )
+        self.assertEqual(
+            policy.target_table("INSERT OR REPLACE INTO 'audit'(id) VALUES (1)"),
+            "audit",
+        )
+        self.assertEqual(
+            policy.target_table('UPDATE main."audit" SET entidad=\'x\' WHERE id=1'),
+            "audit",
+        )
+        self.assertEqual(
+            policy.target_table(
+                "INSERT OR REPLACE INTO main . 'audit'(id) VALUES (1)"
+            ),
+            "audit",
+        )
+        self.assertEqual(
+            policy.target_table(
+                'DELETE FROM "main" . "audit" WHERE id=1'
+            ),
+            "audit",
+        )
+        policy.validate_connection_sql("WITH x AS (SELECT 1) SELECT * FROM x")
+        policy.validate_connection_sql("BEGIN IMMEDIATE")
+        policy.validate_connection_sql("COMMIT")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("BEGIN IMMEDIATE")
+        with self.assertRaises(ValueError):
+            policy.validate_connection_sql(
+                "WITH x AS (SELECT 1) INSERT INTO movimientos(importe) VALUES ('x')"
+            )
+        self.assertEqual(
+            policy.write_operation(
+                "WITH x AS (SELECT 1) INSERT INTO movimientos(importe) VALUES ('x')"
+            ),
+            "INSERT",
+        )
+        policy.validate_read_sql("SELECT 1 -- VACUUM")
+        policy.validate_read_sql("PRAGMA schema_version")
+        with self.assertRaises(ValueError):
+            policy.validate_read_sql("VACUUM")
+        with self.assertRaises(ValueError):
+            policy.validate_read_sql("PRAGMA journal_mode=WAL")
+
+    def test_repeated_identical_writes_are_audited(self):
+        self.install()
+        self.db.execute("INSERT INTO movimientos(importe) VALUES ('1.00')")
+        self.db.execute("INSERT INTO movimientos(importe) VALUES ('1.00')")
+        with open(self.audit, encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
+        authored = [r for r in records if "movimientos" in r["sql"]]
+        self.assertEqual(len(authored), 2, records)
+
+    def test_cte_write_is_audited(self):
+        self.install()
+        self.db.execute(
+            "WITH x AS (SELECT '5.00' AS importe) "
+            "INSERT INTO movimientos(importe) SELECT importe FROM x"
+        )
+        with open(self.audit, encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
+        self.assertTrue(any(record["op"] == "INSERT" for record in records))
+        self.assertTrue(any("WITH" in record["sql"] for record in records))
+
+    def test_audit_replace_upsert_and_quoted_name_are_append_only(self):
+        self.install(maintenance=True)
+        self.db.execute("INSERT INTO audit(entidad,detalle) VALUES ('a','a')")
+        for sql in (
+            "INSERT OR REPLACE INTO 'audit'(id,entidad) VALUES (1,'x')",
+            "REPLACE INTO 'audit'(id,entidad) VALUES (1,'x')",
+            'INSERT OR REPLACE INTO "audit"(id,entidad) VALUES (1,"x")',
+            "INSERT INTO audit(id,entidad) VALUES (1,'x') "
+            "ON CONFLICT(id) DO UPDATE SET entidad='x'",
+        ):
+            with self.assertRaises(sqlite3.DatabaseError, msg=sql):
+                self.db.execute(sql)
+        self.db.execute("INSERT OR REPLACE INTO 'audit'(id,entidad) VALUES (99,'new')")
+        self.assertEqual(
+            self.db.execute(
+                "SELECT count(*) FROM audit WHERE entidad='new'"
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_audit_unique_conflict_replace_aborts(self):
+        db_path = Path(self.temp.name) / "unique_replace.db"
+        setup = sqlite3.connect(db_path)
+        setup.executescript(
+            """
+            CREATE TABLE audit(
+                id INTEGER PRIMARY KEY,
+                entidad TEXT NOT NULL UNIQUE,
+                detalle TEXT
+            );
+            INSERT INTO audit(id, entidad) VALUES (1, 'existing');
+            """
+        )
+        setup.close()
+        db = sqlite3.connect(db_path)
+        self.addCleanup(db.close)
+        policy.install(db, "unique", maintenance=True, audit_path=self.audit)
+        with self.assertRaises(sqlite3.DatabaseError):
+            db.execute(
+                "INSERT OR REPLACE INTO audit(id, entidad) "
+                "VALUES (99, 'existing')"
+            )
+        self.assertEqual(
+            db.execute("SELECT count(*) FROM audit").fetchone()[0], 1
+        )
+
+    def test_business_trigger_replace_on_audit_aborts(self):
+        db_path = Path(self.temp.name) / "trigger_replace.db"
+        setup = sqlite3.connect(db_path)
+        setup.executescript(
+            """
+            CREATE TABLE movimientos(id INTEGER PRIMARY KEY, importe TEXT);
+            CREATE TABLE audit(id INTEGER PRIMARY KEY, entidad TEXT);
+            INSERT INTO audit(id, entidad) VALUES (1, 'seed');
+            CREATE TRIGGER mov_bad AFTER INSERT ON movimientos
+            BEGIN
+              INSERT OR REPLACE INTO audit(id, entidad) VALUES (1, 'bad');
+            END;
+            """
+        )
+        setup.close()
+        db = sqlite3.connect(db_path)
+        self.addCleanup(db.close)
+        policy.install(db, "trigger", audit_path=self.audit)
+        with self.assertRaises(sqlite3.DatabaseError):
+            db.execute("INSERT INTO movimientos(importe) VALUES ('1.00')")
+        self.assertEqual(
+            db.execute("SELECT count(*) FROM movimientos").fetchone()[0], 0
+        )
+        self.assertEqual(
+            db.execute("SELECT entidad FROM audit WHERE id=1").fetchone()[0], "seed"
+        )
+
+    def test_audit_failure_aborts_write(self):
+        self.install()
+        os.chmod(self.audit, 0o400)
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                self.db.execute("INSERT INTO movimientos(importe) VALUES ('99.00')")
+        finally:
+            os.chmod(self.audit, 0o600)
+        self.assertEqual(
+            self.db.execute("SELECT count(*) FROM movimientos").fetchone()[0], 0
+        )
+
+
+    def test_pragmas_are_set(self):
+        self.db.execute("PRAGMA foreign_keys=ON")
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.install()
+        self.assertEqual(self.db.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        self.assertEqual(
+            self.db.execute("PRAGMA recursive_triggers").fetchone()[0], 1
+        )
+        self.assertEqual(self.db.execute("PRAGMA busy_timeout").fetchone()[0], 3000)
+        self.assertEqual(self.db.execute("PRAGMA synchronous").fetchone()[0], 2)
+        self.assertEqual(
+            self.db.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal"
+        )
+
+    def test_audit_log_has_no_values(self):
+        self.install()
+        self.db.execute("INSERT INTO movimientos(importe) VALUES ('987.65')")
+        with open(self.audit, encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
+        self.assertTrue(records)
+        self.assertEqual(records[0]["actor"], "test-owner")
+        self.assertEqual(records[0]["session"], "test-session")
+        self.assertEqual(records[0]["op"], "INSERT")
+        self.assertEqual(len(records[0]["sha256"]), 64)
+        self.assertNotIn("987.65", json.dumps(records))
+
+    def test_read_only_mode_denies_writes_and_allows_reads(self):
+        os.environ["VPS_ADMIN_READ_ONLY"] = "1"
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_READ_ONLY", None)
+        self.install()
+        self.assertEqual(self.db.execute("SELECT count(*) FROM movimientos").fetchone()[0], 0)
+        self.assertDenied("INSERT INTO movimientos(importe) VALUES ('x')")
+        self.assertDenied("UPDATE movimientos SET importe='x'")
+        self.assertDenied("PRAGMA foreign_keys=OFF")
+        self.assertDenied("CREATE TABLE blocked(id INTEGER)")
+        with self.assertRaises(ValueError):
+            policy.validate_write_sql("INSERT INTO movimientos(importe) VALUES ('x')")
+
+    def test_read_only_wal_with_live_writer(self):
+        db_path = Path(self.temp.name) / "wal-readonly.db"
+        setup = sqlite3.connect(db_path)
+        setup.execute("CREATE TABLE movimientos(id INTEGER PRIMARY KEY, importe TEXT)")
+        setup.commit()
+        setup.close()
+        writer = sqlite3.connect(db_path)
+        self.addCleanup(writer.close)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO movimientos(importe) VALUES ('live-wal')")
+        writer.commit()
+        reader = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        self.addCleanup(reader.close)
+        os.environ["VPS_ADMIN_READ_ONLY"] = "1"
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_READ_ONLY", None)
+        policy.install(reader, "wal", audit_path=self.audit)
+        self.assertEqual(
+            reader.execute("SELECT importe FROM movimientos").fetchone()[0],
+            "live-wal",
+        )
+        with self.assertRaises(sqlite3.DatabaseError):
+            reader.execute("INSERT INTO movimientos(importe) VALUES ('blocked')")
+
+    def test_rejected_attempt_log_failure_is_fail_closed(self):
+        os.environ["VPS_ADMIN_AUDIT_LOG"] = self.audit
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_AUDIT_LOG", None)
+        self.install()
+        os.chmod(self.audit, 0o400)
+        try:
+            with self.assertRaises(OSError):
+                policy.log_attempt("test", "CREATE TABLE blocked(id INTEGER)")
+        finally:
+            os.chmod(self.audit, 0o600)
+
+    def test_audit_log_records_backup_reference(self):
+        os.environ["VPS_ADMIN_BACKUP_REF"] = "backup-2026-11-07"
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_BACKUP_REF", None)
+        self.install()
+        self.db.execute("INSERT INTO movimientos(importe) VALUES ('1.00')")
+        with open(self.audit, encoding="utf-8") as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
+        self.assertEqual(records[0]["backup"], "backup-2026-11-07")
+
+    def test_sensitive_columns_are_masked(self):
+        self.assertTrue(policy.is_sensitive("owner", "password"))
+        self.assertTrue(policy.is_sensitive("sessions", "csrf"))
+        self.assertFalse(policy.is_sensitive("movimientos", "importe"))
+        self.assertEqual(policy.masked("secret"), "••••")
+        self.assertIsNone(policy.masked(None))
+
+
+class MatrixTests(unittest.TestCase):
+    """Regression coverage for the v27 allowlist and trigger interactions."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.data = json.loads(
+            (ROOT / "infra" / "datasette-admin" / "protected_tables.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.fixture = json.loads(
+            (ROOT / "infra" / "datasette-admin" / "v27_tables.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.tables = sorted(self.fixture["tables"])
+        self.audit = str(Path(self.temp.name) / "audit.jsonl")
+        self.db_path = Path(self.temp.name) / "matrix.db"
+        connection = sqlite3.connect(self.db_path)
+        for table in self.tables:
+            autoincrement = " AUTOINCREMENT" if table == "movimientos" else ""
+            audit_columns = (
+                ", entidad TEXT, detalle TEXT"
+                if table in set(self.data["audit"])
+                else ""
+            )
+            connection.execute(
+                f'CREATE TABLE "{table}" '
+                f"(id INTEGER PRIMARY KEY{autoincrement}, valor TEXT{audit_columns})"
+            )
+        connection.execute(
+            """
+            CREATE TRIGGER mov_audit AFTER INSERT ON movimientos
+            BEGIN INSERT INTO audit(entidad, detalle)
+            VALUES ('movimientos', 'insert'); END
+            """
+        )
+        connection.execute("CREATE TABLE unknown_table(id INTEGER, valor TEXT)")
+        connection.commit()
+        connection.close()
+
+    def open(self, maintenance=False):
+        db = sqlite3.connect(self.db_path)
+        self.addCleanup(db.close)
+        policy.install(db, "matrix", maintenance=maintenance, audit_path=self.audit)
+        return db
+
+    def test_matrix_counts_and_classification(self):
+        total = len(self.tables)
+        protected = (
+            set(self.data["app_only"])
+            | set(self.data["auth"])
+            | set(self.data["audit"])
+            | set(self.data["technical"])
+            | set(self.data["immutable"])
+        )
+        listed = protected | set(self.data["business"])
+        self.assertEqual(total, 108)
+        self.assertEqual(self.fixture["table_count"], total)
+        self.assertEqual(self.fixture["schema_version"], 27)
+        self.assertEqual(len(protected), 72)
+        self.assertEqual(len(self.data["business"]), 36)
+        self.assertEqual(len(protected & set(self.data["business"])), 0)
+        self.assertEqual(set(self.tables), listed)
+        self.assertIn("a9ae4101ec625875b930bf9b015a46f51ff052aa", self.fixture["source"])
+        self.assertEqual(
+            self.fixture["sha256"],
+            hashlib.sha256(("\n".join(sorted(self.tables)) + "\n").encode()).hexdigest(),
+        )
+
+        categories = self.fixture["categories"]
+        self.assertEqual(set(categories), set(self.tables))
+        for category in (
+            "app_only",
+            "auth",
+            "audit",
+            "technical",
+            "immutable",
+            "business",
+        ):
+            expected = {
+                table for table, value in categories.items() if value == category
+            }
+            self.assertEqual(expected, set(self.data[category]), category)
+
+        fixture_auth = {
+            table for table, value in categories.items() if value == "auth"
+        }
+        fixture_immutable = {
+            table for table, value in categories.items() if value == "immutable"
+        }
+        fixture_app_only = {
+            table for table, value in categories.items() if value == "app_only"
+        }
+        rule_based_protected = {
+            table
+            for table in self.tables
+            if table in fixture_app_only
+            or table in fixture_auth
+            or table in fixture_immutable
+            or table == "audit"
+            or table.endswith("_audit")
+            or table.endswith("_attempts")
+            or table
+            in {
+                "budget_contract",
+                "counters",
+                "cycle_operation_guard",
+                "idempotency",
+                "reapertura_activa",
+            }
+        }
+        self.assertEqual(rule_based_protected, protected)
+        self.assertEqual(set(self.tables) - rule_based_protected, set(self.data["business"]))
+        self.assertEqual(categories["owner"], "auth")
+        self.assertEqual(categories["schema_version"], "app_only")
+        self.assertEqual(categories["database_origin"], "app_only")
+
+    def test_habitual_allowlist_across_all_tables(self):
+        db = self.open()
+        for table in self.data["business"]:
+            db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("business",))
+        for table in self.data["business"]:
+            db.execute(f'UPDATE "{table}" SET valor=? WHERE valor=?', ("changed", "business"))
+        for table in self.data["business"]:
+            db.execute(f'DELETE FROM "{table}" WHERE valor=?', ("changed",))
+        for table in set(self.data["app_only"]) | set(self.data["auth"]) | set(
+            self.data["audit"]
+        ) | set(self.data["technical"]) | set(self.data["immutable"]):
+            with self.assertRaises(sqlite3.DatabaseError, msg=table):
+                db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("blocked",))
+        with self.assertRaises(sqlite3.DatabaseError):
+            db.execute("INSERT INTO unknown_table(valor) VALUES ('blocked')")
+
+    def test_maintenance_profile_across_all_tables(self):
+        db = self.open(maintenance=True)
+        for table in set(self.data["auth"]) | set(self.data["technical"]) | set(
+            self.data["immutable"]
+        ):
+            db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("maintenance",))
+        for table in self.data["audit"]:
+            db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("append",))
+            with self.assertRaises(sqlite3.DatabaseError, msg=table):
+                db.execute(f'UPDATE "{table}" SET valor=? WHERE valor=?', ("x", "append"))
+            with self.assertRaises(sqlite3.DatabaseError, msg=table):
+                db.execute(f'DELETE FROM "{table}" WHERE valor=?', ("append",))
+        for table in self.data["app_only"]:
+            with self.assertRaises(sqlite3.DatabaseError, msg=table):
+                db.execute(f'INSERT INTO "{table}"(valor) VALUES (?)', ("blocked",))
+
+    def test_autoincrement_and_business_trigger_write_audit(self):
+        db = self.open()
+        db.execute('INSERT INTO movimientos(valor) VALUES (?)', ("10.00",))
+        row = db.execute(
+            "SELECT id, valor FROM movimientos ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row[0], 1)
+        self.assertEqual(
+            db.execute(
+                "SELECT count(*) FROM audit WHERE entidad='movimientos'"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertGreater(
+            db.execute(
+                "SELECT count(*) FROM sqlite_temp_master "
+                "WHERE type='trigger' AND name LIKE 'vps_audit_no_%'"
+            ).fetchone()[0],
+            0,
+        )
+
+class RealSchemaTests(unittest.TestCase):
+    """Exercise the real v27 schema and application triggers with synthetic rows."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.audit = str(Path(self.temp.name) / "audit.jsonl")
+        self.db_path = Path(self.temp.name) / "v27.sqlite"
+        schema = (ROOT / "infra" / "datasette-admin" / "v27_schema.sql").read_text(
+            encoding="utf-8"
+        )
+        setup = sqlite3.connect(self.db_path)
+        setup.executescript(schema)
+        setup.close()
+        self.db = sqlite3.connect(self.db_path)
+        self.addCleanup(self.db.close)
+        policy.install(self.db, "v27", audit_path=self.audit)
+
+    def test_real_v27_schema_policy_and_triggers(self):
+        self.assertEqual(
+            self.db.execute(
+                "SELECT count(*) FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchone()[0],
+            108,
+        )
+        self.assertEqual(
+            self.db.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger'"
+            ).fetchone()[0],
+            176,
+        )
+        actual_tables = sorted(
+            row[0]
+            for row in self.db.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        fixture = json.loads(
+            (ROOT / "infra" / "datasette-admin" / "v27_tables.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(actual_tables, sorted(fixture["tables"]))
+        for category in (
+            "app_only",
+            "auth",
+            "audit",
+            "technical",
+            "immutable",
+            "business",
+        ):
+            expected = {
+                table
+                for table, value in fixture["categories"].items()
+                if value == category
+            }
+            self.assertEqual(expected, set(policy.DATA[category]), category)
+        self.assertEqual(fixture["categories"]["owner"], "auth")
+        self.assertEqual(fixture["categories"]["database_origin"], "app_only")
+        self.assertEqual(
+            self.db.execute(
+                "SELECT count(*) FROM sqlite_temp_master "
+                "WHERE type='trigger' AND name LIKE 'vps_audit_no_%'"
+            ).fetchone()[0],
+            66,
+        )
+        self.assertEqual(
+            self.db.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+        )
+        self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        self.db.execute(
+            "INSERT INTO categorias"
+            "(id, nombre, grupo, anual, mensual, referencia, estado, revision, creado, actualizado)"
+            " VALUES ('C1', 'Sintética', NULL, NULL, NULL, NULL, 'Activa', 1, "
+            "'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+        )
+        self.db.execute(
+            "UPDATE categorias SET nombre='Sintética 2' WHERE id='C1'"
+        )
+        self.assertEqual(
+            self.db.execute("SELECT nombre FROM categorias WHERE id='C1'").fetchone()[0],
+            "Sintética 2",
+        )
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute("DELETE FROM categorias WHERE id='C1'")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute("INSERT INTO audit(entidad) VALUES ('x')")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute("INSERT INTO owner DEFAULT VALUES")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.execute("INSERT INTO schema_version(version) VALUES (28)")
+
+    def test_real_v27_audit_replace_is_denied(self):
+        maintenance = sqlite3.connect(self.db_path)
+        self.addCleanup(maintenance.close)
+        policy.install(maintenance, "v27", maintenance=True, audit_path=self.audit)
+        maintenance.execute(
+            "INSERT INTO audit"
+            "(id, entidad, accion, revision, campos, instante, revision_previa, actor)"
+            " VALUES (1, 'synthetic', 'alta', 1, '{}', "
+            "'2026-01-01T00:00:00.000Z', 0, 'test')"
+        )
+        with self.assertRaises(sqlite3.DatabaseError):
+            maintenance.execute(
+                "INSERT OR REPLACE INTO 'audit'"
+                "(id, entidad, accion, revision, campos, instante, revision_previa, actor)"
+                " VALUES (1, 'changed', 'alta', 1, '{}', "
+                "'2026-01-01T00:00:00.000Z', 0, 'test')"
+            )
+        self.assertEqual(
+            maintenance.execute("SELECT entidad FROM audit WHERE id=1").fetchone()[0],
+            "synthetic",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

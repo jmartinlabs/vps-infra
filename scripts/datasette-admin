@@ -1,0 +1,626 @@
+#!/usr/bin/env python3
+"""Start/stop the private Datasette SQLite admin for one environment.
+
+Run this script as the application UID (for example mftest or mfprod), not as
+root. It uses rootless Podman and mounts the real state directory; auth.key is
+masked only inside the container namespace with a dummy file.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pwd
+import secrets
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PORTS = {"test": 18083, "prod": 18084}
+CONTAINER = "vps-datasette-admin-{env}"
+IMAGE_DEFAULT = "localhost/vps-datasette-admin:latest"
+DB_NAME = "database.sqlite"
+ENVIRONMENTS = {
+    "test": {"user": "mftest", "state": "/srv/myfinanzas-test/data"},
+    "prod": {"user": "mfprod", "state": "/srv/myfinanzas-prod/data"},
+}
+APP_UID = 10001
+APP_CLI = "apps/api/src/backup-cli.ts"
+APP_SERVICE = "myfinanzas-api.service"
+
+
+def die(message: str, code: int = 2) -> None:
+    print(f"datasette-admin: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(command, check=False, text=True, **kwargs)
+
+
+def podman_rootless() -> bool:
+    result = run(
+        ["podman", "info", "--format", "{{.Host.Security.Rootless}}"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        die("podman is not available or the machine is not running")
+    return result.stdout.strip() == "true"
+
+
+def check_private_path(path: Path, mode: int, uid: int, label: str) -> None:
+    if path.is_symlink():
+        die(f"{label} must not be a symlink")
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        die(f"{label} does not exist")
+    if stat.st_uid != uid:
+        die(f"{label} must be owned by the current UID ({uid})")
+    if (stat.st_mode & 0o777) != mode:
+        die(f"{label} must have mode {mode:04o}, found {stat.st_mode & 0o777:04o}")
+    if label.endswith("directory") and not path.is_dir():
+        die(f"{label} must be a directory")
+    if not label.endswith("directory"):
+        if not path.is_file():
+            die(f"{label} must be a regular file")
+        if stat.st_nlink != 1:
+            die(f"{label} must not be a hardlink")
+
+
+def reject_symlink_components(
+    path: Path, label: str, stop: Path | None = None
+) -> None:
+    if not path.is_absolute():
+        die(f"{label} must be an absolute path")
+    if ".." in path.parts:
+        die(f"{label} must not contain '..'")
+    stop = stop or Path("/")
+    current = path
+    while current != stop and current != current.parent:
+        if current.is_symlink():
+            die(f"{label} must not contain symlinks below {stop}: {current}")
+        current = current.parent
+
+
+def bind_environment(
+    environment: str,
+    state: Path,
+    *,
+    uid: int | None = None,
+    username: str | None = None,
+    expected: dict | None = None,
+) -> Path:
+    """Bind an environment to its authorized UID and canonical state path."""
+    expected = expected or ENVIRONMENTS[environment]
+    uid = os.getuid() if uid is None else uid
+    username = (
+        pwd.getpwuid(uid).pw_name if username is None else username
+    )
+    try:
+        expected_user = pwd.getpwnam(expected["user"])
+    except KeyError:
+        die(f"authorized user does not exist: {expected['user']}")
+    if uid == 0 or uid != expected_user.pw_uid or username != expected_user.pw_name:
+        die(
+            f"{environment} must run as {expected['user']}, "
+            f"not {username} (uid {uid})"
+        )
+    expected_state = Path(expected["state"])
+    stop = expected_state.parent.parent
+    reject_symlink_components(expected_state, "authorized state path", stop=stop)
+    reject_symlink_components(state, "state path", stop=stop)
+    try:
+        resolved = state.resolve(strict=True)
+        expected_resolved = expected_state.resolve(strict=True)
+    except OSError as error:
+        die(f"state path cannot be resolved: {error}")
+    if resolved != expected_resolved:
+        die(
+            f"{environment} state path {resolved} is not the authorized "
+            f"{expected_resolved}"
+        )
+    return resolved
+
+
+def check_state(state: Path) -> None:
+    uid = os.getuid()
+    check_private_path(state, 0o700, uid, "state directory")
+    check_private_path(state / DB_NAME, 0o600, uid, "database file")
+    check_private_path(state / "auth.key", 0o600, uid, "auth.key")
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = state / (DB_NAME + suffix)
+        if sidecar.exists():
+            check_private_path(sidecar, 0o600, uid, f"{DB_NAME}{suffix}")
+
+
+def audit_directory(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    check_private_path(path, 0o700, os.getuid(), "audit directory")
+    return path
+
+
+def prepare_runtime_environment() -> None:
+    uid = os.getuid()
+    bus = Path(f"/run/user/{uid}/bus")
+    if bus.exists():
+        os.environ.setdefault(
+            "DBUS_SESSION_BUS_ADDRESS", f"unix:path={bus}"
+        )
+    candidate = os.environ.get("XDG_RUNTIME_DIR")
+    if candidate:
+        path = Path(candidate)
+        try:
+            stat = path.lstat()
+            if (
+                path.is_dir()
+                and not path.is_symlink()
+                and stat.st_uid == uid
+                and stat.st_mode & 0o777 == 0o700
+            ):
+                return
+        except OSError:
+            pass
+    fallback = Path("/tmp") / f"vps-datasette-admin-{uid}"
+    if fallback.exists() or fallback.is_symlink():
+        stat = fallback.lstat()
+        if fallback.is_symlink() or stat.st_uid != uid:
+            die("unsafe runtime fallback directory")
+    fallback.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(fallback, 0o700)
+    os.environ["XDG_RUNTIME_DIR"] = str(fallback)
+
+
+def runtime_directory(env: str) -> Path:
+    base = Path(os.environ["XDG_RUNTIME_DIR"])
+    path = base / "vps-datasette-admin" / env
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    return path
+
+
+def container_exists(name: str) -> bool:
+    return run(["podman", "container", "exists", name], capture_output=True).returncode == 0
+
+
+def check_artifact_directory(path: Path, names: tuple[str, ...], label: str) -> None:
+    check_private_path(path, 0o700, os.getuid(), f"{label} directory")
+    for name in names:
+        artifact = path / name
+        check_private_path(artifact, 0o600, os.getuid(), f"{label} {name}")
+        if artifact.stat().st_size == 0:
+            die(f"{label} {name} is empty; refusing to start PROD editor")
+
+
+def check_writer_stopped() -> None:
+    service = APP_SERVICE
+    try:
+        result = run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                service,
+                "-p",
+                "LoadState",
+                "-p",
+                "ActiveState",
+            ],
+            capture_output=True,
+        )
+    except OSError as error:
+        die(f"cannot verify writer service {service}: {error}")
+    if result.returncode != 0:
+        die(f"cannot verify writer service {service}: {result.stderr.strip()}")
+    properties = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            properties[key] = value
+    if properties.get("LoadState") != "loaded":
+        die(
+            f"writer service {service} is not loaded "
+            f"({properties.get('LoadState', 'unknown')}); refusing to write"
+        )
+    state = properties.get("ActiveState", "unknown")
+    if state not in {"inactive", "failed"}:
+        die(f"writer service {service} is {state}; stop it before editing")
+
+
+def app_podman_command(
+    image: str,
+    volumes: list[str],
+    environment: dict[str, str],
+    arguments: list[str],
+) -> list[str]:
+    command = [
+        "podman",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--http-proxy=false",
+        "--network=none",
+        f"--userns=keep-id:uid={APP_UID},gid={APP_UID}",
+        f"--user={APP_UID}:{APP_UID}",
+        "--cap-drop=ALL",
+        "--security-opt",
+        "label=disable",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--read-only-tmpfs=false",
+        "--memory=1g",
+        "--cpus=1",
+        "--pids-limit=128",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,tmpcopyup,mode=1777,size=64m",
+    ]
+    for volume in volumes:
+        command += ["-v", volume]
+    for key, value in environment.items():
+        command += ["-e", f"{key}={value}"]
+    command += [image, APP_CLI, *arguments]
+    return command
+
+
+def backup_and_verify(env: str, args, state: Path) -> Path | None:
+    if env != "prod":
+        return None
+    required = (
+        args.myfinanzas_image,
+        args.app_origin,
+        args.backup_path,
+        args.restore_path,
+        args.backup_identity,
+        args.backup_recipient,
+    )
+    if not all(required):
+        die(
+            "PROD requires --myfinanzas-image, --app-origin, --backup-path, "
+            "--restore-path, --backup-identity and --backup-recipient"
+        )
+    backup_path = Path(args.backup_path).expanduser().resolve()
+    restore_path = Path(args.restore_path).expanduser().resolve()
+    identity = Path(args.backup_identity).expanduser().resolve()
+    if backup_path.exists():
+        die("--backup-path must not exist; create a new backup for this session")
+    if restore_path.exists():
+        die("--restore-path must not exist; use a new destination for verification")
+    check_private_path(
+        backup_path.parent, 0o700, os.getuid(), "backup parent directory"
+    )
+    check_private_path(
+        restore_path.parent, 0o700, os.getuid(), "restore parent directory"
+    )
+    check_private_path(identity, 0o600, os.getuid(), "age identity file")
+    check_writer_stopped()
+
+    backup_environment = {
+        "NODE_ENV": "production",
+        "APP_ORIGIN": args.app_origin,
+        "DATABASE_PATH": "/var/lib/myfinanzas/state/database.sqlite",
+        "AUTH_KEY_PATH": "/var/lib/myfinanzas/state/auth.key",
+    }
+    backup_command = app_podman_command(
+        args.myfinanzas_image,
+        [
+            f"{state}:/var/lib/myfinanzas/state:rw",
+            f"{backup_path.parent}:/backup:rw",
+        ],
+        backup_environment,
+        ["create", f"/backup/{backup_path.name}", args.backup_recipient],
+    )
+    result = run(backup_command, capture_output=True)
+    if result.returncode != 0:
+        die(f"MyFinanzas backup failed; refusing to start PROD editor: {result.stderr.strip()}")
+    check_artifact_directory(
+        backup_path, ("database.age", "access-key.age"), "backup"
+    )
+
+    restore_environment = {
+        "NODE_ENV": "production",
+        "APP_ORIGIN": args.app_origin,
+        "DATABASE_PATH": f"/var/lib/myfinanzas/{restore_path.name}/database.sqlite",
+        "AUTH_KEY_PATH": f"/var/lib/myfinanzas/{restore_path.name}/auth.key",
+    }
+    restore_command = app_podman_command(
+        args.myfinanzas_image,
+        [
+            f"{backup_path}:/backup/source:ro",
+            f"{restore_path.parent}:/var/lib/myfinanzas:rw",
+            f"{identity}:/run/keys/identity:ro",
+        ],
+        restore_environment,
+        [
+            "restore",
+            "/backup/source",
+            f"/var/lib/myfinanzas/{restore_path.name}",
+            "/run/keys/identity",
+        ],
+    )
+    result = run(restore_command, capture_output=True)
+    if result.returncode != 0:
+        die(
+            "MyFinanzas restore verification failed; refusing to start PROD editor: "
+            f"{result.stderr.strip()}"
+        )
+    check_artifact_directory(
+        restore_path, ("database.sqlite", "auth.key"), "restored state"
+    )
+    return backup_path
+
+
+def wait_for_url(port: int, name: str, timeout: float = 30.0) -> str:
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        logs = run(["podman", "logs", name], capture_output=True)
+        if logs.returncode != 0:
+            last_error = logs.stderr.strip()
+        else:
+            for line in logs.stdout.splitlines():
+                if "/-/auth-token?token=" in line:
+                    url = line.strip()
+                    for internal in (
+                        "127.0.0.1:8001",
+                        "0.0.0.0:8001",
+                        "[::]:8001",
+                    ):
+                        url = url.replace(internal, f"127.0.0.1:{port}")
+                    return url
+        time.sleep(0.5)
+    die(f"editor did not become ready: {last_error or 'timeout'}")
+
+
+def check_health(name: str, read_only: bool, port: int) -> None:
+    code = (
+        "import urllib.request; "
+        "print(urllib.request.urlopen("
+        f"'http://127.0.0.1:{port}/-/vps-admin-health', timeout=3).read().decode())"
+    )
+    result = run(["podman", "exec", name, "python", "-c", code], capture_output=True)
+    if result.returncode != 0:
+        run(["podman", "stop", name], capture_output=True)
+        die("editor health check failed; the policy plugin is not loaded")
+    try:
+        health = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        run(["podman", "stop", name], capture_output=True)
+        die("editor health check returned invalid JSON")
+    if (
+        health.get("policy") != "loaded"
+        or health.get("foreign_keys") != 1
+        or health.get("recursive_triggers") != 1
+        or health.get("read_only") is not read_only
+    ):
+        run(["podman", "stop", name], capture_output=True)
+        die("editor policy is not active; refusing to expose the editor")
+
+
+def start(args) -> None:
+    env = args.environment
+    state = bind_environment(env, Path(args.state).expanduser())
+    if not podman_rootless():
+        die("rootless Podman is required")
+    check_state(state)
+    if args.read_only and args.maintenance:
+        die("--read-only cannot be combined with --maintenance")
+    backup_path = None
+    if not args.read_only and env == "prod":
+        if not args.writer_stopped:
+            die("PROD writing requires --writer-stopped")
+        backup_path = backup_and_verify(env, args, state)
+        if not args.backup_ref:
+            args.backup_ref = str(backup_path)
+
+    name = CONTAINER.format(env=env)
+    if container_exists(name):
+        die(f"container {name} already exists; stop it first")
+    port = args.port
+    runtime = runtime_directory(env)
+    dummy = runtime / "auth.key"
+    dummy.write_text("MASKED-AUTH-KEY\n", encoding="utf-8")
+    os.chmod(dummy, 0o600)
+    audit_base = (
+        Path(args.audit_dir).expanduser().resolve()
+        if args.audit_dir
+        else Path.home() / ".local/state/vps-datasette-admin" / env
+    )
+    audit = audit_directory(audit_base)
+    session = secrets.token_hex(16)
+    secret = secrets.token_hex(32)
+    command = [
+        "podman",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        name,
+        "--network=host",
+        "--userns=keep-id:uid=1000,gid=1000",
+        "--user",
+        "1000:1000",
+        "--security-opt",
+        "label=disable",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m",
+        "--cap-drop=ALL",
+        "--memory=512m",
+        "--cpus=1",
+        "--pids-limit=128",
+        "-v",
+        f"{state}:/data:{'ro' if args.read_only else 'rw'}",
+        "-v",
+        f"{dummy}:/data/auth.key:ro",
+        "-v",
+        f"{audit}:/audit:rw",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "-e",
+        "VPS_ADMIN_AUDIT_LOG=/audit/audit.jsonl",
+        "-e",
+        "VPS_ADMIN_ACTOR=owner",
+        "-e",
+        f"VPS_ADMIN_SESSION={session}",
+    ]
+    if args.read_only:
+        command += ["-e", "VPS_ADMIN_READ_ONLY=1"]
+    elif env == "prod":
+        command += [
+            "-e",
+            "VPS_ADMIN_MAINTENANCE=1" if args.maintenance else "VPS_ADMIN_MAINTENANCE=0",
+            "-e",
+            f"VPS_ADMIN_BACKUP_REF={args.backup_ref}",
+        ]
+    elif args.maintenance:
+        command += ["-e", "VPS_ADMIN_MAINTENANCE=1"]
+    command += [
+        args.image,
+        "datasette",
+        "serve",
+        f"/data/{DB_NAME}",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--plugins-dir",
+        "/app/plugins",
+        "--config",
+        "/app/datasette.yaml",
+        "--setting",
+        "allow_download",
+        "off",
+        "--secret",
+        secret,
+        "--root",
+    ]
+    result = run(command, capture_output=True)
+    if result.returncode != 0:
+        die(f"could not start editor: {result.stderr.strip()}")
+    try:
+        url = wait_for_url(port, name)
+        check_health(name, args.read_only, port)
+    except SystemExit:
+        run(["podman", "stop", name], capture_output=True)
+        dummy.unlink(missing_ok=True)
+        raise
+    print(f"Editor {env} listo.")
+    print(f"Túnel: ssh -N -L {port}:127.0.0.1:{port} <usuario>@<vps>")
+    print(f"Abrir en Mac: {url}")
+    if args.read_only:
+        print("Modo solo lectura: sin escrituras, sin backup y sin parada de MyFinanzas.")
+    elif env == "prod":
+        print("PROD: app detenida; cierra este editor antes de reanudar MyFinanzas.")
+    if args.maintenance and not args.read_only:
+        print("Perfil mantenimiento: tablas protegidas permitidas; auditoría solo INSERT.")
+
+
+def stop(args) -> None:
+    name = CONTAINER.format(env=args.environment)
+    result = run(["podman", "stop", name], capture_output=True)
+    if result.returncode != 0:
+        die(f"could not stop {name}: {result.stderr.strip()}")
+    try:
+        (runtime_directory(args.environment) / "auth.key").unlink(missing_ok=True)
+    except OSError:
+        pass
+    print(f"Editor {args.environment} detenido.")
+
+
+def status(args) -> None:
+    name = CONTAINER.format(env=args.environment)
+    result = run(["podman", "ps", "--filter", f"name={name}", "--format", "{{.Names}} {{.Status}} {{.Ports}}"], capture_output=True)
+    if result.returncode != 0:
+        die(result.stderr.strip())
+    print(result.stdout.strip() or f"{name} no está en ejecución")
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Private Datasette SQLite admin")
+    sub = parser.add_subparsers(dest="command", required=True)
+    start_parser = sub.add_parser("start")
+    start_parser.add_argument("environment", choices=sorted(PORTS))
+    start_parser.add_argument("--state", required=True, help="real state directory")
+    start_parser.add_argument("--port", type=int, default=None)
+    start_parser.add_argument("--image", default=IMAGE_DEFAULT)
+    start_parser.add_argument("--audit-dir")
+    start_parser.add_argument(
+        "--maintenance",
+        action="store_true",
+        help="allow protected DML (except schema/audit)",
+    )
+    start_parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="serve the live database read-only; no backup or writer stop",
+    )
+    start_parser.add_argument(
+        "--myfinanzas-image",
+        help="MyFinanzas image for backup/restore; required for PROD writes",
+    )
+    start_parser.add_argument(
+        "--app-origin",
+        help="MyFinanzas APP_ORIGIN; required for PROD backup/restore",
+    )
+    start_parser.add_argument(
+        "--backup-ref",
+        help="backup identifier recorded in the audit log; defaults to --backup-path",
+    )
+    start_parser.add_argument(
+        "--backup-path",
+        help="new backup directory; required for PROD writes",
+    )
+    start_parser.add_argument(
+        "--restore-path",
+        help="new restore directory for verification; required for PROD writes",
+    )
+    start_parser.add_argument(
+        "--backup-identity",
+        help="age identity file (0600) used for restore verification",
+    )
+    start_parser.add_argument(
+        "--backup-recipient",
+        help="age recipient (age1...) for the new backup",
+    )
+    start_parser.add_argument(
+        "--writer-stopped",
+        action="store_true",
+        help="confirm app/writer is stopped (PROD writes)",
+    )
+    start_parser.set_defaults(func=start)
+    for name, function in (("stop", stop), ("status", status)):
+        item = sub.add_parser(name)
+        item.add_argument("environment", choices=sorted(PORTS))
+        item.set_defaults(func=function)
+    args = parser.parse_args(argv)
+    if args.command == "start":
+        args.port = args.port or PORTS[args.environment]
+        if args.port < 1024 or args.port > 65535:
+            parser.error("port must be between 1024 and 65535")
+    return args
+
+
+def main(argv=None) -> int:
+    os.environ.setdefault("HOME", pwd.getpwuid(os.getuid()).pw_dir)
+    try:
+        os.chdir(Path.home())
+    except OSError:
+        os.chdir("/tmp")
+    prepare_runtime_environment()
+    args = parse_args(argv)
+    try:
+        args.func(args)
+        return 0
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

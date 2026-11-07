@@ -1,0 +1,50 @@
+# Private Datasette admin for MyFinanzas SQLite TEST/PROD.
+# SQLite is built from the official amalgamation so the runtime is newer than
+# the WAL-reset fix (3.51.3). Pin the source hash and Datasette version.
+
+FROM python:3.12-slim-bookworm AS sqlite-build
+
+ARG SQLITE_VERSION=3530400
+ARG SQLITE_SHA256=1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates wget unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /sqlite
+RUN wget -q "https://www.sqlite.org/2026/sqlite-amalgamation-${SQLITE_VERSION}.zip" \
+    && echo "${SQLITE_SHA256}  sqlite-amalgamation-${SQLITE_VERSION}.zip" | sha256sum -c - \
+    && unzip -q "sqlite-amalgamation-${SQLITE_VERSION}.zip" \
+    && mv "sqlite-amalgamation-${SQLITE_VERSION}" src
+
+RUN cd src \
+    && gcc -O2 -fPIC -shared -o libsqlite3.so.0 sqlite3.c -lpthread -ldl -lm \
+    && gcc -O2 -o sqlite3 shell.c sqlite3.c -lpthread -ldl -lm
+
+FROM python:3.12-slim-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=sqlite-build /sqlite/src/libsqlite3.so.0 /usr/local/lib/libsqlite3.so.0
+COPY --from=sqlite-build /sqlite/src/sqlite3 /usr/local/bin/sqlite3
+ENV LD_LIBRARY_PATH=/usr/local/lib
+RUN ldconfig \
+    && python -c "import sqlite3; assert sqlite3.sqlite_version >= '3.51.3', sqlite3.sqlite_version"
+
+RUN pip install --no-cache-dir 'datasette==1.0a41'
+
+WORKDIR /app
+COPY datasette.yaml /app/datasette.yaml
+COPY plugins /app/plugins
+COPY policy.py /app/plugins/policy.py
+COPY protected_tables.json /app/plugins/protected_tables.json
+
+RUN useradd --uid 1000 --create-home appuser
+USER 1000
+ENV HOME=/tmp
+EXPOSE 8001
+
+CMD ["datasette", "serve", "/data/database.sqlite", "--host", "127.0.0.1", "--port", "8001", \
+     "--plugins-dir", "/app/plugins", "--config", "/app/datasette.yaml", "--setting", "allow_download", "off"]

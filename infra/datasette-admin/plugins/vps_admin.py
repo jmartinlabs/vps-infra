@@ -15,29 +15,45 @@ def _is_app_database(database) -> bool:
 
 
 class _GuardedCursor:
-    def __init__(self, cursor: sqlite3.Cursor):
+    def __init__(self, cursor: sqlite3.Cursor, database: str):
         self._cursor = cursor
+        self._database = database
 
     def __getattr__(self, name):
         return getattr(self._cursor, name)
 
+    def _validate(self, sql):
+        try:
+            policy.validate_connection_sql(sql)
+        except Exception as error:
+            policy.log_attempt(self._database, sql)
+            policy.log_result(
+                self._database, sql, "rejected", type(error).__name__
+            )
+            raise
+
     def execute(self, sql, parameters=()):
-        policy.validate_connection_sql(sql)
+        self._validate(sql)
         return self._cursor.execute(sql, parameters)
 
     def executemany(self, sql, parameters):
-        policy.validate_connection_sql(sql)
+        self._validate(sql)
         return self._cursor.executemany(sql, parameters)
 
     def executescript(self, sql):
+        policy.log_attempt(self._database, sql)
+        policy.log_result(
+            self._database, sql, "rejected", "MultiStatement"
+        )
         raise ValueError("multi-statement writes are not supported")
 
 
 class _GuardedConnection:
     """Connection proxy used by callback-style Datasette writes."""
 
-    def __init__(self, connection: sqlite3.Connection):
+    def __init__(self, connection: sqlite3.Connection, database: str):
         object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "_database", database)
 
     def __getattr__(self, name):
         return getattr(object.__getattribute__(self, "_connection"), name)
@@ -52,19 +68,33 @@ class _GuardedConnection:
     def __exit__(self, exc_type, exc_value, traceback):
         return self._connection.__exit__(exc_type, exc_value, traceback)
 
+    def _validate(self, sql):
+        try:
+            policy.validate_connection_sql(sql)
+        except Exception as error:
+            policy.log_attempt(self._database, sql)
+            policy.log_result(
+                self._database, sql, "rejected", type(error).__name__
+            )
+            raise
+
     def execute(self, sql, parameters=()):
-        policy.validate_connection_sql(sql)
+        self._validate(sql)
         return self._connection.execute(sql, parameters)
 
     def executemany(self, sql, parameters):
-        policy.validate_connection_sql(sql)
+        self._validate(sql)
         return self._connection.executemany(sql, parameters)
 
     def executescript(self, sql):
+        policy.log_attempt(self._database, sql)
+        policy.log_result(
+            self._database, sql, "rejected", "MultiStatement"
+        )
         raise ValueError("multi-statement writes are not supported")
 
     def cursor(self):
-        return _GuardedCursor(self._connection.cursor())
+        return _GuardedCursor(self._connection.cursor(), self._database)
 
 
 _ORIGINAL_CONNECT = _DatasetteDatabase.connect
@@ -143,7 +173,7 @@ async def _guarded_execute_write_fn(self, fn, *args, **kwargs):
         return await _ORIGINAL_EXECUTE_WRITE_FN(self, fn, *args, **kwargs)
 
     def guarded(conn, *fn_args, **fn_kwargs):
-        return fn(_GuardedConnection(conn), *fn_args, **fn_kwargs)
+        return fn(_GuardedConnection(conn, self.name), *fn_args, **fn_kwargs)
 
     try:
         result = await _ORIGINAL_EXECUTE_WRITE_FN(self, guarded, *args, **kwargs)

@@ -169,6 +169,53 @@ class PluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ),
             records,
         )
+        for sql, marker in (
+            ("CREATE TABLE blocked(id INTEGER)", "CREATE"),
+            ("VACUUM", "VACUUM"),
+            ("PRAGMA writable_schema=ON", "PRAGMA"),
+        ):
+            with self.assertRaises(Exception):
+                await self.database.execute_write(sql)
+            records = [
+                json.loads(line)
+                for line in self.audit.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            phases = {
+                record.get("phase")
+                for record in records
+                if record.get("op") == marker
+            }
+            self.assertEqual(phases, {"attempt", "result"}, (sql, records))
+
+    async def test_callback_validation_rejection_is_audited(self):
+        def blocked(conn):
+            conn.execute("CREATE TABLE blocked_callback(id INTEGER)")
+
+        with self.assertRaises(ValueError):
+            await self.database.execute_write_fn(blocked)
+        records = [
+            json.loads(line)
+            for line in self.audit.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        callback_records = [
+            record
+            for record in records
+            if "CREATE TABLE blocked_callback" in record.get("sql", "")
+        ]
+        self.assertEqual(
+            {record.get("phase") for record in callback_records},
+            {"attempt", "result"},
+            callback_records,
+        )
+        self.assertTrue(
+            any(
+                record.get("status") == "rejected"
+                for record in callback_records
+            ),
+            callback_records,
+        )
 
     async def test_other_write_entry_points_are_guarded(self):
         with self.assertRaises(ValueError):

@@ -519,6 +519,17 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(sqlite3.DatabaseError):
             reader.execute("INSERT INTO movimientos(importe) VALUES ('blocked')")
 
+    def test_rejected_attempt_log_failure_is_fail_closed(self):
+        os.environ["VPS_ADMIN_AUDIT_LOG"] = self.audit
+        self.addCleanup(os.environ.pop, "VPS_ADMIN_AUDIT_LOG", None)
+        self.install()
+        os.chmod(self.audit, 0o400)
+        try:
+            with self.assertRaises(OSError):
+                policy.log_attempt("test", "CREATE TABLE blocked(id INTEGER)")
+        finally:
+            os.chmod(self.audit, 0o600)
+
     def test_audit_log_records_backup_reference(self):
         os.environ["VPS_ADMIN_BACKUP_REF"] = "backup-2026-11-07"
         self.addCleanup(os.environ.pop, "VPS_ADMIN_BACKUP_REF", None)

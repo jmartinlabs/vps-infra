@@ -159,15 +159,16 @@ python3 -m pip install 'datasette==1.0a41'
 ./scripts/test-datasette-admin-integration
 ```
 
-La primera suite (**30 pruebas**) cubre autorizador, parser string-aware, dos
+La primera suite (**31 pruebas**) cubre autorizador, parser string-aware, dos
 perfiles, solo lectura con WAL vivo, auditoría append-only/fail-closed y
 resultado, PRAGMAs, DDL/ATTACH, schema/origin, tablas desconocidas, la matriz v27
 completa (108 tablas; 72 protegidas y 36 de negocio) contrastada con
 `infra/datasette-admin/v27_tables.json`, el esquema y los 176 triggers reales de
 `v27_schema.sql`, AUTOINCREMENT, triggers de negocio y enmascarado. La segunda
-(**11 pruebas**) importa el plugin real en Datasette 1.0a41 y comprueba
+(**12 pruebas**) importa el plugin real en Datasette 1.0a41 y comprueba
 `Database.connect()`, `execute`, `execute_write`, escrituras por callback, health,
-rutas HTTP, `_internal`, auditoría y solo lectura.
+rutas HTTP, `_internal`, auditoría (incluidos rechazos DDL/PRAGMA/VACUUM) y solo
+lectura.
 
 Las pruebas de backup/restore con la imagen real de MyFinanzas, SSH y age
 requieren el entorno aislado autorizado y se delegan al agente de MyFinanzas.

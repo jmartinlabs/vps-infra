@@ -99,7 +99,16 @@ class FakeRunner:
             },
             "image": self.app_id,
             "oci_manifest_digest": "sha256:" + "a" * 64,
-            "seed": {"image": "sha256:" + "b" * 64, "oci_manifest_digest": "sha256:" + "c" * 64},
+            "seed": {
+                "image": "sha256:" + "b" * 64,
+                "source": self.source,
+                "contracts": {
+                    "schema": 27,
+                    "data": "e4.11-v27",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+                "oci_manifest_digest": "sha256:" + "c" * 64,
+            },
             "frontend_files": {"index.html": frontend_sha},
         }
         manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
@@ -138,7 +147,7 @@ class UpdaterTests(unittest.TestCase):
             path.mkdir(parents=True, exist_ok=True)
         (self.web / "releases").chmod(0o2750)
         write_json(self.data / "test-instance.json", {"schema_version": 27})
-        write_json(self.data / "seed-manifest.json", {"source": {"schema": 27}})
+        write_json(self.data / "seed-manifest.json", {"source": {"schema": 27, "data_contract": "e4.11-v27"}})
         (self.data / "state" / "database.sqlite").write_text("fixture")
         (self.data / "state" / "auth.key").write_text("fixture")
         self.config = Config(
@@ -148,6 +157,7 @@ class UpdaterTests(unittest.TestCase):
             web_root=self.web,
             unit_dir=self.unit_dir,
             state_file=self.state_file,
+            failed_file=self.root / "failed-release.json",
             lock_file=self.lock_file,
             health_url="http://127.0.0.1:18082/api/health",
             protected_url="http://127.0.0.1:18082/api/saldos",
@@ -192,6 +202,45 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(os.readlink(self.web / "current"), "releases/old")
         self.assertFalse(self.state_file.exists())
 
+    def test_failed_release_is_not_retried(self):
+        self.runner.fail_first = True
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.assertTrue((self.root / "failed-release.json").is_file())
+        self.assertEqual(self.updater.run_once(), 1)
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_state_write_failure_rolls_back(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+
+        class FailingStateUpdater(Updater):
+            def write_state(self, *args, **kwargs):
+                raise UpdateError("state persistence failed")
+
+        updater = FailingStateUpdater(
+            self.config, runner=self.runner, sleep=lambda _: None, clock=lambda: 2
+        )
+        with self.assertRaises(UpdateError):
+            updater.run_once()
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n"
+        )
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+
+    def test_data_contract_mismatch_blocks(self):
+        write_json(
+            self.data / "seed-manifest.json",
+            {"source": {"schema": 27, "data_contract": "e4.10-v26"}},
+        )
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
     def test_schema_change_blocks_before_unit_change(self):
         # Build a minimal schema-28 fixture with consistent hashes.
         frontend = b"<html>fixture</html>\n"
@@ -200,7 +249,16 @@ class UpdaterTests(unittest.TestCase):
             "inputs": {"source": self.source, "contracts": {"schema": 28, "data": "e4.12-v28", "authentication": "argon2id-aesgcm-totp-session-v1"}},
             "image": self.runner.app_id,
             "oci_manifest_digest": "sha256:" + "a" * 64,
-            "seed": {"image": "sha256:" + "b" * 64, "oci_manifest_digest": "sha256:" + "c" * 64},
+            "seed": {
+                "image": "sha256:" + "b" * 64,
+                "source": self.source,
+                "contracts": {
+                    "schema": 28,
+                    "data": "e4.12-v28",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+                "oci_manifest_digest": "sha256:" + "c" * 64,
+            },
             "frontend_files": {"index.html": sha256(frontend)},
         }
         mb = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()

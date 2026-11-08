@@ -116,6 +116,7 @@ class Config:
     web_root: Path = Path("/var/www/myfinanzas-test")
     unit_dir: Path = Path("/home/mftest/.config/containers/systemd")
     state_file: Path = Path("/srv/myfinanzas-test/current-release.json")
+    failed_file: Path = Path("/srv/myfinanzas-test/failed-release.json")
     lock_file: Path = Path("/srv/myfinanzas-test/update.lock")
     unit_name: str = "myfinanzas-test-api"
     health_url: str = "http://127.0.0.1:18082/api/health"
@@ -172,16 +173,49 @@ class Updater:
             )
         )
 
-    def installed_schema(self) -> int:
+    def installed_contracts(self) -> dict:
         marker = self.config.data_root / "test-instance.json"
+        seed = self.config.data_root / "seed-manifest.json"
         try:
-            value = json.loads(marker.read_text(encoding="utf-8"))
-            schema = value.get("schema_version")
+            marker_value = json.loads(marker.read_text(encoding="utf-8"))
+            seed_value = json.loads(seed.read_text(encoding="utf-8"))
+            schema = marker_value.get("schema_version")
+            source = seed_value.get("source")
         except (OSError, json.JSONDecodeError, AttributeError) as exc:
-            raise UpdateError(f"cannot read installed TEST marker: {exc}") from exc
+            raise UpdateError(f"cannot read installed TEST contracts: {exc}") from exc
         if type(schema) is not int or schema <= 0:
             raise UpdateError("installed TEST marker has no valid schema_version")
-        return schema
+        if not isinstance(source, dict):
+            raise UpdateError("installed seed manifest has no source contract")
+        if source.get("schema") != schema:
+            raise UpdateError("installed marker/seed schema mismatch")
+        data = source.get("data_contract")
+        if not isinstance(data, str) or not data:
+            raise UpdateError("installed seed manifest has no data_contract")
+        return {"schema": schema, "data": data}
+
+    def failed_release(self) -> dict | None:
+        try:
+            value = json.loads(self.config.failed_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def record_failure(self, digest: str, source: str | None, reason: str) -> None:
+        payload = {
+            "format": 1,
+            "release_digest": digest,
+            "source": source,
+            "reason": reason,
+        }
+        atomic_write(
+            self.config.failed_file,
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            mode=0o600,
+        )
+
+    def clear_failure(self) -> None:
+        self.config.failed_file.unlink(missing_ok=True)
 
     def pull_release(self) -> str:
         self.podman("pull", "--quiet", "--policy=always", self.config.release_image)
@@ -255,6 +289,10 @@ class Updater:
         contracts = manifest.get("inputs", {}).get("contracts")
         if not isinstance(contracts, dict) or type(contracts.get("schema")) is not int:
             raise UpdateError("manifest has no valid schema contract")
+        if not isinstance(contracts.get("data"), str) or not contracts["data"]:
+            raise UpdateError("manifest has no valid data contract")
+        if not isinstance(contracts.get("authentication"), str) or not contracts["authentication"]:
+            raise UpdateError("manifest has no valid authentication contract")
         if not isinstance(manifest.get("image"), str) or not DIGEST.fullmatch(
             manifest["image"]
         ):
@@ -268,6 +306,10 @@ class Updater:
             str(seed.get("oci_manifest_digest", ""))
         ):
             raise UpdateError("manifest has no valid seed digest")
+        if seed.get("source") != source:
+            raise UpdateError("seed source does not match app source")
+        if seed.get("contracts") != contracts:
+            raise UpdateError("seed contracts do not match app contracts")
 
         declared_sums: dict[str, str] = {}
         for line in sums_path.read_text(encoding="utf-8").splitlines():
@@ -450,7 +492,7 @@ class Updater:
             if not self.state_ready():
                 self.log("TEST state is not initialized; first activation required")
                 return 0
-            installed_schema = self.installed_schema()
+            installed = self.installed_contracts()
             previous_state = None
             if self.config.state_file.is_file():
                 try:
@@ -460,32 +502,46 @@ class Updater:
                 except json.JSONDecodeError:
                     previous_state = None
             release_digest = self.pull_release()
+            failed = self.failed_release()
+            if failed and failed.get("release_digest") == release_digest:
+                self.log("release previously failed; waiting for a new release")
+                return 1
             if previous_state and previous_state.get("release_digest") == release_digest:
                 self.log("no new release")
                 return 0
-            with tempfile.TemporaryDirectory(prefix="mf-update-") as temporary:
-                release_root = Path(temporary)
-                self.extract_release(release_digest, release_root)
-                manifest = self.verify_release(release_root)
-                schema = manifest["inputs"]["contracts"]["schema"]
-                if schema != installed_schema:
-                    raise UpdateError(
-                        f"schema changed ({installed_schema} -> {schema}); manual migration required"
-                    )
-                app_id, _ = self.pull_app(manifest)
-                previous_frontend = self.current_frontend_target()
-                previous_unit = self.write_unit(app_id)
-                try:
-                    self.stage_frontend(manifest, release_root)
-                    self.restart_and_smoke()
-                except BaseException as exc:
-                    self.rollback(previous_unit, previous_frontend)
-                    if isinstance(exc, UpdateError):
-                        raise
-                    raise UpdateError(str(exc)) from exc
-                self.write_state(release_digest, manifest, app_id)
-                self.log(f"updated to {manifest['inputs']['source']} ({release_digest})")
+            source = None
+            try:
+                with tempfile.TemporaryDirectory(prefix="mf-update-") as temporary:
+                    release_root = Path(temporary)
+                    self.extract_release(release_digest, release_root)
+                    manifest = self.verify_release(release_root)
+                    source = manifest["inputs"]["source"]
+                    contracts = manifest["inputs"]["contracts"]
+                    if contracts["schema"] != installed["schema"] or contracts["data"] != installed["data"]:
+                        raise UpdateError(
+                            f"contract changed ({installed} -> {contracts}); manual migration required"
+                        )
+                    app_id, _ = self.pull_app(manifest)
+                    previous_frontend = self.current_frontend_target()
+                    previous_unit = self.write_unit(app_id)
+                    try:
+                        self.stage_frontend(manifest, release_root)
+                        self.restart_and_smoke()
+                        self.write_state(release_digest, manifest, app_id)
+                    except BaseException as exc:
+                        self.rollback(previous_unit, previous_frontend)
+                        if isinstance(exc, UpdateError):
+                            raise
+                        raise UpdateError(str(exc)) from exc
+                self.clear_failure()
+                self.log(f"updated to {source} ({release_digest})")
                 return 0
+            except UpdateError as exc:
+                try:
+                    self.record_failure(release_digest, source, str(exc))
+                except OSError:
+                    self.log("warning: could not record failed release")
+                raise
 
 
 def build_config(args) -> Config:
@@ -496,6 +552,7 @@ def build_config(args) -> Config:
         web_root=Path(args.web_root),
         unit_dir=Path(args.unit_dir),
         state_file=Path(args.state_file),
+        failed_file=Path(args.failed_file),
         lock_file=Path(args.lock_file),
         unit_name=args.unit_name,
         health_url=args.health_url,
@@ -513,6 +570,7 @@ def main(argv=None) -> int:
     parser.add_argument("--web-root", default=str(Config.web_root))
     parser.add_argument("--unit-dir", default=str(Config.unit_dir))
     parser.add_argument("--state-file", default=str(Config.state_file))
+    parser.add_argument("--failed-file", default=str(Config.failed_file))
     parser.add_argument("--lock-file", default=str(Config.lock_file))
     parser.add_argument("--unit-name", default=Config.unit_name)
     parser.add_argument("--health-url", default=Config.health_url)

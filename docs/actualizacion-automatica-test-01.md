@@ -67,6 +67,10 @@ No se ejecuta ninguna de estas operaciones en esta fase.
 - La imagen release declara labels de SHA, manifiesto, app/seed digests y contratos.
 - El estado persistente vive en `/srv/myfinanzas-test/data`; no se modifica al actualizar.
 - El estado de la última release está en `/srv/myfinanzas-test/current-release.json`.
+- Una release que falla smoke/rollback se registra en `failed-release.json` y no se reintenta
+  en cada ciclo; un digest nuevo vuelve a intentarlo.
+- El updater compara `schema` y `data_contract` instalados con el manifiesto; si cambian,
+  bloquea y exige migración manual.
 
 ## Prueba local
 
@@ -78,8 +82,10 @@ Cubre:
 
 - sin estado: no hace nada;
 - actualización correcta: unidad, frontend y estado;
-- smoke fallido: rollback a unidad/frontend anteriores;
-- cambio de esquema: bloqueo antes de tocar la unidad.
+- smoke fallido: rollback a unidad/frontend anteriores y registro de release fallida;
+- fallo al persistir estado: rollback de unidad/frontend;
+- release fallida: no se reintenta el mismo digest;
+- cambio de esquema o `data_contract`: bloqueo antes de tocar la unidad.
 
 ## Bloqueos reales
 

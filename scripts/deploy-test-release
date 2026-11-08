@@ -29,7 +29,7 @@ REFERENCE = re.compile(r"""(?:src|href)\s*=\s*["'](/[^"']+)["']""", re.I)
 ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 MAX_BUNDLE = 2 * 1024 * 1024 * 1024
-ALLOWED = {"manifest.json", "manifest.sha256", "SHA256SUMS", "image.oci.tar"}
+ALLOWED = {"manifest.json", "manifest.sha256", "SHA256SUMS", "deploy.json", "image.oci.tar"}
 FORBIDDEN_FRONTEND = (".map", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".xlsx",
                       ".env", ".pem", ".key", ".p12", ".pfx")
 
@@ -273,7 +273,7 @@ class Deployer:
         finally:
             archive.unlink(missing_ok=True)
 
-    def verify(self, root: Path) -> dict:
+    def verify(self, root: Path, version: str) -> tuple:
         for name in ALLOWED:
             if not (root / name).is_file():
                 raise Rejected(f"bundle is missing {name}")
@@ -305,6 +305,24 @@ class Deployer:
             manifest["oci_manifest_digest"]
         ):
             raise Rejected("manifest has no valid app OCI digest")
+        deploy_path = root / "deploy.json"
+        try:
+            metadata = json.loads(deploy_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise Rejected(f"deploy.json is missing or invalid: {exc}") from exc
+        if not isinstance(metadata, dict):
+            raise Rejected("deploy.json is not an object")
+        expected_tag = f"deploy-test-v{version}"
+        if metadata.get("environment") != "test":
+            raise Rejected("deploy.json environment is not test")
+        if metadata.get("version") != version or metadata.get("tag") != expected_tag:
+            raise Rejected("deploy.json version/tag does not match the deployment order")
+        if metadata.get("release_sha") != source:
+            raise Rejected("deploy.json release_sha does not match the manifest")
+        if metadata.get("manifest_sha256") != actual:
+            raise Rejected("deploy.json manifest_sha256 does not match the manifest")
+        if not isinstance(metadata.get("qa_reference"), str) or not metadata["qa_reference"]:
+            raise Rejected("deploy.json has no qa_reference")
         if sha256_file(root / "image.oci.tar") != manifest.get("oci_archive_sha256"):
             raise Rejected("image.oci.tar does not match the manifest")
         try:
@@ -361,7 +379,7 @@ class Deployer:
         missing = missing_frontend_assets(index_html, frontend)
         if missing:
             raise Rejected("frontend index.html references missing assets: " + ", ".join(missing))
-        return manifest
+        return manifest, metadata
 
     def load_app(self, manifest: dict) -> str:
         self.podman("load", "--input", str(self._bundle_root / "image.oci.tar"))
@@ -486,7 +504,8 @@ class Deployer:
             self.systemctl("stop", f"{self.config.unit_name}.service", check=False)
             raise
 
-    def write_state(self, manifest: dict, app_id: str, actor: str, version: str) -> None:
+    def write_state(self, manifest: dict, app_id: str, actor: str, version: str,
+                    metadata: dict) -> None:
         payload = {
             "format": 1,
             "version": version,
@@ -495,6 +514,8 @@ class Deployer:
             "manifest_sha256": sha256_file(self._bundle_root / "manifest.json"),
             "app_image": app_id,
             "schema": manifest["inputs"]["contracts"]["schema"],
+            "qa_reference": metadata.get("qa_reference"),
+            "workflow_run_id": metadata.get("workflow_run_id"),
             "actor": actor,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -513,7 +534,7 @@ class Deployer:
                     root = Path(temporary)
                     self._bundle_root = root
                     self.read_bundle(stream, root)
-                    manifest = self.verify(root)
+                    manifest, metadata = self.verify(root, version)
                     source = manifest["inputs"]["source"]
                     manifest_sha = sha256_file(root / "manifest.json")
                     contracts = manifest["inputs"]["contracts"]
@@ -541,7 +562,7 @@ class Deployer:
                     try:
                         self.stage_frontend(manifest, root)
                         self.restart_and_smoke()
-                        self.write_state(manifest, app_id, actor, version)
+                        self.write_state(manifest, app_id, actor, version, metadata)
                     except BaseException:
                         self.rollback(previous_unit, previous_frontend)
                         raise

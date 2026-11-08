@@ -43,8 +43,12 @@ tag/actor/SHA + capability + qa ──► build/verify/smoke ──► auditorí
 
 ## Bundle de despliegue
 
-`manifest.json`, `manifest.sha256`, `SHA256SUMS`, `frontend/` y `image.oci.tar`.
-No incluye la imagen seed: el seed solo se ejecuta en la primera activación.
+`manifest.json`, `manifest.sha256`, `SHA256SUMS`, `deploy.json`, `frontend/` e
+`image.oci.tar`. No incluye la imagen seed: el seed solo se ejecuta en la primera activación.
+
+`deploy.json` materializa el contrato de DEPLOY-TAGS-01 sin secretos: `environment`,
+`version`, `tag`, `release_sha`, `manifest_sha256`, `qa_reference` y `workflow_run_id`. El
+receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag antes de mutar.
 
 ## Receptor en el VPS
 
@@ -81,10 +85,18 @@ No incluye la imagen seed: el seed solo se ejecuta en la primera activación.
 - Los paquetes GHCR, si se hubieran creado, quedan privados y sin uso; su
   eliminación requiere autorización aparte.
 
-## Rollback y copias
+## Política de rollback (cerrada)
 
-Automático ante smoke fallido (unidad + frontend). La release solo cambia imagen y frontend
-con el mismo contrato, así que el estado no se toca y no hace falta copia previa en TEST.
-Limitaciones: no revierte datos ni esquema, no hay notificación y un rollback fallido deja la
-unidad parada para intervención manual. PROD exige copia cifrada y restauración verificada
-antes de activar; se detalla en [diseño PROD](despliegue-prod-diseno-01.md).
+- **Éxito:** se escribe `current-release.json` con versión, tag, actor, SHA, manifiesto,
+  QA y ejecución. No se borra la release anterior.
+- **Smoke fallido:** se restauran la unidad y el enlace `current` anteriores, se reinicia y
+  se repite el smoke. Si pasa, la release anterior queda activa y no se escribe estado.
+- **Rollback fallido:** se detiene la unidad, se preservan unidad anterior, estado, logs y
+  `last-deploy.json`; no se reintenta automáticamente.
+- **Datos y esquema:** no se tocan. El despliegue exige el mismo contrato; una migración no
+  forma parte de este flujo. TEST no requiere copia previa porque el estado no cambia.
+- **PROD:** exige copia cifrada y restauración verificada antes de activar; el rollback
+  app-only es igual, y la recuperación de datos solo desde la copia con autorización
+  separada. Ver [diseño PROD](despliegue-prod-diseno-01.md).
+- **Versiones:** el tag es inmutable y el receptor rechaza reutilizar una versión desde otro
+  SHA; misma versión y SHA es no-op.

@@ -48,7 +48,9 @@ def tar_bytes(members, dirs=()) -> bytes:
 
 
 def bundle(source: str, app_id: str, frontend: dict, schema: int = 27,
-           data_contract: str = "e4.11-v27", tamper=None, dirs=()) -> bytes:
+           data_contract: str = "e4.11-v27", tamper=None, dirs=(),
+           version: str = "0.1.0", metadata_version: str | None = None,
+           metadata_tag: str | None = None) -> bytes:
     contracts = {
         "schema": schema,
         "data": data_contract,
@@ -76,10 +78,20 @@ def bundle(source: str, app_id: str, frontend: dict, schema: int = 27,
     }
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     manifest_sha = sha256(manifest_bytes)
+    metadata = {
+        "environment": "test",
+        "version": metadata_version or version,
+        "tag": metadata_tag or f"deploy-test-v{version}",
+        "release_sha": source,
+        "manifest_sha256": manifest_sha,
+        "qa_reference": "https://example.invalid/checks/" + source,
+        "workflow_run_id": "1",
+    }
     files = [
         ("manifest.json", manifest_bytes),
         ("manifest.sha256", (manifest_sha + "\n").encode()),
         ("image.oci.tar", oci),
+        ("deploy.json", (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode()),
     ] + [("frontend/" + name, body) for name, body in sorted(frontend.items())]
     sums = "".join(f"{sha256(body)}  ./{name}\n" for name, body in files).encode()
     if tamper:
@@ -102,6 +114,8 @@ class FakeRunner:
         self.app_id = app_id
         self.attempts = 0
         self.fail_first = False
+        self.fail_all = False
+        self.stopped = False
 
     def run(self, args, check=True, timeout=None):
         command = " ".join(args)
@@ -116,12 +130,12 @@ class FakeRunner:
             pass
         elif command.startswith("systemctl --user restart "):
             self.attempts += 1
-            if self.fail_first and self.attempts == 1:
+            if self.fail_all or (self.fail_first and self.attempts == 1):
                 code, err = 1, "restart failed"
         elif command.startswith("systemctl --user stop "):
-            pass
+            self.stopped = True
         elif command.startswith("curl "):
-            if self.attempts == 1 and self.fail_first:
+            if self.fail_all or (self.attempts == 1 and self.fail_first):
                 code, err = 1, "health failed"
             elif "127.0.0.1:18082/api/health" in command:
                 out = '{"ok":true}\n'
@@ -236,6 +250,25 @@ class DeployTests(unittest.TestCase):
         code = module["main"](["--bundle", str(self.root / "missing.tar")])
         self.assertEqual(code, 2)
         self.assertEqual(identity_from_environment("deploy:octocat"), ("unknown", None))
+
+    def test_deploy_metadata_must_match_the_order(self):
+        payload = bundle(self.source, self.app_id, THEMES, metadata_version="9.9.9")
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(payload)
+        self.assertIn("version/tag", str(caught.exception))
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_failed_rollback_stops_the_unit(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+        self.runner.fail_all = True
+        with self.assertRaises(DeployError):
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertTrue(self.runner.stopped)
+        self.assertFalse(self.state_file.exists())
 
     def test_bundle_path_escape_is_rejected(self):
         payload = tar_bytes([

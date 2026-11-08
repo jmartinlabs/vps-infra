@@ -5,8 +5,8 @@ Estado: **PROPUESTA — no ejecutada en el VPS.**
 
 Sustituye la arquitectura GHCR + temporizador (`#27`, `#28`, `#293`) por un
 despliegue directo disparado por el tag `deploy-test-vX.Y.Z`, sin polling, registro
-intermedio ni GitHub Environments. La creación del tag por un actor autorizado es la orden
-de despliegue. Los merges a `test` no despliegan.
+intermedio ni aprobación por Environments. La creación del tag por un actor autorizado es la
+orden de despliegue; un Environment sin revisores solo aísla secretos y restringe el ref. Los merges a `test` no despliegan.
 
 ## Flujo
 
@@ -36,10 +36,11 @@ tag/actor/SHA + capability + qa ──► build/verify/smoke ──► auditorí
 2. `release.py verify` + `smoke.py` del bundle.
 3. `scripts/audit-test-release` sobre el bundle: sin estado, credenciales ni
    recursos de `index.html` ausentes.
-4. Tag anotado `deploy-test-vX.Y.Z` creado por un actor de `MYFINANZAS_DEPLOY_ACTORS`;
-   la creación del tag es la autorización operativa, sin segunda aprobación.
+4. Tag anotado `deploy-test-vX.Y.Z` creado por un actor de `MYFINANZAS_DEPLOY_ACTORS` y con
+   `sha=`/`qa_reference=` en la anotación; la creación del tag es la autorización operativa.
 5. El job comprueba que el commit del tag es el SHA construido y ancestro de `origin/test`.
-6. Interruptor `MYFINANZAS_TEST_DEPLOY=true`; desactivado, el tag no despliega.
+6. Environment `test` como frontera de secretos y regla de tags, sin Required reviewers.
+7. Interruptor `MYFINANZAS_TEST_DEPLOY=true`; desactivado, el tag no despliega.
 
 ## Bundle de despliegue
 
@@ -70,10 +71,10 @@ receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag ante
    `~mftest/.ssh/authorized_keys` con:
    `restrict,command="XDG_RUNTIME_DIR=/run/user/1002 /home/mftest/bin/myfinanzas-test-deploy --stdin" ssh-ed25519 ...`
 2. Instalar `scripts/deploy-test-release` en `/home/mftest/bin/` (0755, mftest).
-3. Guardar la privada como secreto `TEST_DEPLOY_KEY` y la huella del host en
-   `TEST_DEPLOY_KNOWN_HOSTS` (secretos de repositorio, sin Environments).
-4. Definir `TEST_DEPLOY_HOST`, `TEST_DEPLOY_USER=mftest` y la allowlist
-   `MYFINANZAS_DEPLOY_ACTORS`.
+3. Guardar la privada como secreto del Environment `test` en `TEST_DEPLOY_KEY` y la huella
+   del host en `TEST_DEPLOY_KNOWN_HOSTS` (sin Required reviewers).
+4. Definir en el mismo Environment `TEST_DEPLOY_HOST`, `TEST_DEPLOY_USER=mftest` y la
+   allowlist `MYFINANZAS_DEPLOY_ACTORS`.
 5. Retirar, si existieran, el timer y el servicio `myfinanzas-test-update` y sus
    paquetes GHCR. No se borra nada sin inventario.
 

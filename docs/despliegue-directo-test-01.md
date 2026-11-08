@@ -61,7 +61,7 @@ No incluye la imagen seed: el seed solo se ejecuta en la primera activación.
 
 1. Crear clave `myfinanzas-test-deploy` (par ed25519) y añadir la pública en
    `~mftest/.ssh/authorized_keys` con:
-   `restrict,command="/home/mftest/bin/myfinanzas-test-deploy --stdin" ssh-ed25519 ...`
+   `restrict,command="XDG_RUNTIME_DIR=/run/user/1002 /home/mftest/bin/myfinanzas-test-deploy --stdin" ssh-ed25519 ...`
 2. Instalar `scripts/deploy-test-release` en `/home/mftest/bin/` (0755, mftest).
 3. Guardar la privada en el entorno GitHub `test` como `TEST_DEPLOY_KEY` y la
    huella del host en `TEST_DEPLOY_KNOWN_HOSTS`.

@@ -17,8 +17,15 @@ sustituye el procedimiento manual.
 
 La solicitud es un envoltorio mínimo. El manifiesto del paquete sigue siendo la fuente de
 verdad para `inputs.source`, `inputs.contracts`, `oci_manifest_digest`,
-`oci_archive_sha256` y `frontend_files`. El gate no reimplementa `release.py`: verifica esos
-campos y la integridad del paquete.
+`oci_archive_sha256`, `seed` y `frontend_files`. El gate no reimplementa `release.py`:
+verifica esos campos y la integridad del paquete.
+
+La solicitud incorpora `release_ref` (`myfinanzas-app/test` para TEST,
+`myfinanzas-app/main` para PROD), `package_format`
+(`myfinanzas-test-package.v1`), `package_sha256` y `seed_image`. El paquete único contiene
+`manifest.json`, `manifest.sha256`, `image.oci.tar`, `image.seed.oci.tar` y `frontend/`.
+El `seed-manifest.json` es un artefacto de ejecución posterior a `seed apply`, no parte del
+paquete de build.
 
 ## Uso
 
@@ -26,6 +33,7 @@ campos y la integridad del paquete.
 ./scripts/release-gate check \
   --request /ruta/deploy-request.json \
   --release-dir /ruta/privada/release \
+  --package /ruta/privada/myfinanzas-test-<sha>.tar \
   --seed-manifest /ruta/privada/seed-manifest.json \
   --state /ruta/state-fixture.json \
   --evidence /ruta/evidence-fixture.json \
@@ -34,6 +42,8 @@ campos y la integridad del paquete.
 ```
 
 - `--release-dir` es una entrada de confianza separada; no se acepta una ruta del JSON.
+- `--package` es obligatorio y verifica el SHA-256 del paquete recibido contra
+  `package_sha256`.
 - `--state` simula el estado del host (instalado/bloqueo). Es obligatorio: sin este fixture
   el gate bloquea y no puede validar concurrencia ni rollback.
 - `--evidence` simula CI, Rootless, QA, ascendencia Git y aprobación PROD. Sin este fixture
@@ -45,7 +55,7 @@ campos y la integridad del paquete.
 
 | Grupo | Qué significa |
 | --- | --- |
-| `verification.local` | Comprobado por el gate: formato, tag/versión, entorno, SHA declarado, hash del manifiesto, `manifest.sha256`, `inputs.source`, contratos, OCI, frontend y seed. |
+| `verification.local` | Comprobado por el gate: formato, tag/versión, entorno, `release_ref`, hash del paquete, SHA declarado, hash del manifiesto, `manifest.sha256`, `inputs.source`, contratos, OCI de app y seed, frontend y seed. |
 | `verification.simulated` | Evaluado a partir de fixtures: CI, Rootless, QA, ascendencia Git, aprobación PROD y estado del host. **No** se consultó GitHub, Git ni el VPS. |
 | `verification.real_world_not_verified` | Lista explícita de lo que sigue sin verificar en una activación real. |
 
@@ -58,14 +68,17 @@ verificados.
 - Formato estricto, campos desconocidos y claves con aspecto de secreto.
 - `version` SemVer estable, tag `deploy-(test|prod)-vX.Y.Z` y coincidencia tag/entorno/versión.
 - SHA de 40 caracteres, hash de manifiesto y digest OCI.
-- Integridad de `manifest.json`, `manifest.sha256`, `image.oci.tar`, `index.json`, blobs OCI y
-  `frontend_files`.
+- `release_ref` coherente con el entorno; `package_format` y `package_sha256` válidos.
+- Integridad de `manifest.json`, `manifest.sha256`, `image.oci.tar`, `image.seed.oci.tar`,
+  `index.json`, blobs OCI y `frontend_files`.
 - Estructura mínima del manifiesto OCI: `schemaVersion`, `config`, `layers` y descriptores con
   digest, tamaño y blob presentes.
 - `inputs.contracts` presente; el gate no fija una versión de esquema.
-- Seed obligatorio en TEST, hash verificado, `commit` coherente si está declarado y `schema`
-  coincidente con `inputs.contracts.schema`. Si el manifiesto de release no está disponible o
-  no es válido, la compatibilidad de esquema queda bloqueada, no marcada como PASS.
+- Seed bloque `manifest.seed` con `image`, `source`, `contracts`, lock, hashes y digest;
+  coincide con `seed_image` y con `inputs`.
+- `seed-manifest.json` con `source.commit`, `source.schema`, `source.seed_image` y dataset
+  `FT-1`; hash y esquema coincidentes. Si el manifiesto de release no está disponible o no es
+  válido, la compatibilidad de esquema queda bloqueada, no marcada como PASS.
 - Rutas relativas seguras y rechazo de symlinks en el paquete.
 - Estado simulado: bloqueo de entorno, versión ya activa y par de rollback.
 - Evidencia simulada: CI, Rootless, QA, ascendencia y aprobación PROD; cada fallo produce un
@@ -77,7 +90,8 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 48 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
+Los 55 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
+`release_ref`, paquete, seed,
 manifiesto, estructura e integridad OCI, frontend, seed, incompatibilidad o no verificación
 del esquema seed/release, aprobación, evidencia simulada, rutas inseguras, symlinks, entradas
 extra, estado ausente/incompleto/bloqueado, rollback y modo `apply`. También comprueban que el
@@ -87,8 +101,11 @@ CLI no modifica el estado simulado.
 
 - La evidencia GitHub/QA/Rootless y la ascendencia Git requieren un adaptador de solo lectura
   o una atestación; hoy solo se simulan con fixtures.
-- El transporte privado de la release y el mecanismo de ejecución siguen pendientes
-  (DEP2/DEP4).
+- El hash del paquete verifica integridad de transporte, no autentica su procedencia ni al
+  publicador; esa garantía debe venir del canal y del run de GitHub.
+- La recepción del paquete único y el despliegue manual se documentan en
+  [paquete TEST](paquete-test-recepcion-01.md); no hay adaptador automático de recepción ni
+  de ejecución.
 - La activación real, bloqueo, copia, cambio de unidad y smoke pertenecen a un adaptador de
   host posterior; no están implementados.
 - La aprobación PROD real debe validarse contra GitHub Environments.

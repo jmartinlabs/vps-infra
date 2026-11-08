@@ -5,7 +5,7 @@ Specification: [02 — host del entorno TEST de MyFinanzas](02-infra-test-01-hos
 Status: **DRAFT — Fase 2 de aprovisionamiento `PASS` (AC03/AC04); resto `UNRUN`.
 Despliegue no autorizado.** No autoriza DEV, nuevas fases, DNS, Caddy, UFW,
 Podman/Quadlet, despliegue, datos reales ni merge.
-Base: `vps-infra` `main` `c1f9f59312fd91120f96633857125554d7a9b624` (2026-11-07).
+Base: `vps-infra` `main` `363912cadc2f8a00d3b9a918534628a077d9e01e` (2026-11-08).
 Auditoría y Caddy: [auditoría 2026-11-05](../docs/auditorias/2026-11-05-infra-audit-vps-001-cierre.md)
 y [cierre Caddy](../docs/auditorias/2026-11-05-vps-caddy-upgrade-01-cierre.md).
 Evidencias: [2A — identidad rootless](../docs/evidencia-infra-test-02a.md) y
@@ -13,8 +13,8 @@ Evidencias: [2A — identidad rootless](../docs/evidencia-infra-test-02a.md) y
 Contrato de integración MyFinanzas ↔ `vps-infra`:
 [SPEC34 §5](https://github.com/jmartinlabs/myfinanzas-app/blob/main/specs/34-infra-test-01-specification.md#5-contrato-de-despliegue-con-vps-infra-solo-interfaz)
 y manifiesto de cada release. `vps-infra` no rastrea PRs de la aplicación. Flujo actual
-`feature/* → main`: TEST consume una release de un SHA inmutable de `myfinanzas-app/main`;
-PROD futuro, de `main`; no hay rama `test`; el despliegue es manual y no automatizado.
+`feature/* → test → main`: TEST consume una release de un SHA inmutable de
+`myfinanzas-app/test`; PROD futuro, de `main`; el despliegue es manual y no automatizado.
 Antecedente histórico: [vps-infra PR #7](https://github.com/jmartinlabs/vps-infra/pull/7)
 (CLOSED, no mergeado); no es contrato vigente.
 
@@ -74,7 +74,7 @@ Los placeholders `<…>` se sustituyen solo con valores verificados y redactados
 | `INFRA-TEST-01-HOST-AC15` | Autorización de retirada; inventario previo | Unidad detenida/deshabilitada; Caddy/DNS de TEST retirados; `linger` deshabilitado si procede; datos/copias preservados; raíz intacta; sin borrado sin inventario | `systemctl --user stop/disable`; backup y edición de Caddy; eliminación del registro DNS; `loginctl disable-linger`; `find`/`ls` de inventario; `curl` raíz | E2, E3 | vps-infra / usuario | 8 | Inventario, estado de unidad, Caddy/DNS retirados y raíz intacta | UNRUN |
 | `INFRA-TEST-01-HOST-AC16` | TEST en marcha; umbrales de disco acordados | Dentro de ≤ 5 GB propuestos y márgenes ≥ 20 % libre / ≥ 10 % inodos; 1 GiB/1 CPU/128 pids medidos; sin impacto en otros servicios | `systemctl --user show -p MemoryCurrent,CPUUsageNSec,TasksCurrent`; `podman stats --no-stream`; `df -h`; `df -i`; comparación antes/después | E2 | vps-infra / QA | 6 | Métricas, umbrales y comparación con otros servicios | UNRUN |
 | `INFRA-TEST-01-HOST-AC17` | Revisar host, repo, logs y copias | Solo `FT-1`; sin Excel, bases reales, exportaciones, credenciales, TOTP, cookies, claves ni datos personales; evidencia redactada | `seed verify`; inventario de rutas; `find` de `.xlsx`, `.sqlite`, `.env`, claves y exportaciones; revisión de logs; grep de secretos | E0, E2, E4 | usuario / QA | 5, 6 | Inventario redactado, `seed verify` y ausencia de datos ajenos | UNRUN |
-| `INFRA-TEST-01-HOST-AC18` | Selección de release TEST desde `myfinanzas-app/main` | SHA de 40 caracteres, `release_ref=myfinanzas-app/main`, `release_sha` registrado; SHA ancestro de `origin/main`; sin etiqueta móvil; PROD futuro desde `main`; el host no gestiona ramas | `git merge-base --is-ancestor <SHA> origin/main`; `git rev-parse`; manifiesto; `release_ref`/`release_sha`; gate Rootless | E0, E1 | myfinanzas-app / vps-infra / QA | 5 | SHA, rama, manifiesto y gate; sin deploy | UNRUN |
+| `INFRA-TEST-01-HOST-AC18` | Selección de release TEST desde `myfinanzas-app/test` | SHA de 40 caracteres, `release_ref=myfinanzas-app/test`, `release_sha` registrado; SHA ancestro de `origin/test`; sin etiqueta móvil; PROD futuro desde `main`; el host no gestiona ramas | `git merge-base --is-ancestor <SHA> origin/test`; `git rev-parse`; paquete/manifiesto; `release_ref`/`release_sha`; gate Rootless | E0, E1 | myfinanzas-app / vps-infra / QA | 5 | SHA, rama, paquete y gate; sin deploy | UNRUN |
 | `INFRA-TEST-01-HOST-AC19` | Verificar estado y artefactos de despliegue antes de sembrar | `data/state` `0700`; DB y `auth.key` `0600`; `current` atómico dentro de la raíz; sin symlinks/hardlinks en estado | `namei -l`; `stat -c '%a %U:%G %n'`; `find`; `readlink -f`; `findmnt`; `getfacl` si aplica | E2 | vps-infra / QA | 5 | Árbol de estado, DB, `auth.key` y destino de `current` | UNRUN |
 
 `AC-17`/`AC-18` del cierre de Caddy son independientes de los AC host `AC17`/`AC18`; todos
@@ -82,7 +82,7 @@ siguen `UNRUN` y no se cubren con el contador de AC host.
 
 La auditoría 2026-11-05 cubrió SO/recursos/SSH/UFW/Caddy/Podman/DNS y el estado de backups,
 pero **no** completó Quadlet/cgroup ni el inventario profundo de backups: AC02 sigue `UNRUN`.
-AC10 queda pendiente de la release/seed desde `main`; el contrato de integración lo declara el manifiesto de la release.
+AC10 queda pendiente de la release/seed desde `test`; el contrato de integración lo declara el manifiesto de la release.
 
 ## 4. Fases y gates de autorización
 
@@ -97,7 +97,7 @@ aprovisionamiento ya está ejecutada.
 | 2 | Provisión del host | Auditoría completada y aprobada | Usuario, rutas, permisos y `linger`; UFW sin cambios; `sshd -T`/UFW efectivo pendiente de root | PASS — aprovisionamiento 2A+2B; no incluye despliegue |
 | 3 | DNS `test` | Auditoría de DNS/proveedor | Registro A/AAAA, resolución y raíz intacta | UNRUN |
 | 4 | Caddy y HTTPS | Backup y ubicación real de Caddy | `caddy validate`, bloque validado y raíz intacta | UNRUN |
-| 5 | Despliegue y seed | Release/seed desde SHA de `myfinanzas-app/main`; gate Rootless; rutas listas | Seed `0`, unidad activa, frontend y ruta preparada | UNRUN |
+| 5 | Despliegue y seed | Release/seed desde SHA de `myfinanzas-app/test`; gate Rootless; rutas listas | Seed `0`, unidad activa, frontend y ruta preparada | UNRUN |
 | 6 | Smoke y copias | TEST operativo | HTTPS/health/401, `FT-1`, límites y copia local/externa | UNRUN |
 | 7 | Restauración y rollback | Copia externa verificada | Restore aislado, rollback bloqueado/ensayado y RTO | UNRUN |
 | 8 | Retirada | Autorización específica e inventario | Unidad/Caddy/DNS retirados, datos preservados, raíz intacta | UNRUN |
@@ -112,8 +112,8 @@ es la que acredita HTTPS, smoke y copias; una ventana 502 entre 4 y 5 no se decl
 operativa.
 
 La selección del SHA y la construcción de release/seed son responsabilidad de
-`myfinanzas-app`. El host solo consume un SHA inmutable de `myfinanzas-app/main` en la fase 5;
-integrar una PR no despliega nada; no hay rama `test`.
+`myfinanzas-app`. El host solo consume un SHA inmutable de `myfinanzas-app/test` en la fase 5;
+integrar una PR no despliega nada; PROD futuro usará `main`.
 
 ## 5. Casos negativos obligatorios
 
@@ -134,7 +134,7 @@ Todos `UNRUN`; ninguno se convierte en `PASS` por ausencia de error.
 | Reset con la unidad respondiendo | Rechazo; no se archiva nada. |
 | Artefacto de seed referenciado por la unidad permanente | Bloqueo de activación. |
 | Imagen por etiqueta móvil | Rechazo; solo ID inmutable. |
-| Release de una rama distinta de `main` o etiqueta móvil | Bloqueo; solo SHA de `myfinanzas-app/main`. |
+| Release de una rama distinta de `test` o etiqueta móvil | Bloqueo; solo SHA de `myfinanzas-app/test` para TEST. |
 | Cambio de configuración TEST aplicado a PROD u otra aplicación | Bloqueo y reversión; entornos aislados. |
 | Manifiesto alterado o commit distinto | No se carga la imagen. |
 | SHA sin Rootless `SUCCESS` | Bloqueo de despliegue. |
@@ -278,7 +278,7 @@ claves, bases, importes reales, IPs privadas ni logs crudos.
 | --- | --- | --- | --- |
 | B01 | Spec y test plan sin aprobar | Ninguna fase ejecutable | Aprobación del usuario |
 | B02 | Fase 2 de aprovisionamiento completada; fase 1 incompleta (Quadlet real y backups) y fases 3–8 sin autorización | Fases 3–8 bloqueadas | Autorizaciones de DNS/Caddy/despliegue y completar las comprobaciones pendientes de la fase 1 |
-| B03 | Release y artefacto de seed no construidos desde `main` | Fases 5–8 bloqueadas | Entrega verificada de `myfinanzas-app/main` |
+| B03 | Release y artefacto de seed no construidos desde `test` | Fases 5–8 bloqueadas | Entrega verificada de `myfinanzas-app/test` |
 | B15 | Contrato de integración pendiente de actualización en MyFinanzas | El esquema/seed no está declarado en el manifiesto | MyFinanzas actualice su SPEC34/test plan y entregue release/seed |
 | B05 | DT6/T-BKP abierto | Backup/restore limitados | Copia externa mínima y decisión |
 | B06 | Flake SQLite B3 sin reproducción Linux | Riesgo de falso FAIL/PASS | Diagnóstico Linux; no ocultar |
@@ -318,7 +318,7 @@ No se usa `reset-failed`, `chmod`/`chown`, `:U`, borrado de estado ni reintento 
   (2026-11-07) documentadas. El aprovisionamiento está completo; seed, backup/restore y TEST
   desplegado siguen **UNRUN**.
 - AC: **2 / 19 `PASS` (AC03/AC04); 17 / 19 `UNRUN`**. La auditoría no completa AC02 y AC18
-  depende del SHA de `main`. Los checks locales no convierten AC01 en `PASS` sin revisión
+  depende del SHA de `test`. Los checks locales no convierten AC01 en `PASS` sin revisión
   independiente y aprobación.
 - Fases: fase 2 de **aprovisionamiento** completada (2A+2B); ninguna fase de despliegue
   completada; fases 3–8 no autorizadas. La auditoría de 2026-11-05 cubrió parte de la fase 1,

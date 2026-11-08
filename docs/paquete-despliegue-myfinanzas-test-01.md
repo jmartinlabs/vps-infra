@@ -6,8 +6,9 @@ Base: `vps-infra` `main` `c1f9f59`; Fase 2 de aprovisionamiento `PASS` (2A+2B).
 Referencias: [spec host 02](../specs/02-infra-test-01-host-specification.md),
 [test plan](../specs/02-infra-test-01-host-testplan.md),
 [evidencia 2A](evidencia-infra-test-02a.md),
-[evidencia 2B](evidencia-infra-test-02b.md) y
-[preparación DNS/Caddy](preparacion-dns-caddy-test-01.md).
+[evidencia 2B](evidencia-infra-test-02b.md),
+[preparación DNS/Caddy](preparacion-dns-caddy-test-01.md) y
+[recepción y despliegue del paquete](paquete-test-recepcion-01.md).
 
 ## 1. Objetivo
 
@@ -28,24 +29,26 @@ unidad, smoke y copia local**, no la creación de otro host ni PROD.
 | Servicios TEST | Sin unidad, contenedor, servicio ni puerto `18082`/`3001`. |
 | Caddy | 2.11.9 activo; solo sitio raíz; sin bloque TEST; `caddy validate` OK. |
 | DNS | `test.myfinanzas.pp.ua` NXDOMAIN; apex sin cambios. |
-| Release/seed | No disponibles; `tools/test-seed` no está en `myfinanzas-app/main`. |
+| Release/seed | Paquete de GitHub Actions no disponible; `tools/test-seed` y `Containerfile.seed` sí existen en `myfinanzas-app/test`. |
 | Datasette | PR #22 pendiente de merge; no bloquea el despliegue de la app, pero debe resolverse antes de usar el panel. |
-| PRs host | #23 evidencia/spec, #24 scripts 2A, #25 script 2B; abiertas y sin merge. |
+| PRs host | #23 evidencia/spec, #24 scripts 2A y #25 script 2B: MERGED; #22 Datasette pendiente. |
 
 ## 3. Artefactos que debe entregar MyFinanzas
 
-1. **SHA candidato exacto** de `myfinanzas-app/main` (40 caracteres), congelado para TEST.
-   Al preparar este paquete, `origin/main` estaba en
-   `de9597e8a2170149c84bdd1a641b3d5a8b28164c` con `schemaVersion=27`; no se asume que siga
+1. **SHA candidato exacto** de `myfinanzas-app/test` (40 caracteres), congelado para TEST.
+   Al preparar este paquete, `origin/test` estaba en
+   `87a705f9225d76fe8d2d1b84e308f926e989fdb8` con `schemaVersion=27`; no se asume que siga
    siendo el candidato final si hay nuevos merges.
 2. **Gate Rootless `SUCCESS` sobre ese SHA exacto**. El único `SUCCESS` reciente observado
-   corresponde a `f800965`; no sirve para `de9597e` ni para otro SHA sin rerun.
-3. **Release privada** con `image.oci.tar`, frontend, `manifest.json`, `manifest.sha256`,
-   `index.json`, blobs OCI, IDs inmutables y `release_ref=myfinanzas-app/main`.
+   corresponde a `f800965`; no sirve para `87a705f` ni para otro SHA sin rerun.
+3. **Paquete único de GitHub Actions** (`myfinanzas-test-package.v1`) con
+   `image.oci.tar`, `image.seed.oci.tar`, `frontend/`, `manifest.json`,
+   `manifest.sha256` y SHA-256 del paquete.
 4. **Contrato de esquema/seed v27** declarado en el manifiesto, no solo en el código.
    SPEC34/testplan deben dejar de declarar v24/C25.
-5. **Seed test-only `FT-1` v27**: `seed init/apply/verify`, `test-instance.json`,
-   `seed-manifest.json`, checksums e imagen/artefacto efímero. Sin datos reales.
+5. **Seed test-only `FT-1` v27**: imagen incluida en el paquete; `seed init/apply/verify`,
+   `test-instance.json` y `seed-manifest.json` se generan en el host y se verifican antes de
+   la unidad. Sin datos reales.
 6. **Ruta canónica confirmada a nivel de contrato:** `/srv/myfinanzas-test/data/state` para
    DB y `auth.key`, con `data` montado en `/var/lib/myfinanzas`. `state/` sigue ausente y
    PR #22 permanece pendiente de autorización de merge.
@@ -104,15 +107,17 @@ Orden obligatorio:
 
 Cuando exista release, generar una solicitud
 [`deploy-request.v1`](../schemas/deploy-request.v1.json) con versión, tag
-`deploy-test-vX.Y.Z`, `release_sha`, `manifest_sha256`, `artifact_ref`, evidencia CI/Rootless,
-seed, backup, rollback y smoke.
+`deploy-test-vX.Y.Z`, `release_ref=myfinanzas-app/test`, `release_sha`,
+`package_format=myfinanzas-test-package.v1`, `package_sha256`, `manifest_sha256`,
+`artifact_ref`, `seed_image`, evidencia CI/Rootless, seed manifest, backup, rollback y smoke.
 
 Antes de tocar el VPS:
 
 ```bash
 ./scripts/release-gate check \
   --request <deploy-request.json> \
-  --release-dir <release-privada> \
+  --release-dir <directorio-extraido> \
+  --package <paquete-unico.tar> \
   --seed-manifest <seed-manifest.json> \
   --state <state-fixture.json> \
   --evidence <evidence-fixture.json> \
@@ -132,14 +137,14 @@ resultado `success` no acredita GitHub, QA, Rootless ni el VPS reales.
 | Despliegue TEST | Crear estado, seed, unidad, `current`, smoke | PROD, promoción, DNS raíz |
 | Backup externo | Destino, custodia `age`, retención y restore | Copia de PROD |
 | UFW | **No se propone cambio**; solo verificación | Abrir `18082`/`3001` |
-| Merge de PRs | #22/#23/#24/#25 por separado | Merge automático o despliegue |
+| Merge de PRs | #22 pendiente; #23/#24/#25 ya integradas | Merge automático o despliegue |
 
 ## 7. Bloqueos actuales
 
 | ID | Bloqueo | Efecto |
 | --- | --- | --- |
-| D1 | Release privada no entregada | Gate 5 bloqueado |
-| D2 | Seed `FT-1` v27 no disponible | Gate 5 bloqueado |
+| D1 | Paquete único de GitHub Actions no entregado | Gate 5 bloqueado |
+| D2 | Imagen seed/paquete FT-1 v27 no entregados | Gate 5 bloqueado |
 | D3 | Contrato SPEC34/testplan sigue v24/C25 | Compatibilidad de esquema no declarada |
 | D4 | Rootless no ejecutado sobre el SHA elegido | Gate 5 bloqueado |
 | D5 | Ruta `data/state` confirmada a nivel de contrato; `state/` aún ausente y PR #22 sin merge | Ruta cerrada; despliegue y panel pendientes |
@@ -149,7 +154,7 @@ resultado `success` no acredita GitHub, QA, Rootless ni el VPS reales.
 | D9 | Destino externo/custodia `age` sin aprobar | Gate 6 y fase 7 bloqueados |
 | D10 | `sshd -T`, UFW/nftables y fail2ban efectivos pendientes de root | Hardening no acreditado |
 | D11 | PR #22 Datasette sin merge | Panel de administración no listo |
-| D12 | PRs #23/#24/#25 sin merge | Evidencia/procedimientos no integrados |
+| D12 | PRs #23/#24/#25 integradas | Evidencia/procedimientos en `main`; no habilitan despliegue |
 
 ## 8. Criterios de parada
 

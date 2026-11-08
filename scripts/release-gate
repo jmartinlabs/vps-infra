@@ -39,9 +39,13 @@ TOP_KEYS = {
     "environment",
     "version",
     "tag",
+    "release_ref",
     "release_sha",
+    "package_format",
+    "package_sha256",
     "manifest_sha256",
     "artifact_ref",
+    "seed_image",
     "actor",
     "seed_manifest_sha256",
     "evidence",
@@ -50,13 +54,24 @@ TOP_KEYS = {
     "rollback_pair",
     "smoke_profile",
 }
+PACKAGE_FORMAT = "myfinanzas-test-package.v1"
+RELEASE_REFS = {
+    "test": "myfinanzas-app/test",
+    "prod": "myfinanzas-app/main",
+}
 EVIDENCE_KEYS = {"ci_run_id", "rootless_run_id", "qa_reference"}
 APPROVAL_KEYS = {"environment", "run_id", "reviewer", "sha", "version"}
 ROLLBACK_KEYS = {"previous_release_sha", "previous_manifest_sha256"}
 STATE_KEYS = {"environment", "installed", "lock"}
 INSTALLED_KEYS = {"version", "release_sha", "manifest_sha256"}
 EXTERNAL_EVIDENCE_KEYS = {"ci", "rootless", "qa", "ancestry", "approval"}
-RELEASE_TOP_LEVEL = {"manifest.json", "manifest.sha256", "image.oci.tar", "frontend"}
+RELEASE_TOP_LEVEL = {
+    "manifest.json",
+    "manifest.sha256",
+    "image.oci.tar",
+    "image.seed.oci.tar",
+    "frontend",
+}
 
 MAX_JSON_BYTES = 2_000_000
 MAX_TEXT = 2048
@@ -295,6 +310,22 @@ def validate_request(request: dict) -> None:
     if environment not in ("test", "prod"):
         raise GateBlocked("ENVIRONMENT_INVALID", "environment must be test or prod")
 
+    if request["release_ref"] != RELEASE_REFS[environment]:
+        raise GateBlocked(
+            "RELEASE_REF_MISMATCH",
+            f"release_ref must be {RELEASE_REFS[environment]} for {environment}",
+        )
+    if request["package_format"] != PACKAGE_FORMAT:
+        raise GateBlocked(
+            "PACKAGE_FORMAT_INVALID", f"package_format must be {PACKAGE_FORMAT}"
+        )
+    if not isinstance(request["package_sha256"], str) or not HASH.fullmatch(
+        request["package_sha256"]
+    ):
+        raise GateBlocked(
+            "PACKAGE_HASH_FORMAT", "package_sha256 must be 64 lowercase hex"
+        )
+
     version = request["version"]
     if not isinstance(version, str) or not SEMVER.fullmatch(version):
         raise GateBlocked("VERSION_INVALID", "version must be stable SemVer x.y.z")
@@ -343,14 +374,22 @@ def validate_request(request: dict) -> None:
     require_int(evidence["rootless_run_id"], "EVIDENCE_INVALID", "rootless_run_id")
     require_text(evidence["qa_reference"], "EVIDENCE_INVALID", "qa_reference")
 
+    seed_image = request["seed_image"]
     seed_hash = request["seed_manifest_sha256"]
     if environment == "test":
+        if not isinstance(seed_image, str) or not DIGEST.fullmatch(seed_image):
+            raise GateBlocked(
+                "SEED_IMAGE_REQUIRED", "TEST requires seed_image (sha256:<64 hex>)"
+            )
         if not isinstance(seed_hash, str) or not HASH.fullmatch(seed_hash):
             raise GateBlocked(
                 "SEED_REQUIRED", "TEST requires seed_manifest_sha256 (64 hex)"
             )
-    elif seed_hash is not None:
-        raise GateBlocked("SEED_NOT_ALLOWED", "PROD must not carry a seed manifest")
+    else:
+        if seed_image is not None:
+            raise GateBlocked("SEED_IMAGE_NOT_ALLOWED", "PROD must not carry a seed image")
+        if seed_hash is not None:
+            raise GateBlocked("SEED_NOT_ALLOWED", "PROD must not carry a seed manifest")
 
     approval = request["approval"]
     if environment == "test":
@@ -461,6 +500,41 @@ def check_manifest(request: dict, release_dir: Path) -> dict:
                 "MANIFEST_CONTRACTS_INVALID", f"manifest {key} contract is invalid"
             )
 
+    if request["environment"] == "test":
+        seed = manifest.get("seed")
+        if not isinstance(seed, dict):
+            raise GateBlocked(
+                "SEED_MANIFEST_INVALID", "TEST release manifest must declare seed"
+            )
+        if seed.get("image") != request["seed_image"]:
+            raise GateBlocked(
+                "SEED_IMAGE_MISMATCH", "manifest seed.image does not match seed_image"
+            )
+        if seed.get("source") != request["release_sha"]:
+            raise GateBlocked(
+                "SEED_SOURCE_MISMATCH", "manifest seed.source does not match release_sha"
+            )
+        if seed.get("contracts") != contracts:
+            raise GateBlocked(
+                "SEED_CONTRACTS_MISMATCH",
+                "manifest seed.contracts does not match release contracts",
+            )
+        if seed.get("lock_sha256") != inputs.get("lock_sha256"):
+            raise GateBlocked(
+                "SEED_LOCK_MISMATCH", "manifest seed.lock_sha256 does not match release lock"
+            )
+        if not isinstance(seed.get("oci_manifest_digest"), str) or not DIGEST.fullmatch(
+            seed["oci_manifest_digest"]
+        ):
+            raise GateBlocked(
+                "SEED_OCI_DIGEST_INVALID", "manifest seed.oci_manifest_digest is invalid"
+            )
+        for key in ("oci_archive_sha256", "rootfs_payload_sha256", "recipe_sha256"):
+            if not isinstance(seed.get(key), str) or not HASH.fullmatch(seed[key]):
+                raise GateBlocked(
+                    "SEED_MANIFEST_INVALID", f"manifest seed.{key} is invalid"
+                )
+
     oci_hash = manifest.get("oci_archive_sha256")
     if not isinstance(oci_hash, str) or not HASH.fullmatch(oci_hash):
         raise GateBlocked(
@@ -528,15 +602,22 @@ def check_oci_descriptor(descriptor: dict, blob_sizes: dict, label: str) -> None
         )
 
 
-def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
+def check_oci_archive(
+    release_dir: Path,
+    archive_name: str,
+    expected_archive_sha256: str,
+    expected_manifest_digest: str,
+    label: str,
+) -> None:
     archive_path = regular_file(
-        release_dir / "image.oci.tar", "OCI_ARCHIVE_NOT_FOUND", "image.oci.tar"
+        release_dir / archive_name, "OCI_ARCHIVE_NOT_FOUND", archive_name
     )
-    if sha256_file(archive_path) != manifest["oci_archive_sha256"]:
+    if sha256_file(archive_path) != expected_archive_sha256:
         raise GateBlocked(
-            "OCI_ARCHIVE_HASH_MISMATCH", "image.oci.tar does not match its manifest hash"
+            "OCI_ARCHIVE_HASH_MISMATCH",
+            f"{archive_name} does not match its manifest hash",
         )
-    expected_manifest = manifest["oci_manifest_digest"].split(":", 1)[1]
+    expected_manifest = expected_manifest_digest.split(":", 1)[1]
     try:
         with tarfile.open(archive_path, mode="r:*") as archive:
             names = set()
@@ -603,12 +684,14 @@ def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
     except GateBlocked:
         raise
     except (OSError, tarfile.TarError) as exc:
-        raise GateBlocked("OCI_ARCHIVE_INVALID", f"image.oci.tar is invalid: {exc}") from exc
+        raise GateBlocked(
+            "OCI_ARCHIVE_INVALID", f"{archive_name} is invalid: {exc}"
+        ) from exc
 
     if "oci-layout" not in names:
-        raise GateBlocked("OCI_LAYOUT_MISSING", "image.oci.tar lacks oci-layout")
+        raise GateBlocked("OCI_LAYOUT_MISSING", f"{archive_name} lacks oci-layout")
     if index_data is None:
-        raise GateBlocked("OCI_INDEX_MISSING", "image.oci.tar lacks index.json")
+        raise GateBlocked("OCI_INDEX_MISSING", f"{archive_name} lacks index.json")
     try:
         index = json.loads(index_data.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -617,13 +700,13 @@ def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
     if not isinstance(manifests, list) or not manifests:
         raise GateBlocked("OCI_INDEX_INVALID", "OCI index must declare manifests")
     first = manifests[0]
-    if not isinstance(first, dict) or first.get("digest") != manifest["oci_manifest_digest"]:
+    if not isinstance(first, dict) or first.get("digest") != expected_manifest_digest:
         raise GateBlocked(
-            "OCI_DIGEST_MISMATCH", "OCI index digest does not match manifest"
+            "OCI_DIGEST_MISMATCH", f"{label} OCI index digest does not match manifest"
         )
     if expected_manifest not in blob_names:
         raise GateBlocked(
-            "OCI_DIGEST_MISMATCH", "OCI digest blob is missing from image.oci.tar"
+            "OCI_DIGEST_MISMATCH", f"{label} OCI digest blob is missing from {archive_name}"
         )
     if type(first.get("size")) is not int or first["size"] != blob_sizes[expected_manifest]:
         raise GateBlocked(
@@ -660,6 +743,29 @@ def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
     check_oci_descriptor(config, blob_sizes, "config")
     for position, layer in enumerate(layers):
         check_oci_descriptor(layer, blob_sizes, f"layers[{position}]")
+
+
+def check_oci(request: dict, release_dir: Path, manifest: dict) -> None:
+    check_oci_archive(
+        release_dir,
+        "image.oci.tar",
+        manifest["oci_archive_sha256"],
+        manifest["oci_manifest_digest"],
+        "application",
+    )
+
+
+def check_seed_oci(request: dict, release_dir: Path, manifest: dict) -> None:
+    seed = manifest.get("seed")
+    if not isinstance(seed, dict):
+        raise GateBlocked("SEED_MANIFEST_INVALID", "release manifest has no seed block")
+    check_oci_archive(
+        release_dir,
+        "image.seed.oci.tar",
+        seed["oci_archive_sha256"],
+        seed["oci_manifest_digest"],
+        "seed",
+    )
 
 
 def check_frontend(release_dir: Path, manifest: dict) -> None:
@@ -720,20 +826,34 @@ def check_seed(request: dict, seed_path, manifest) -> None:
             "SEED_HASH_MISMATCH", "seed manifest does not match seed_manifest_sha256"
         )
     seed = load_json_file(seed_file, "SEED_JSON_INVALID", "seed manifest")
-    if "commit" in seed and seed["commit"] != request["release_sha"]:
+    source = seed.get("source")
+    if not isinstance(source, dict):
         raise GateBlocked(
-            "SEED_COMMIT_MISMATCH", "seed manifest commit does not match release_sha"
+            "SEED_SOURCE_INVALID", "seed manifest source must be an object"
         )
+    if source.get("commit") != request["release_sha"]:
+        raise GateBlocked(
+            "SEED_COMMIT_MISMATCH", "seed manifest source.commit does not match release_sha"
+        )
+    if source.get("seed_image") != request["seed_image"]:
+        raise GateBlocked(
+            "SEED_IMAGE_MISMATCH", "seed manifest seed_image does not match seed_image"
+        )
+    dataset = seed.get("dataset")
+    if not isinstance(dataset, dict) or dataset.get("id") != "FT-1":
+        raise GateBlocked("SEED_DATASET_INVALID", "seed dataset must be FT-1")
+    if type(dataset.get("version")) is not int or dataset["version"] <= 0:
+        raise GateBlocked("SEED_DATASET_INVALID", "seed dataset version is invalid")
     if manifest is None:
         raise GateBlocked(
             "SEED_SCHEMA_UNVERIFIED",
             "release manifest is unavailable; seed schema compatibility is not verified",
         )
     release_schema = manifest["inputs"]["contracts"]["schema"]
-    seed_schema = seed.get("schema")
+    seed_schema = source.get("schema")
     if type(seed_schema) is not int or seed_schema <= 0:
         raise GateBlocked(
-            "SEED_SCHEMA_INVALID", "seed manifest schema must be a positive integer"
+            "SEED_SCHEMA_INVALID", "seed manifest source.schema must be a positive integer"
         )
     if seed_schema != release_schema:
         raise GateBlocked(
@@ -845,9 +965,11 @@ def check_evidence(request: dict, evidence_path, report: Report) -> None:
         report.sim_ok(f"evidence.{name}", "simulated fixture; not verified on GitHub")
 
     ancestry = external_item(evidence, "ancestry", report)
-    if ancestry.get("origin") != "main":
+    if ancestry.get("origin") != request["release_ref"]:
         report.sim_block(
-            "evidence.ancestry", "ANCESTRY_INVALID", "simulated ancestry origin must be main"
+            "evidence.ancestry",
+            "ANCESTRY_INVALID",
+            "simulated ancestry origin does not match release_ref",
         )
     elif ancestry.get("sha") != release_sha:
         report.sim_block(
@@ -915,6 +1037,7 @@ def result_payload(report: Report, request: dict | None, mode: str) -> dict:
                 "host_state",
                 "tag_author",
                 "application_version",
+                "package_provenance",
             ],
         },
         "activated_release": None,
@@ -954,6 +1077,11 @@ def parse_args(argv=None):
     check = subparsers.add_parser("check", help="validate a release request")
     check.add_argument("--request", required=True, help="deploy-request JSON")
     check.add_argument("--release-dir", required=True, help="private release bundle")
+    check.add_argument(
+        "--package",
+        required=True,
+        help="single received package file; verifies package_sha256",
+    )
     check.add_argument("--state", help="simulated host state JSON")
     check.add_argument("--evidence", help="simulated external evidence JSON")
     check.add_argument("--seed-manifest", help="seed manifest for TEST")
@@ -1007,6 +1135,19 @@ def main(argv=None) -> int:
 
     deployment_id = f"{request['environment']}-{request['version']}-1"
 
+    try:
+        package_file = regular_file(
+            args.package, "PACKAGE_NOT_FOUND", "received package"
+        )
+        if sha256_file(package_file) != request["package_sha256"]:
+            raise GateBlocked(
+                "PACKAGE_HASH_MISMATCH",
+                "received package does not match package_sha256",
+            )
+        report.local_ok("package.sha256", "received package hash is verified")
+    except GateBlocked as exc:
+        report.local_block("package.sha256", exc.code, exc.message)
+
     release_dir = Path(args.release_dir).expanduser()
     if release_dir.is_symlink() or not release_dir.is_dir():
         report.local_block(
@@ -1043,17 +1184,23 @@ def main(argv=None) -> int:
                 manifest = None
 
         if manifest is not None:
-            for check_id, function in (
+            checks = [
                 ("oci.archive", lambda: check_oci(request, release_dir, manifest)),
                 ("frontend.files", lambda: check_frontend(release_dir, manifest)),
-            ):
+            ]
+            if request["environment"] == "test":
+                checks.append(
+                    ("seed.oci", lambda: check_seed_oci(request, release_dir, manifest))
+                )
+            for check_id, function in checks:
                 try:
                     function()
-                    detail = (
-                        "OCI archive, index and blobs are verified"
-                        if check_id == "oci.archive"
-                        else "frontend files match the manifest map"
-                    )
+                    if check_id == "oci.archive":
+                        detail = "application OCI archive, index and blobs are verified"
+                    elif check_id == "seed.oci":
+                        detail = "seed OCI archive, index and blobs are verified"
+                    else:
+                        detail = "frontend files match the manifest map"
                     report.local_ok(check_id, detail)
                 except GateBlocked as exc:
                     report.local_block(check_id, exc.code, exc.message)

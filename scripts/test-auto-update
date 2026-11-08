@@ -327,6 +327,8 @@ class Updater:
         releases = self.config.web_root / "releases"
         if not self.config.web_root.is_dir() or not releases.is_dir():
             raise UpdateError("web root/releases missing; first activation required")
+        if not releases.stat().st_mode & 0o2000:
+            raise UpdateError("releases directory must be setgid (2750) for caddy access")
         target = releases / manifest["inputs"]["source"]
         if target.exists():
             raise UpdateError(f"frontend release already exists: {target}")

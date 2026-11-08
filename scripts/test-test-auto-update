@@ -136,6 +136,7 @@ class UpdaterTests(unittest.TestCase):
         self.lock_file = self.root / "update.lock"
         for path in (self.data / "state", self.web / "releases", self.unit_dir):
             path.mkdir(parents=True, exist_ok=True)
+        (self.web / "releases").chmod(0o2750)
         write_json(self.data / "test-instance.json", {"schema_version": 27})
         write_json(self.data / "seed-manifest.json", {"source": {"schema": 27}})
         (self.data / "state" / "database.sqlite").write_text("fixture")

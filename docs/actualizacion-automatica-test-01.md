@@ -63,9 +63,10 @@ La primera activación no se automatiza. Requiere autorización específica y ej
 
 No se ejecuta ninguna de estas operaciones en esta fase.
 
-## Auditoría antes de publicar
+## Auditoría antes de desplegar
 
-La visibilidad de los paquetes GHCR solo se cambia después de auditar el bundle exacto:
+El bundle se audita antes de enviarlo al VPS. Este documento describe la arquitectura
+sustituida; la puerta sigue siendo válida para cualquier entrega:
 
 ```bash
 ./scripts/audit-test-release <artifact.zip|release-dir> --expect-source <sha40>

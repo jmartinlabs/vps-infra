@@ -82,16 +82,21 @@ Cada gate exige autorización separada. Ninguna autorización habilita el siguie
 Orden obligatorio:
 
 1. Verificar SHA, manifiesto, checksums, IDs, gate Rootless y contrato v27.
-2. Confirmar `data/state` ausente y rutas vacías.
-3. Ejecutar `production-init` para crear `data/state`, DB y `auth.key` `0600`; verificar
+2. Ejecutar el **preflight** `release-gate check` del `.tar`, la app, el seed image y el
+   frontend; sin `seed manifest` y sin mutar estado.
+3. Confirmar `data/state` ausente y rutas vacías.
+4. Ejecutar `production-init` para crear `data/state`, DB y `auth.key` `0600`; verificar
    AC19 antes de sembrar.
-4. Ejecutar `seed init/apply/verify` con `FT-1` v27; comprobar marcador y manifiesto.
-5. Ejecutar `setup` según el contrato de la app y verificar que no hay datos reales.
-6. Instalar la unidad Quadlet con imagen inmutable, `Pull=never`, `keep-id` 10001,
+5. Ejecutar `seed init/apply/verify` con `FT-1` v27; comprobar marcador y manifiesto.
+6. Ejecutar **`release-gate verify-seed`** con el `seed-manifest.json` generado; no activar
+   nada si falla.
+7. Ejecutar `setup` según el contrato de la app y verificar que no hay datos reales.
+8. Instalar la unidad Quadlet con imagen inmutable, `Pull=never`, `keep-id` 10001,
    `127.0.0.1:18082:3001`, límites 1 GiB/1 CPU/128 pids, rootfs de solo lectura y tmpfs.
-7. Validar la unidad, arrancarla y comprobar health `200` y `401`.
-8. Publicar el frontend y `current` de forma atómica; recargar Caddy solo al final.
-9. Smoke: loopback, HTTPS, `401`, `FT-1`, ausencia de `3001`, apex intacto.
+9. Validar la unidad, arrancarla y comprobar health `200` y `401`.
+10. Publicar el frontend en `/var/www/myfinanzas-test/releases/<sha>` y `current` dentro de
+    esa raíz pública; verificar legibilidad por `caddy`; recargar Caddy solo al final.
+11. Smoke: loopback, HTTPS, `401`, `FT-1`, ausencia de `3001`, apex intacto.
 - **Bloqueos:** release/seed no disponibles, SHA/Rootless no confirmados, contrato v27
   pendiente. La ruta `data/state` está confirmada a nivel de contrato, pero el estado aún no
   existe y el despliegue no está autorizado.

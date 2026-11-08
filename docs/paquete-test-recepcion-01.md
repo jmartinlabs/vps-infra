@@ -55,26 +55,42 @@ Procedimiento del operador, en una ruta nueva y privada. No ejecutar todavía.
 4. Verificar `manifest.sha256` y que el árbol contiene solo los cinco elementos permitidos.
 5. Comprobar que `manifest.inputs.source` coincide con `release_sha` y que
    `manifest.seed.image` coincide con `seed_image`.
-6. No importar, no arrancar y no publicar nada hasta pasar el gate.
+6. No importar, no arrancar ni modificar estado hasta pasar el preflight del paquete.
 
-## 3. Gate local
+## 3. Validación previa y verificación posterior
 
-El `seed-manifest.json` se genera después de `seed apply`; el gate se ejecuta después de
-`seed verify` y antes de activar la unidad.
+### 3.1 Preflight del paquete, antes de mutar estado
+
+La solicitud TEST lleva `seed_manifest_sha256: null` porque FT-1 aún no se ha aplicado.
 
 ```bash
 ./scripts/release-gate check \
   --request /ruta/deploy-request.json \
   --release-dir /srv/myfinanzas-test/releases/<release_sha> \
   --package /ruta/privada/myfinanzas-test-<release_sha>.tar \
-  --seed-manifest /srv/myfinanzas-test/data/seed-manifest.json \
   --state /ruta/state-fixture.json \
   --evidence /ruta/evidence-fixture.json \
   --mode dry-run
 ```
 
-El resultado debe ser `success` y `verification.local` debe incluir `package.sha256`,
-`manifest.sha256`, `oci.archive`, `seed.oci`, `frontend.files` y `seed.manifest`.
+Debe validar `package.sha256`, `manifest.sha256`, `oci.archive`, `seed.oci` y
+`frontend.files`. `seed.manifest` queda `skipped` porque se genera después de `seed apply`.
+
+### 3.2 Verificación posterior de FT-1
+
+Después de `seed apply` y `seed verify`, actualizar `seed_manifest_sha256` en la solicitud y
+ejecutar:
+
+```bash
+./scripts/release-gate verify-seed \
+  --request /ruta/deploy-request.json \
+  --release-dir /srv/myfinanzas-test/releases/<release_sha> \
+  --seed-manifest /srv/myfinanzas-test/data/seed-manifest.json
+```
+
+Debe validar `source.commit`, `source.schema`, `source.seed_image`, dataset `FT-1` y el hash
+del manifiesto. Solo después se instala/activa la unidad.
+
 Un `success` no acredita GitHub, Rootless, QA ni autorización de despliegue.
 
 ## 4. Importación de imágenes
@@ -104,9 +120,12 @@ Precondiciones: unidad TEST parada/ausente, `18082` sin responder y
 3. `setup` con archivo de entrega nuevo `0600`; el token no se imprime ni se versiona.
 4. Ejecutar el gate de la §3 con el `seed-manifest.json` recién generado.
 5. Instalar la unidad Quadlet candidata con el ID inmutable de la app.
-6. Publicar el frontend verificado en `releases/<sha>/` y `current` de forma atómica.
-7. Recargar Caddy solo al final, con autorización separada.
-8. Ejecutar smoke y conservar evidencia.
+6. Publicar el frontend verificado en `/var/www/myfinanzas-test/releases/<sha>/` y crear
+   `current` dentro de `/var/www/myfinanzas-test`; nunca apuntar a `/srv` privado.
+7. Comprobar que Caddy puede leer el frontend sin atravesar `0700`:
+   `namei -l /var/www/myfinanzas-test/current` y prueba de lectura como `caddy`.
+8. Recargar Caddy solo al final, con autorización separada.
+9. Ejecutar smoke y conservar evidencia.
 
 Plantillas de comandos: [RUNBOOK de MyFinanzas](https://github.com/jmartinlabs/myfinanzas-app/blob/test/infra/RUNBOOK.md).
 No se copian aquí secretos ni rutas privadas reales.
@@ -177,7 +196,9 @@ ss -ltn | grep -E '18082|3001'
 ```
 
 Esperado: health `200` `{"ok":true}`, ruta protegida `401`, frontend/FT-1 visible con MFA,
-`3001` no publicado, `18082` solo loopback y apex intacto.
+`3001` no publicado, `18082` solo loopback y apex intacto. Antes de la recarga, `namei -l`
+debe mostrar todos los componentes públicos `0755` y la prueba como `caddy` debe leer
+`current/index.html`.
 
 ## 9. Recuperación básica
 

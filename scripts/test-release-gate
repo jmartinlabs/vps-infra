@@ -374,6 +374,32 @@ class Fixture:
             payload = json.loads(completed.stdout)
         return completed, payload
 
+    def run_verify_seed(self, request=None, output=True):
+        request = copy.deepcopy(self.request if request is None else request)
+        self.write_request(request)
+        command = [
+            sys.executable,
+            str(GATE),
+            "verify-seed",
+            "--request",
+            str(self.request_path),
+            "--release-dir",
+            str(self.release),
+            "--seed-manifest",
+            str(self.seed),
+        ]
+        if output:
+            command.extend(["--output", str(self.output_path)])
+        completed = subprocess.run(
+            command, capture_output=True, text=True, check=False
+        )
+        payload = None
+        if output and self.output_path.is_file():
+            payload = json.loads(self.output_path.read_text(encoding="utf-8"))
+        elif completed.stdout.strip():
+            payload = json.loads(completed.stdout)
+        return completed, payload
+
     def prod_request(self) -> dict:
         request = copy.deepcopy(self.request)
         request.update(
@@ -432,6 +458,29 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("evidence.ci", payload["verification"]["simulated"])
         self.assertIn("evidence.ancestry", payload["verification"]["simulated"])
         self.assertIn("github_ci", payload["verification"]["real_world_not_verified"])
+
+    def test_preflight_without_seed_manifest(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = None
+        completed, payload = self.fx.run(request=request, seed=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(payload["result"], "success")
+        self.assertNotIn("seed.manifest", payload["verification"]["local"])
+        self.assertIn("seed.manifest", payload["verification"]["skipped"])
+
+    def test_verify_seed_after_apply(self) -> None:
+        completed, payload = self.fx.run_verify_seed()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["mode"], "verify_seed")
+        self.assertIn("seed.manifest", payload["verification"]["local"])
+
+    def test_verify_seed_requires_hash(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = None
+        completed, payload = self.fx.run_verify_seed(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_HASH_REQUIRED")
 
     def test_valid_prod_dry_run(self) -> None:
         request = self.fx.prod_request()
@@ -633,12 +682,10 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "OCI_ARCHIVE_HASH_MISMATCH")
 
-    def test_seed_required(self) -> None:
-        request = copy.deepcopy(self.fx.request)
-        request["seed_manifest_sha256"] = None
-        completed, payload = self.fx.run(request=request, seed=False)
+    def test_seed_file_required_when_hash_declared(self) -> None:
+        completed, payload = self.fx.run(seed=False)
         self.assertEqual(completed.returncode, 2)
-        self.assertBlocked(payload, "SEED_REQUIRED")
+        self.assertBlocked(payload, "SEED_FILE_REQUIRED")
 
     def test_seed_hash_mismatch(self) -> None:
         request = copy.deepcopy(self.fx.request)

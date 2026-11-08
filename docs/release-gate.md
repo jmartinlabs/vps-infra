@@ -29,26 +29,38 @@ paquete de build.
 
 ## Uso
 
+Preflight, antes de modificar estado. La solicitud TEST lleva
+`seed_manifest_sha256: null` porque el manifiesto aún no existe:
+
 ```bash
 ./scripts/release-gate check \
   --request /ruta/deploy-request.json \
   --release-dir /ruta/privada/release \
   --package /ruta/privada/myfinanzas-test-<sha>.tar \
-  --seed-manifest /ruta/privada/seed-manifest.json \
   --state /ruta/state-fixture.json \
   --evidence /ruta/evidence-fixture.json \
   --mode dry-run \
   --output /ruta/result.json
 ```
 
+Verificación posterior de FT-1, después de `seed apply` y antes de activar la unidad:
+
+```bash
+./scripts/release-gate verify-seed \
+  --request /ruta/deploy-request.json \
+  --release-dir /ruta/privada/release \
+  --seed-manifest /srv/myfinanzas-test/data/seed-manifest.json \
+  --output /ruta/result-seed.json
+```
+
 - `--release-dir` es una entrada de confianza separada; no se acepta una ruta del JSON.
-- `--package` es obligatorio y verifica el SHA-256 del paquete recibido contra
+- `--package` es obligatorio en `check` y verifica el SHA-256 del paquete recibido contra
   `package_sha256`.
 - `--state` simula el estado del host (instalado/bloqueo). Es obligatorio: sin este fixture
   el gate bloquea y no puede validar concurrencia ni rollback.
 - `--evidence` simula CI, Rootless, QA, ascendencia Git y aprobación PROD. Sin este fixture
   el gate bloquea: no declara verificado nada que no haya comprobado localmente.
-- `--seed-manifest` es obligatorio en TEST y prohibido en PROD.
+- `--seed-manifest` es obligatorio en `verify-seed` y prohibido en PROD.
 - Códigos de salida: `0` éxito, `2` bloqueado antes de mutar, `3` error interno.
 
 ## Verificación local frente a simulación
@@ -77,8 +89,9 @@ verificados.
 - Seed bloque `manifest.seed` con `image`, `source`, `contracts`, lock, hashes y digest;
   coincide con `seed_image` y con `inputs`.
 - `seed-manifest.json` con `source.commit`, `source.schema`, `source.seed_image` y dataset
-  `FT-1`; hash y esquema coincidentes. Si el manifiesto de release no está disponible o no es
-  válido, la compatibilidad de esquema queda bloqueada, no marcada como PASS.
+  `FT-1`; hash y esquema coincidentes. Se valida en `verify-seed`, después de `seed apply`.
+  Si el manifiesto de release no está disponible o no es válido, la compatibilidad de
+  esquema queda bloqueada, no marcada como PASS.
 - Rutas relativas seguras y rechazo de symlinks en el paquete.
 - Estado simulado: bloqueo de entorno, versión ya activa y par de rollback.
 - Evidencia simulada: CI, Rootless, QA, ascendencia y aprobación PROD; cada fallo produce un
@@ -90,8 +103,8 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 55 casos cubren solicitudes válidas TEST/PROD y rechazos de tag, entorno, versión, SHA,
-`release_ref`, paquete, seed,
+Los 58 casos cubren solicitudes válidas TEST/PROD, preflight sin seed y `verify-seed`, y
+rechazos de tag, entorno, versión, SHA, `release_ref`, paquete, seed,
 manifiesto, estructura e integridad OCI, frontend, seed, incompatibilidad o no verificación
 del esquema seed/release, aprobación, evidencia simulada, rutas inseguras, symlinks, entradas
 extra, estado ausente/incompleto/bloqueado, rollback y modo `apply`. También comprueban que el

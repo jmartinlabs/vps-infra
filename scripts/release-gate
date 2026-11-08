@@ -381,9 +381,12 @@ def validate_request(request: dict) -> None:
             raise GateBlocked(
                 "SEED_IMAGE_REQUIRED", "TEST requires seed_image (sha256:<64 hex>)"
             )
-        if not isinstance(seed_hash, str) or not HASH.fullmatch(seed_hash):
+        if seed_hash is not None and (
+            not isinstance(seed_hash, str) or not HASH.fullmatch(seed_hash)
+        ):
             raise GateBlocked(
-                "SEED_REQUIRED", "TEST requires seed_manifest_sha256 (64 hex)"
+                "SEED_HASH_FORMAT",
+                "seed_manifest_sha256 must be null or 64 lowercase hex",
             )
     else:
         if seed_image is not None:
@@ -818,6 +821,11 @@ def check_seed(request: dict, seed_path, manifest) -> None:
         if seed_path is not None:
             raise GateBlocked("SEED_NOT_ALLOWED", "PROD must not carry a seed file")
         return
+    if not isinstance(seed_hash, str) or not HASH.fullmatch(seed_hash):
+        raise GateBlocked(
+            "SEED_HASH_REQUIRED",
+            "post-seed verification requires seed_manifest_sha256",
+        )
     if seed_path is None:
         raise GateBlocked("SEED_FILE_REQUIRED", "TEST requires --seed-manifest")
     seed_file = regular_file(seed_path, "SEED_FILE_REQUIRED", "seed manifest")
@@ -1069,6 +1077,61 @@ def write_result(path, payload: dict) -> None:
         raise
 
 
+def verify_seed_main(args) -> int:
+    report = Report()
+    request = None
+    try:
+        request = load_json_file(
+            args.request, "REQUEST_JSON_INVALID", "deploy request"
+        )
+        validate_request(request)
+        report.local_ok("request.format", "request fields and tag/version are valid")
+    except GateBlocked as exc:
+        report.local_block("request", exc.code, exc.message)
+        payload = result_payload(report, None, "verify_seed")
+        try:
+            write_result(args.output, payload)
+        except GateBlocked as output_error:
+            print(
+                f"release-gate: {output_error.code}: {output_error.message}",
+                file=sys.stderr,
+            )
+            return EXIT_FAILED
+        return EXIT_BLOCKED
+
+    release_dir = Path(args.release_dir).expanduser()
+    if release_dir.is_symlink() or not release_dir.is_dir():
+        report.local_block(
+            "release.dir", "RELEASE_DIR_INVALID", "release directory is missing or unsafe"
+        )
+    else:
+        release_dir = release_dir.resolve()
+        try:
+            manifest = check_manifest(request, release_dir)
+            report.local_ok(
+                "manifest.sha256", "manifest hash and seed block are verified"
+            )
+        except GateBlocked as exc:
+            report.local_block("manifest", exc.code, exc.message)
+            manifest = None
+        if manifest is not None:
+            try:
+                check_seed(request, args.seed_manifest, manifest)
+                report.local_ok(
+                    "seed.manifest", "post-seed manifest hash and schema are verified"
+                )
+            except GateBlocked as exc:
+                report.local_block("seed.manifest", exc.code, exc.message)
+
+    payload = result_payload(report, request, "verify_seed")
+    try:
+        write_result(args.output, payload)
+    except GateBlocked as exc:
+        print(f"release-gate: {exc.code}: {exc.message}", file=sys.stderr)
+        return EXIT_FAILED
+    return EXIT_OK if not report.blockers else EXIT_BLOCKED
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Validate a release request in local dry-run mode."
@@ -1092,11 +1155,20 @@ def parse_args(argv=None):
         help="dry-run only; apply is not implemented",
     )
     check.add_argument("--output", help="write the result JSON here")
+    verify = subparsers.add_parser(
+        "verify-seed", help="verify the post-seed FT-1 manifest"
+    )
+    verify.add_argument("--request", required=True, help="deploy-request JSON")
+    verify.add_argument("--release-dir", required=True, help="extracted release bundle")
+    verify.add_argument("--seed-manifest", required=True, help="post-seed manifest")
+    verify.add_argument("--output", help="write the result JSON here")
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.command == "verify-seed":
+        return verify_seed_main(args)
     report = Report()
     request = None
 
@@ -1205,16 +1277,29 @@ def main(argv=None) -> int:
                 except GateBlocked as exc:
                     report.local_block(check_id, exc.code, exc.message)
 
-    try:
-        check_seed(request, args.seed_manifest, manifest)
-        report.local_ok(
-            "seed.manifest",
-            "seed manifest hash and schema are verified"
-            if request["environment"] == "test"
-            else "no seed is carried by PROD",
-        )
-    except GateBlocked as exc:
-        report.local_block("seed.manifest", exc.code, exc.message)
+    if request["environment"] == "test" and args.seed_manifest is None:
+        if request["seed_manifest_sha256"] is None:
+            report.skip(
+                "seed.manifest",
+                "preflight only; run verify-seed after seed apply",
+            )
+        else:
+            report.local_block(
+                "seed.manifest",
+                "SEED_FILE_REQUIRED",
+                "preflight declares seed_manifest_sha256 but no --seed-manifest",
+            )
+    else:
+        try:
+            check_seed(request, args.seed_manifest, manifest)
+            report.local_ok(
+                "seed.manifest",
+                "seed manifest hash and schema are verified"
+                if request["environment"] == "test"
+                else "no seed is carried by PROD",
+            )
+        except GateBlocked as exc:
+            report.local_block("seed.manifest", exc.code, exc.message)
 
     try:
         check_state(request, args.state, report)

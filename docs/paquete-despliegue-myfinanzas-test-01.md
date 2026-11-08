@@ -111,17 +111,25 @@ Cuando exista release, generar una solicitud
 `package_format=myfinanzas-test-package.v1`, `package_sha256`, `manifest_sha256`,
 `artifact_ref`, `seed_image`, evidencia CI/Rootless, seed manifest, backup, rollback y smoke.
 
-Antes de tocar el VPS:
+Preflight antes de mutar estado (`seed_manifest_sha256: null`):
 
 ```bash
 ./scripts/release-gate check \
   --request <deploy-request.json> \
   --release-dir <directorio-extraido> \
   --package <paquete-unico.tar> \
-  --seed-manifest <seed-manifest.json> \
   --state <state-fixture.json> \
   --evidence <evidence-fixture.json> \
   --mode dry-run
+```
+
+Después de `seed apply`, actualizar el hash y verificar FT-1 antes de activar la unidad:
+
+```bash
+./scripts/release-gate verify-seed \
+  --request <deploy-request.json> \
+  --release-dir <directorio-extraido> \
+  --seed-manifest <seed-manifest.json>
 ```
 
 `release-gate` es solo `dry-run`: no despliega ni sustituye la autorización manual. Un

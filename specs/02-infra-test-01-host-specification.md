@@ -254,8 +254,9 @@ TEST; no se asume que Caddy y el contenedor compartan red o permisos.
 - No se usa `Network=host`, `--privileged`, socket de Podman, `:U` ni montajes de dispositivos.
 - El puerto `18082` debe quedar en loopback; la publicación rootless se verifica con
   `ss -ltnp` y con un intento externo fallido.
-- Caddy debe poder leer `/var/www/myfinanzas-test/current`; el usuario de Caddy y los
-  permisos reales se determinan en la auditoría.
+- Caddy debe poder leer `/var/www/myfinanzas-test/current` sin atravesar directorios
+  privados `0700`. El frontend se publica bajo `/var/www/myfinanzas-test/releases/<sha>` y
+  `current` apunta dentro de esa raíz pública; nunca a `/srv/myfinanzas-test/releases`.
 - No se abre ningún puerto nuevo en UFW para TEST. `[CONFIRMADO]` La entrada pública actual
   es solo 22/80/443 y no se modifica sin autorización específica.
 
@@ -274,7 +275,8 @@ TEST; no se asume que Caddy y el contenedor compartan red o permisos.
 | `/srv/myfinanzas-test/releases` | `mftest:mftest` `0700` | Paquetes OCI y manifiestos | Solo releases verificadas; conservar la anterior. |
 | `/srv/myfinanzas-test/backups` | `mftest:mftest` `0700` | Copias cifradas | Sin identidad `age` permanente. |
 | `/var/www/myfinanzas-test` | `root:root` `0755` | Raíz estática pública | Caddy debe leerla; sin secretos ni estado. |
-| `/var/www/myfinanzas-test/current` | `root:root`, symlink | Release estática activa | Cambio atómico; el destino no sale de la raíz. |
+| `/var/www/myfinanzas-test/releases/<sha>` | `root:root` `0755` | Frontend de una release | Solo archivos estáticos; sin estado ni secretos. |
+| `/var/www/myfinanzas-test/current` | `root:root`, symlink | Release estática activa | Apunta a `releases/<sha>` dentro de la raíz pública; nunca a `/srv` privado. |
 | `~mftest/.config/containers/systemd` | `mftest:mftest` `0700` | Unidad Quadlet | Sin secretos en la unidad. |
 
 `[CONFIRMADO]` La raíz privada, `data`, `releases`, `backups`, la raíz estática y los
@@ -504,7 +506,9 @@ Condiciones de revisión:
 ### 6.4 Frontend estático
 
 - Se sirve solo `frontend/` del paquete verificado, nunca el servidor Vite.
-- Publicación atómica: `releases/<sha>/` y symlink `current`; el destino no sale de la raíz.
+- Publicación atómica: `/var/www/myfinanzas-test/releases/<sha>/` y symlink `current`
+  dentro de `/var/www/myfinanzas-test`; el destino no sale de la raíz pública y Caddy no
+  atraviesa `/srv/myfinanzas-test` `0700`.
 - Directorios `0755`, archivos `0644`, propietario `root:root`; sin escritura para `mftest`.
 - No se copian `node_modules`, fuentes, tests, `.env`, claves, bases, mapas de fuente ni
   archivos de estado. Si aparecen, se bloquea la publicación y se corrige el artefacto.
@@ -593,7 +597,8 @@ Condiciones:
 - La recarga que publica TEST no se ejecuta hasta que la unidad esté activa y el seed
   verificado; si se prepara antes, se acepta una ventana 502 y no se declara operativo.
 - El usuario y permisos reales de Caddy para leer `/var/www/myfinanzas-test` se confirman
-  al crear la ruta en la fase 2; Caddy ya corre como `caddy` y la ruta aún no existe.
+  antes de la recarga con `namei -l /var/www/myfinanzas-test/current` y una prueba de lectura
+  como `caddy`; Caddy no debe atravesar `/srv/myfinanzas-test` `0700`.
 
 ### 7.3 UFW y loopback
 

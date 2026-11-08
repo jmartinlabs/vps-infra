@@ -43,6 +43,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def missing_frontend_assets(html: str, files: dict) -> list:
+    """Root-relative files index.html references but the frontend does not ship."""
+    referenced = {match.group(1).lstrip("/")
+                  for match in re.finditer(r'(?:src|href)="(/[^"?#]+)"', html)
+                  if not match.group(1).startswith("//")}
+    return sorted(referenced - set(files))
+
+
 def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(prefix=".tmp-", dir=path.parent)
@@ -358,6 +366,16 @@ class Updater:
         }
         if actual_frontend != frontend:
             raise UpdateError("frontend file set does not exactly match manifest")
+        index = root / "frontend" / "index.html"
+        try:
+            index_html = index.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise UpdateError(f"cannot read frontend index.html: {exc}") from exc
+        missing = missing_frontend_assets(index_html, frontend)
+        if missing:
+            raise PermanentFailure(
+                "frontend index.html references missing assets: " + ", ".join(missing)
+            )
         for relative in frontend:
             parts = PurePosixPath(relative).parts
             lowered = relative.lower()

@@ -72,6 +72,9 @@ No se ejecuta ninguna de estas operaciones en esta fase.
 - Una release que falla smoke/rollback se registra en `failed-release.json` y no se reintenta
   en cada ciclo; un digest nuevo vuelve a intentarlo. Si se corrige la causa del mismo
   digest, retirar `failed-release.json` manualmente tras revisión; no se limpia solo.
+- `index.html` solo puede referenciar ficheros raíz presentes en `frontend_files`. Si falta
+  alguno, la release se rechaza como fallo permanente antes de tocar unidad o frontend: es
+  el mismo defecto que dejó TEST sin `themes.css`.
 - El updater compara `schema` y `data_contract` instalados con el manifiesto; si cambian,
   bloquea y exige migración manual.
 
@@ -89,6 +92,8 @@ Cubre:
 - fallo al persistir estado: rollback de unidad/frontend;
 - release fallida: no se reintenta el mismo digest;
 - cambio de esquema o `data_contract`: bloqueo antes de tocar la unidad.
+- `index.html` con recursos raíz ausentes: rechazo permanente sin tocar unidad/frontend;
+- release con `themes.css` y `theme-boot.js`: se publican en `current`.
 
 ## Bloqueos reales
 

@@ -85,52 +85,57 @@ class FakeRunner:
         return result
 
     def release_tar(self) -> bytes:
-        frontend = b"<html>fixture</html>\n"
-        frontend_sha = sha256(frontend)
-        manifest = {
-            "format": 1,
-            "inputs": {
-                "source": self.source,
-                "contracts": {
-                    "schema": 27,
-                    "data": "e4.11-v27",
-                    "authentication": "argon2id-aesgcm-totp-session-v1",
-                },
-            },
-            "image": self.app_id,
-            "oci_manifest_digest": "sha256:" + "a" * 64,
-            "seed": {
-                "image": "sha256:" + "b" * 64,
-                "source": self.source,
-                "contracts": {
-                    "schema": 27,
-                    "data": "e4.11-v27",
-                    "authentication": "argon2id-aesgcm-totp-session-v1",
-                },
-                "oci_manifest_digest": "sha256:" + "c" * 64,
-            },
-            "frontend_files": {"index.html": frontend_sha},
-        }
-        manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-        manifest_sha = sha256(manifest_bytes)
-        sums = (
-            f"{sha256(manifest_bytes)}  ./manifest.json\n"
-            f"{sha256((manifest_sha + chr(10)).encode())}  ./manifest.sha256\n"
-            f"{frontend_sha}  ./frontend/index.html\n"
-        ).encode()
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for name, data in (
-                ("manifest.json", manifest_bytes),
-                ("manifest.sha256", (manifest_sha + "\n").encode()),
-                ("SHA256SUMS", sums),
-                ("frontend/index.html", frontend),
-            ):
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                info.mode = 0o644
-                archive.addfile(info, io.BytesIO(data))
-        return buffer.getvalue()
+        return release_tar(self.source, self.app_id, {"index.html": b"<html>fixture</html>\n"})
+
+
+def release_tar(
+    source: str,
+    app_id: str,
+    frontend: dict,
+    schema: int = 27,
+    data: str = "e4.11-v27",
+) -> bytes:
+    contracts = {
+        "schema": schema,
+        "data": data,
+        "authentication": "argon2id-aesgcm-totp-session-v1",
+    }
+    manifest = {
+        "format": 1,
+        "inputs": {"source": source, "contracts": contracts},
+        "image": app_id,
+        "oci_manifest_digest": "sha256:" + "a" * 64,
+        "seed": {
+            "image": "sha256:" + "b" * 64,
+            "source": source,
+            "contracts": contracts,
+            "oci_manifest_digest": "sha256:" + "c" * 64,
+        },
+        "frontend_files": {name: sha256(body) for name, body in frontend.items()},
+    }
+    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+    manifest_sha = sha256(manifest_bytes)
+    lines = [
+        f"{sha256(manifest_bytes)}  ./manifest.json",
+        f"{sha256((manifest_sha + chr(10)).encode())}  ./manifest.sha256",
+    ]
+    lines += [
+        f"{sha256(body)}  ./frontend/{name}" for name, body in sorted(frontend.items())
+    ]
+    sums = ("\n".join(lines) + "\n").encode()
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        members = [
+            ("manifest.json", manifest_bytes),
+            ("manifest.sha256", (manifest_sha + "\n").encode()),
+            ("SHA256SUMS", sums),
+        ] + [("frontend/" + name, body) for name, body in sorted(frontend.items())]
+        for name, body in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(body))
+    return buffer.getvalue()
 
 
 class UpdaterTests(unittest.TestCase):
@@ -275,35 +280,52 @@ class UpdaterTests(unittest.TestCase):
 
     def test_schema_change_blocks_before_unit_change(self):
         # Build a minimal schema-28 fixture with consistent hashes.
-        frontend = b"<html>fixture</html>\n"
-        manifest = {
-            "format": 1,
-            "inputs": {"source": self.source, "contracts": {"schema": 28, "data": "e4.12-v28", "authentication": "argon2id-aesgcm-totp-session-v1"}},
-            "image": self.runner.app_id,
-            "oci_manifest_digest": "sha256:" + "a" * 64,
-            "seed": {
-                "image": "sha256:" + "b" * 64,
-                "source": self.source,
-                "contracts": {
-                    "schema": 28,
-                    "data": "e4.12-v28",
-                    "authentication": "argon2id-aesgcm-totp-session-v1",
-                },
-                "oci_manifest_digest": "sha256:" + "c" * 64,
-            },
-            "frontend_files": {"index.html": sha256(frontend)},
-        }
-        mb = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-        ms = sha256(mb)
-        sums = f"{sha256(mb)}  ./manifest.json\n{sha256((ms + chr(10)).encode())}  ./manifest.sha256\n{sha256(frontend)}  ./frontend/index.html\n".encode()
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for name, data in (("manifest.json", mb), ("manifest.sha256", (ms + "\n").encode()), ("SHA256SUMS", sums), ("frontend/index.html", frontend)):
-                info = tarfile.TarInfo(name); info.size = len(data); archive.addfile(info, io.BytesIO(data))
-        self.runner.release_tar = lambda: buffer.getvalue()
+        self.runner.release_tar = lambda: release_tar(
+            self.source,
+            self.runner.app_id,
+            {"index.html": b"<html>fixture</html>\n"},
+            schema=28,
+            data="e4.12-v28",
+        )
         with self.assertRaises(UpdateError):
             self.updater.run_once()
         self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_index_referenced_asset_missing_is_rejected(self):
+        # Regression: the 5d2 release shipped index.html referencing
+        # /themes.css and /theme-boot.js without either file.
+        self.runner.release_tar = lambda: release_tar(
+            self.source,
+            self.runner.app_id,
+            {
+                "index.html": b'<script src="/theme-boot.js"></script>'
+                b'<link rel="stylesheet" href="/themes.css">\n'
+            },
+        )
+        with self.assertRaises(UpdateError) as caught:
+            self.updater.run_once()
+        self.assertIn("themes.css", str(caught.exception))
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+        self.assertTrue((self.root / "failed-release.json").is_file())
+
+    def test_index_public_assets_are_published(self):
+        self.runner.release_tar = lambda: release_tar(
+            self.source,
+            self.runner.app_id,
+            {
+                "index.html": b'<script src="/theme-boot.js"></script>'
+                b'<link rel="stylesheet" href="/themes.css">'
+                b'<script type="module" src="/assets/app.js"></script>\n',
+                "theme-boot.js": b"document.documentElement.dataset.theme='dark-s';\n",
+                "themes.css": b":root{--bg:#141414}\n",
+                "assets/app.js": b"console.log(1)\n",
+            },
+        )
+        self.assertEqual(self.updater.run_once(), 0)
+        current = self.web / "current"
+        self.assertTrue((current / "themes.css").is_file())
+        self.assertTrue((current / "theme-boot.js").is_file())
+        self.assertTrue((current / "assets" / "app.js").is_file())
 
 
 if __name__ == "__main__":

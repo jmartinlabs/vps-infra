@@ -18,7 +18,7 @@ module = runpy.run_path(str(ROOT / "scripts" / "deploy-test-release"))
 Config = module["Config"]
 DeployError = module["DeployError"]
 Deployer = module["Deployer"]
-actor_from_environment = module["actor_from_environment"]
+identity_from_environment = module["identity_from_environment"]
 
 
 def sha256(data: bytes) -> str:
@@ -173,8 +173,8 @@ class DeployTests(unittest.TestCase):
         self.deployer = Deployer(self.config, runner=self.runner,
                                  sleep=lambda _: None, clock=lambda: next(ticks))
 
-    def deploy(self, payload: bytes, actor="octocat"):
-        return self.deployer.deploy(io.BytesIO(payload), actor)
+    def deploy(self, payload: bytes, actor="octocat", version="0.1.0"):
+        return self.deployer.deploy(io.BytesIO(payload), actor, version)
 
     def test_deploy_writes_unit_frontend_and_state(self):
         self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
@@ -186,6 +186,8 @@ class DeployTests(unittest.TestCase):
         state = json.loads(self.state_file.read_text())
         self.assertEqual(state["source"], self.source)
         self.assertEqual(state["actor"], "octocat")
+        self.assertEqual(state["version"], "0.1.0")
+        self.assertEqual(state["tag"], "deploy-test-v0.1.0")
         self.assertEqual(json.loads(self.last_deploy.read_text())["result"], "ok")
 
     def test_missing_index_asset_is_rejected_before_changes(self):
@@ -217,11 +219,23 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(os.readlink(self.web / "current"), "releases/old")
         self.assertFalse(self.state_file.exists())
 
-    def test_same_source_is_a_noop(self):
+    def test_same_version_and_source_is_a_noop(self):
         payload = bundle(self.source, self.app_id, THEMES)
         self.assertEqual(self.deploy(payload), 0)
         self.assertEqual(self.deploy(payload), 0)
         self.assertEqual(json.loads(self.last_deploy.read_text())["result"], "noop")
+
+    def test_same_version_from_another_source_is_rejected(self):
+        self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
+        other = "e" * 40
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(bundle(other, self.app_id, THEMES))
+        self.assertIn("another source", str(caught.exception))
+
+    def test_missing_version_is_a_clean_error(self):
+        code = module["main"](["--bundle", str(self.root / "missing.tar")])
+        self.assertEqual(code, 2)
+        self.assertEqual(identity_from_environment("deploy:octocat"), ("unknown", None))
 
     def test_bundle_path_escape_is_rejected(self):
         payload = tar_bytes([
@@ -246,14 +260,11 @@ class DeployTests(unittest.TestCase):
                          dirs=("frontend/", "frontend/assets/"))
         self.assertEqual(self.deploy(payload), 0)
 
-    def test_missing_bundle_path_is_a_clean_error(self):
-        code = module["main"](["--bundle", str(self.root / "missing.tar")])
-        self.assertEqual(code, 2)
-
-    def test_actor_comes_from_ssh_command(self):
-        self.assertEqual(actor_from_environment("deploy:octocat"), "octocat")
-        self.assertEqual(actor_from_environment("rm -rf /"), "unknown")
-        self.assertEqual(actor_from_environment(None), "unknown")
+    def test_actor_and_version_come_from_ssh_command(self):
+        self.assertEqual(identity_from_environment("deploy:octocat:1.2.3"), ("octocat", "1.2.3"))
+        self.assertEqual(identity_from_environment("deploy:octocat"), ("unknown", None))
+        self.assertEqual(identity_from_environment("rm -rf /"), ("unknown", None))
+        self.assertEqual(identity_from_environment(None), ("unknown", None))
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SUMS = re.compile(r"^([0-9a-f]{64}) [ *]\./(.+)$")
 REFERENCE = re.compile(r"""(?:src|href)\s*=\s*["'](/[^"']+)["']""", re.I)
 ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
+VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 MAX_BUNDLE = 2 * 1024 * 1024 * 1024
 ALLOWED = {"manifest.json", "manifest.sha256", "SHA256SUMS", "image.oci.tar"}
 FORBIDDEN_FRONTEND = (".map", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".xlsx",
@@ -217,10 +218,11 @@ class Deployer:
         return {"schema": schema, "data": data}
 
     def record(self, result: str, source: str | None, manifest_sha: str | None,
-               reason: str | None, actor: str) -> None:
+               reason: str | None, actor: str, version: str) -> None:
         payload = {
             "format": 1,
             "result": result,
+            "version": version,
             "source": source,
             "manifest_sha256": manifest_sha,
             "reason": reason,
@@ -484,9 +486,11 @@ class Deployer:
             self.systemctl("stop", f"{self.config.unit_name}.service", check=False)
             raise
 
-    def write_state(self, manifest: dict, app_id: str, actor: str) -> None:
+    def write_state(self, manifest: dict, app_id: str, actor: str, version: str) -> None:
         payload = {
             "format": 1,
+            "version": version,
+            "tag": f"deploy-test-v{version}",
             "source": manifest["inputs"]["source"],
             "manifest_sha256": sha256_file(self._bundle_root / "manifest.json"),
             "app_image": app_id,
@@ -497,7 +501,7 @@ class Deployer:
         atomic_write(self.config.state_file,
                      json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
-    def deploy(self, stream, actor: str) -> int:
+    def deploy(self, stream, actor: str, version: str) -> int:
         with self.lock():
             if not self.state_ready():
                 raise Rejected("TEST state is not initialized; first activation required")
@@ -523,8 +527,12 @@ class Deployer:
                             current = json.loads(self.config.state_file.read_text(encoding="utf-8"))
                         except (OSError, json.JSONDecodeError):
                             current = None
-                    if isinstance(current, dict) and current.get("source") == source:
-                        self.record("noop", source, manifest_sha, None, actor)
+                    if isinstance(current, dict) and current.get("version") == version:
+                        if current.get("source") != source:
+                            raise Rejected(
+                                f"version {version} was already deployed from another source"
+                            )
+                        self.record("noop", source, manifest_sha, None, actor, version)
                         self.log(f"release {source} is already active")
                         return 0
                     app_id = self.load_app(manifest)
@@ -533,17 +541,17 @@ class Deployer:
                     try:
                         self.stage_frontend(manifest, root)
                         self.restart_and_smoke()
-                        self.write_state(manifest, app_id, actor)
+                        self.write_state(manifest, app_id, actor, version)
                     except BaseException:
                         self.rollback(previous_unit, previous_frontend)
                         raise
-                self.record("ok", source, manifest_sha, None, actor)
+                self.record("ok", source, manifest_sha, None, actor, version)
                 self.log(f"deployed {source} ({manifest_sha})")
                 return 0
             except DeployError as exc:
                 try:
                     self.record("rejected" if isinstance(exc, Rejected) else "failed",
-                                source, manifest_sha, str(exc), actor)
+                                source, manifest_sha, str(exc), actor, version)
                 except OSError:
                     self.log("warning: could not record the result")
                 raise
@@ -564,10 +572,14 @@ def build_config(args) -> Config:
     )
 
 
-def actor_from_environment(value: str | None) -> str:
+def identity_from_environment(value: str | None) -> tuple:
     command = value or os.environ.get("SSH_ORIGINAL_COMMAND", "")
-    match = re.fullmatch(r"deploy:([A-Za-z0-9][A-Za-z0-9-]{0,38})", command.strip())
-    return match.group(1) if match else "unknown"
+    match = re.fullmatch(
+        r"deploy:([A-Za-z0-9][A-Za-z0-9-]{0,38}):"
+        r"((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))",
+        command.strip(),
+    )
+    return (match.group(1), match.group(2)) if match else ("unknown", None)
 
 
 def main(argv=None) -> int:
@@ -576,6 +588,7 @@ def main(argv=None) -> int:
     parser.add_argument("--stdin", action="store_true", help="read the bundle from stdin")
     parser.add_argument("--bundle", help="read the bundle from a local file")
     parser.add_argument("--actor", help="deployment actor recorded in the state")
+    parser.add_argument("--version", help="SemVer version recorded in the state")
     parser.add_argument("--data-root", default=str(Config.data_root))
     parser.add_argument("--web-root", default=str(Config.web_root))
     parser.add_argument("--unit-dir", default=str(Config.unit_dir))
@@ -587,9 +600,14 @@ def main(argv=None) -> int:
     parser.add_argument("--protected-url", default=Config.protected_url)
     parser.add_argument("--timeout", type=int, default=Config.timeout_seconds)
     args = parser.parse_args(argv)
-    actor = args.actor or actor_from_environment(None)
+    actor, tag_version = identity_from_environment(None)
+    actor = args.actor or actor
+    version = args.version or tag_version
     if not ACTOR.fullmatch(actor):
         print("myfinanzas-test-deploy: invalid actor", file=sys.stderr)
+        return 2
+    if version is None or not VERSION.fullmatch(version):
+        print("myfinanzas-test-deploy: invalid version", file=sys.stderr)
         return 2
     if bool(args.stdin) == bool(args.bundle):
         print("myfinanzas-test-deploy: use exactly one of --stdin or --bundle", file=sys.stderr)
@@ -606,7 +624,7 @@ def main(argv=None) -> int:
         stream = context
     try:
         with context if context else _nullcontext():
-            return Deployer(build_config(args)).deploy(stream, actor)
+            return Deployer(build_config(args)).deploy(stream, actor, version)
     except DeployError as exc:
         print(f"myfinanzas-test-deploy: {exc}", file=sys.stderr)
         return 1

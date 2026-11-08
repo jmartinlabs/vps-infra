@@ -4,14 +4,16 @@ Fecha: 2026-11-08
 Estado: **PROPUESTA — no ejecutada en el VPS.**
 
 Sustituye la arquitectura GHCR + temporizador (`#27`, `#28`, `#293`) por un
-despliegue directo desde el workflow, sin polling ni registro intermedio.
+despliegue directo disparado por el tag `deploy-test-vX.Y.Z`, sin polling, registro
+intermedio ni GitHub Environments. La creación del tag por un actor autorizado es la orden
+de despliegue. Los merges a `test` no despliegan.
 
 ## Flujo
 
 ```text
-push a test ──► capability + qa ──► build/verify/smoke ──► auditoría local
-      │                                                      │
-      └──────────── workflow_dispatch con deploy_test=true ───┘
+tag deploy-test-vX.Y.Z (actor autorizado, anotado e inmutable)
+      ▼
+tag/actor/SHA + capability + qa ──► build/verify/smoke ──► auditoría local
                                                              ▼
                                    SSH dedicado (clave + forced command)
                                                              ▼
@@ -34,9 +36,10 @@ push a test ──► capability + qa ──► build/verify/smoke ──► aud
 2. `release.py verify` + `smoke.py` del bundle.
 3. `scripts/audit-test-release` sobre el bundle: sin estado, credenciales ni
    recursos de `index.html` ausentes.
-4. Entorno de GitHub `test` con revisores requeridos (o `deploy_test=true` en
-   `workflow_dispatch`). La aprobación del entorno es la autorización operativa.
-5. El job comprueba que `origin/test` sigue apuntando al SHA construido.
+4. Tag anotado `deploy-test-vX.Y.Z` creado por un actor de `MYFINANZAS_DEPLOY_ACTORS`;
+   la creación del tag es la autorización operativa, sin segunda aprobación.
+5. El job comprueba que el commit del tag es el SHA construido y ancestro de `origin/test`.
+6. Interruptor `MYFINANZAS_TEST_DEPLOY=true`; desactivado, el tag no despliega.
 
 ## Bundle de despliegue
 
@@ -63,9 +66,10 @@ No incluye la imagen seed: el seed solo se ejecuta en la primera activación.
    `~mftest/.ssh/authorized_keys` con:
    `restrict,command="XDG_RUNTIME_DIR=/run/user/1002 /home/mftest/bin/myfinanzas-test-deploy --stdin" ssh-ed25519 ...`
 2. Instalar `scripts/deploy-test-release` en `/home/mftest/bin/` (0755, mftest).
-3. Guardar la privada en el entorno GitHub `test` como `TEST_DEPLOY_KEY` y la
-   huella del host en `TEST_DEPLOY_KNOWN_HOSTS`.
-4. Definir `TEST_DEPLOY_HOST`, `TEST_DEPLOY_USER=mftest`.
+3. Guardar la privada como secreto `TEST_DEPLOY_KEY` y la huella del host en
+   `TEST_DEPLOY_KNOWN_HOSTS` (secretos de repositorio, sin Environments).
+4. Definir `TEST_DEPLOY_HOST`, `TEST_DEPLOY_USER=mftest` y la allowlist
+   `MYFINANZAS_DEPLOY_ACTORS`.
 5. Retirar, si existieran, el timer y el servicio `myfinanzas-test-update` y sus
    paquetes GHCR. No se borra nada sin inventario.
 
@@ -77,8 +81,10 @@ No incluye la imagen seed: el seed solo se ejecuta en la primera activación.
 - Los paquetes GHCR, si se hubieran creado, quedan privados y sin uso; su
   eliminación requiere autorización aparte.
 
-## Rollback
+## Rollback y copias
 
-Automático ante smoke fallido (unidad + frontend). Limitaciones: no revierte
-datos ni esquema (el despliegue exige el mismo contrato), no hay notificación y
-un rollback fallido deja la unidad parada para intervención manual.
+Automático ante smoke fallido (unidad + frontend). La release solo cambia imagen y frontend
+con el mismo contrato, así que el estado no se toca y no hace falta copia previa en TEST.
+Limitaciones: no revierte datos ni esquema, no hay notificación y un rollback fallido deja la
+unidad parada para intervención manual. PROD exige copia cifrada y restauración verificada
+antes de activar; se detalla en [diseño PROD](despliegue-prod-diseno-01.md).

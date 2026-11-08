@@ -207,8 +207,8 @@ class Fixture:
             },
         )
 
-        self.package_path = self.work / "myfinanzas-test-package.tar"
-        self.package_path.write_bytes(b"fixture package\n")
+        self.package_path = self.work / "myfinanzas-test-artifact.zip"
+        self.package_path.write_bytes(b"fixture zip artifact\n")
         self.request = {
             "request_version": 1,
             "environment": "test",
@@ -216,7 +216,7 @@ class Fixture:
             "tag": f"deploy-test-v{self.version}",
             "release_ref": "myfinanzas-app/test",
             "release_sha": self.release_sha,
-            "package_format": "myfinanzas-test-package.v1",
+            "package_format": "myfinanzas-test-artifact-zip.v1",
             "package_sha256": sha256_file(self.package_path),
             "manifest_sha256": self.manifest_sha,
             "artifact_ref": self.manifest["oci_manifest_digest"],
@@ -311,6 +311,17 @@ class Fixture:
         self.manifest_sha = sha256_file(self.release / "manifest.json")
         (self.release / "manifest.sha256").write_text(
             self.manifest_sha + "\n", encoding="utf-8"
+        )
+        self.write_sums()
+
+    def write_sums(self) -> None:
+        lines = []
+        for path in sorted(self.release.rglob("*")):
+            if path.is_file() and path.name != "SHA256SUMS":
+                relative = path.relative_to(self.release).as_posix()
+                lines.append(f"{sha256_file(path)}  ./{relative}")
+        (self.release / "SHA256SUMS").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
         )
 
     def write_request(self, request=None) -> None:
@@ -452,6 +463,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("manifest.sha256", payload["verification"]["local"])
         self.assertIn("oci.archive", payload["verification"]["local"])
         self.assertIn("seed.oci", payload["verification"]["local"])
+        self.assertIn("release.sha256sums", payload["verification"]["local"])
         self.assertIn("frontend.files", payload["verification"]["local"])
         self.assertIn("seed.manifest", payload["verification"]["local"])
         self.assertIn("package.sha256", payload["verification"]["local"])
@@ -659,6 +671,24 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "SEED_SCHEMA_UNVERIFIED")
         self.assertNotIn("seed.manifest", payload["verification"]["local"])
+
+    def test_sha256sums_missing(self) -> None:
+        (self.fx.release / "SHA256SUMS").unlink()
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SHA256SUMS_MISSING")
+
+    def test_sha256sums_mismatch(self) -> None:
+        sums = self.fx.release / "SHA256SUMS"
+        lines = [
+            line
+            for line in sums.read_text(encoding="utf-8").splitlines()
+            if "frontend/assets/app.js" not in line
+        ]
+        sums.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SHA256SUMS_MISMATCH")
 
     def test_release_extra_symlink(self) -> None:
         try:

@@ -30,8 +30,8 @@ materia y este contrato solo añade la interfaz de activación.
   este documento. El flujo actual es `feature/* → test → main`: `test` es el origen de TEST y
   `main` el de PROD futuro.
 - `[CONFIRMADO]` La entrega de TEST es un paquete único sin cifrar generado por GitHub
-  Actions con `image.oci.tar`, `image.seed.oci.tar`, `frontend/`, `manifest.json` y
-  `manifest.sha256`; se selecciona por ID/digest inmutable, nunca por etiqueta móvil. El
+  Actions como ZIP con `image.oci.tar`, `image.seed.oci.tar`, `frontend/`, `manifest.json`,
+  `manifest.sha256` y `SHA256SUMS`; se selecciona por ID/digest inmutable, nunca por etiqueta móvil. El
   paquete no contiene secretos ni datos reales.
 - `[CONFIRMADO]` El host TEST y sus puertos están en
   [`specs/02-infra-test-01-host-specification.md`](../specs/02-infra-test-01-host-specification.md),

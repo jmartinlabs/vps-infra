@@ -48,7 +48,7 @@
       "pattern": "^[0-9a-f]{40}$"
     },
     "package_format": {
-      "const": "myfinanzas-test-package.v1"
+      "const": "myfinanzas-test-artifact-zip.v1"
     },
     "package_sha256": {
       "type": "string",

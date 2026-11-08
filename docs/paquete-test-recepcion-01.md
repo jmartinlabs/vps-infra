@@ -14,20 +14,21 @@ de imágenes y el despliegue manual con Podman rootless de `mftest`.
 No se construyen imágenes, no se ejecuta nada en el VPS, no se modifica DNS/Caddy y no se
 despliega durante esta preparación.
 
-## 1. Contrato propuesto del paquete
+## 1. Contrato del artifact
 
-`[PROPUESTA]` Pendiente de confirmación exacta por MyFinanzas:
+`[CONFIRMADO]` Según el workflow de MyFinanzas #288:
 
 - Origen: `release_ref=myfinanzas-app/test`.
-- Formato: `myfinanzas-test-package.v1`.
-- Fichero único: `myfinanzas-test-<release_sha>.tar` (sin cifrar) y su
-  `myfinanzas-test-<release_sha>.tar.sha256`.
+- Formato: `myfinanzas-test-artifact-zip.v1`.
+- Artifact ZIP descargable de GitHub Actions, sin cifrar: `myfinanzas-test-<release_sha>.zip`.
+  El SHA-256 del ZIP se calcula al recibirlo y se registra; `SHA256SUMS` viaja dentro.
 - Contenido:
   - `manifest.json`
   - `manifest.sha256`
   - `image.oci.tar`
   - `image.seed.oci.tar`
   - `frontend/`
+  - `SHA256SUMS`
 - Sin secretos, bases, datos reales, claves, `.env`, Excel ni estado.
 - `seed-manifest.json` **no** viaja en el paquete de build: se genera tras `seed apply` y se
   entrega al gate como artefacto de ejecución.
@@ -35,10 +36,9 @@ despliega durante esta preparación.
   archivo OCI, payload del rootfs, receta, fuente, contratos y lock).
 - Las imágenes se seleccionan por ID/digest inmutable, nunca por etiqueta móvil.
 
-**Bloqueo material:** confirmar si el paquete será un `.tar` sin comprimir, `.tar.gz` o el
-ZIP del artifact de GitHub Actions, y si `seed-manifest.json` se generará antes o después
-del seed. El gate actual asume un directorio extraído y el seed manifest como entrada
-separada.
+`SHA256SUMS` cubre todos los ficheros del artifact excepto él mismo. El gate verifica el
+hash del ZIP descargado y los hashes internos del directorio extraído. `seed-manifest.json`
+se genera después de `seed apply`; el gate lo verifica en `verify-seed`.
 
 ## 2. Recepción y verificación
 
@@ -48,7 +48,8 @@ Procedimiento del operador, en una ruta nueva y privada. No ejecutar todavía.
    app y `release_ref`.
 2. Verificar el checksum externo **antes** de extraer:
    ```bash
-   sha256sum -c myfinanzas-test-<release_sha>.tar.sha256
+   sha256sum myfinanzas-test-<release_sha>.zip
+   (cd <directorio-extraido> && sha256sum -c SHA256SUMS)
    ```
 3. Crear un directorio nuevo bajo `/srv/myfinanzas-test/releases/<release_sha>` con
    `mftest:mftest` `0700`; extraer allí sin seguir enlaces.
@@ -67,7 +68,7 @@ La solicitud TEST lleva `seed_manifest_sha256: null` porque FT-1 aún no se ha a
 ./scripts/release-gate check \
   --request /ruta/deploy-request.json \
   --release-dir /srv/myfinanzas-test/releases/<release_sha> \
-  --package /ruta/privada/myfinanzas-test-<release_sha>.tar \
+  --package /ruta/privada/myfinanzas-test-<release_sha>.zip \
   --state /ruta/state-fixture.json \
   --evidence /ruta/evidence-fixture.json \
   --mode dry-run

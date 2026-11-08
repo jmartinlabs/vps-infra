@@ -22,8 +22,9 @@ verifica esos campos y la integridad del paquete.
 
 La solicitud incorpora `release_ref` (`myfinanzas-app/test` para TEST,
 `myfinanzas-app/main` para PROD), `package_format`
-(`myfinanzas-test-package.v1`), `package_sha256` y `seed_image`. El paquete único contiene
-`manifest.json`, `manifest.sha256`, `image.oci.tar`, `image.seed.oci.tar` y `frontend/`.
+(`myfinanzas-test-artifact-zip.v1`), `package_sha256` y `seed_image`. El artifact ZIP contiene
+`manifest.json`, `manifest.sha256`, `image.oci.tar`, `image.seed.oci.tar`, `frontend/` y
+`SHA256SUMS`.
 El `seed-manifest.json` es un artefacto de ejecución posterior a `seed apply`, no parte del
 paquete de build.
 
@@ -36,7 +37,7 @@ Preflight, antes de modificar estado. La solicitud TEST lleva
 ./scripts/release-gate check \
   --request /ruta/deploy-request.json \
   --release-dir /ruta/privada/release \
-  --package /ruta/privada/myfinanzas-test-<sha>.tar \
+  --package /ruta/privada/myfinanzas-test-<sha>.zip \
   --state /ruta/state-fixture.json \
   --evidence /ruta/evidence-fixture.json \
   --mode dry-run \
@@ -82,7 +83,7 @@ verificados.
 - SHA de 40 caracteres, hash de manifiesto y digest OCI.
 - `release_ref` coherente con el entorno; `package_format` y `package_sha256` válidos.
 - Integridad de `manifest.json`, `manifest.sha256`, `image.oci.tar`, `image.seed.oci.tar`,
-  `index.json`, blobs OCI y `frontend_files`.
+  `index.json`, blobs OCI, `frontend_files` y `SHA256SUMS`.
 - Estructura mínima del manifiesto OCI: `schemaVersion`, `config`, `layers` y descriptores con
   digest, tamaño y blob presentes.
 - `inputs.contracts` presente; el gate no fija una versión de esquema.
@@ -103,8 +104,8 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 58 casos cubren solicitudes válidas TEST/PROD, preflight sin seed y `verify-seed`, y
-rechazos de tag, entorno, versión, SHA, `release_ref`, paquete, seed,
+Los 60 casos cubren solicitudes válidas TEST/PROD, preflight sin seed y `verify-seed`, y
+rechazos de tag, entorno, versión, SHA, `release_ref`, paquete, seed, `SHA256SUMS`,
 manifiesto, estructura e integridad OCI, frontend, seed, incompatibilidad o no verificación
 del esquema seed/release, aprobación, evidencia simulada, rutas inseguras, symlinks, entradas
 extra, estado ausente/incompleto/bloqueado, rollback y modo `apply`. También comprueban que el

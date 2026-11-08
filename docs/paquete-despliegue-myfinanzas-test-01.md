@@ -41,9 +41,9 @@ unidad, smoke y copia local**, no la creación de otro host ni PROD.
    siendo el candidato final si hay nuevos merges.
 2. **Gate Rootless `SUCCESS` sobre ese SHA exacto**. El único `SUCCESS` reciente observado
    corresponde a `f800965`; no sirve para `87a705f` ni para otro SHA sin rerun.
-3. **Paquete único de GitHub Actions** (`myfinanzas-test-package.v1`) con
+3. **Artifact ZIP de GitHub Actions** (`myfinanzas-test-artifact-zip.v1`) con
    `image.oci.tar`, `image.seed.oci.tar`, `frontend/`, `manifest.json`,
-   `manifest.sha256` y SHA-256 del paquete.
+   `manifest.sha256`, `SHA256SUMS` y SHA-256 del ZIP descargado.
 4. **Contrato de esquema/seed v27** declarado en el manifiesto, no solo en el código.
    SPEC34/testplan deben dejar de declarar v24/C25.
 5. **Seed test-only `FT-1` v27**: imagen incluida en el paquete; `seed init/apply/verify`,
@@ -82,8 +82,8 @@ Cada gate exige autorización separada. Ninguna autorización habilita el siguie
 Orden obligatorio:
 
 1. Verificar SHA, manifiesto, checksums, IDs, gate Rootless y contrato v27.
-2. Ejecutar el **preflight** `release-gate check` del `.tar`, la app, el seed image y el
-   frontend; sin `seed manifest` y sin mutar estado.
+2. Ejecutar el **preflight** `release-gate check` del ZIP, la app, el seed image, el
+   frontend y `SHA256SUMS`; sin `seed manifest` y sin mutar estado.
 3. Confirmar `data/state` ausente y rutas vacías.
 4. Ejecutar `production-init` para crear `data/state`, DB y `auth.key` `0600`; verificar
    AC19 antes de sembrar.
@@ -113,7 +113,7 @@ Orden obligatorio:
 Cuando exista release, generar una solicitud
 [`deploy-request.v1`](../schemas/deploy-request.v1.json) con versión, tag
 `deploy-test-vX.Y.Z`, `release_ref=myfinanzas-app/test`, `release_sha`,
-`package_format=myfinanzas-test-package.v1`, `package_sha256`, `manifest_sha256`,
+`package_format=myfinanzas-test-artifact-zip.v1`, `package_sha256`, `manifest_sha256`,
 `artifact_ref`, `seed_image`, evidencia CI/Rootless, seed manifest, backup, rollback y smoke.
 
 Preflight antes de mutar estado (`seed_manifest_sha256: null`):
@@ -122,7 +122,7 @@ Preflight antes de mutar estado (`seed_manifest_sha256: null`):
 ./scripts/release-gate check \
   --request <deploy-request.json> \
   --release-dir <directorio-extraido> \
-  --package <paquete-unico.tar> \
+  --package <artifact-descargado.zip> \
   --state <state-fixture.json> \
   --evidence <evidence-fixture.json> \
   --mode dry-run

@@ -54,7 +54,7 @@ TOP_KEYS = {
     "rollback_pair",
     "smoke_profile",
 }
-PACKAGE_FORMAT = "myfinanzas-test-package.v1"
+PACKAGE_FORMAT = "myfinanzas-test-artifact-zip.v1"
 RELEASE_REFS = {
     "test": "myfinanzas-app/test",
     "prod": "myfinanzas-app/main",
@@ -71,6 +71,7 @@ RELEASE_TOP_LEVEL = {
     "image.oci.tar",
     "image.seed.oci.tar",
     "frontend",
+    "SHA256SUMS",
 }
 
 MAX_JSON_BYTES = 2_000_000
@@ -272,6 +273,56 @@ def check_release_tree(release_dir: Path) -> None:
                 raise GateBlocked(
                     "RELEASE_ENTRY_INVALID", f"special file in release bundle: {candidate}"
                 )
+
+
+def check_sha256sums(release_dir: Path, required: bool) -> None:
+    sums_path = release_dir / "SHA256SUMS"
+    if sums_path.is_symlink():
+        raise GateBlocked("SHA256SUMS_PATH_UNSAFE", "SHA256SUMS must not be a symlink")
+    if not sums_path.is_file():
+        if required:
+            raise GateBlocked("SHA256SUMS_MISSING", "SHA256SUMS is required for TEST")
+        return
+    try:
+        lines = sums_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise GateBlocked("SHA256SUMS_INVALID", f"SHA256SUMS cannot be read: {exc}") from exc
+    declared: dict[str, str] = {}
+    for line in lines:
+        if not line:
+            continue
+        match = re.fullmatch(r"([0-9a-f]{64}) [ *]\./(.+)", line)
+        if match is None:
+            raise GateBlocked("SHA256SUMS_INVALID", f"invalid SHA256SUMS line: {line}")
+        digest, relative = match.groups()
+        safe_relative(relative, "SHA256SUMS_PATH_UNSAFE")
+        if relative in declared:
+            raise GateBlocked(
+                "SHA256SUMS_INVALID", f"duplicate SHA256SUMS entry: {relative}"
+            )
+        declared[relative] = digest
+
+    actual: dict[str, str] = {}
+    for path in release_dir.rglob("*"):
+        if path == sums_path:
+            continue
+        if path.is_symlink():
+            raise GateBlocked("SHA256SUMS_PATH_UNSAFE", f"symlink in release: {path}")
+        if path.is_file():
+            relative = path.relative_to(release_dir).as_posix()
+            actual[relative] = sha256_file(path)
+    if set(declared) != set(actual):
+        missing = sorted(set(actual) - set(declared))
+        extra = sorted(set(declared) - set(actual))
+        raise GateBlocked(
+            "SHA256SUMS_MISMATCH",
+            f"SHA256SUMS entries do not match files (missing={missing}, extra={extra})",
+        )
+    for relative, digest in actual.items():
+        if declared[relative] != digest:
+            raise GateBlocked(
+                "SHA256SUMS_MISMATCH", f"SHA256SUMS hash mismatch: {relative}"
+            )
 
 
 def scan_secrets(value, path: str = "$") -> None:
@@ -1139,11 +1190,11 @@ def parse_args(argv=None):
     subparsers = parser.add_subparsers(dest="command", required=True)
     check = subparsers.add_parser("check", help="validate a release request")
     check.add_argument("--request", required=True, help="deploy-request JSON")
-    check.add_argument("--release-dir", required=True, help="private release bundle")
+    check.add_argument("--release-dir", required=True, help="extracted release bundle")
     check.add_argument(
         "--package",
         required=True,
-        help="single received package file; verifies package_sha256",
+        help="downloaded GitHub Actions ZIP artifact; verifies package_sha256",
     )
     check.add_argument("--state", help="simulated host state JSON")
     check.add_argument("--evidence", help="simulated external evidence JSON")
@@ -1264,6 +1315,14 @@ def main(argv=None) -> int:
                 checks.append(
                     ("seed.oci", lambda: check_seed_oci(request, release_dir, manifest))
                 )
+                checks.append(
+                    (
+                        "release.sha256sums",
+                        lambda: check_sha256sums(
+                            release_dir, request["environment"] == "test"
+                        ),
+                    )
+                )
             for check_id, function in checks:
                 try:
                     function()
@@ -1271,6 +1330,8 @@ def main(argv=None) -> int:
                         detail = "application OCI archive, index and blobs are verified"
                     elif check_id == "seed.oci":
                         detail = "seed OCI archive, index and blobs are verified"
+                    elif check_id == "release.sha256sums":
+                        detail = "SHA256SUMS covers every release file"
                     else:
                         detail = "frontend files match the manifest map"
                     report.local_ok(check_id, detail)

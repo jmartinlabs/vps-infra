@@ -11,7 +11,7 @@ Referencias: [PR #27](https://github.com/jmartinlabs/vps-infra/pull/27),
 ## Flujo permanente
 
 1. Integración en `test` ejecuta CI `required`, QA y Rootless sobre el SHA exacto.
-2. GitHub Actions publica en GHCR:
+2. Con `MYFINANZAS_TEST_AUTO_PUBLISH=true`, GitHub Actions publica en GHCR:
    - `myfinanzas-test-app:sha-<SHA40>`
    - `myfinanzas-test-seed:sha-<SHA40>`
    - `myfinanzas-test-release:sha-<SHA40>` y `myfinanzas-test-release:test`

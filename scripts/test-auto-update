@@ -361,7 +361,7 @@ class Updater:
         for relative in frontend:
             parts = PurePosixPath(relative).parts
             lowered = relative.lower()
-            if any(part in {"node_modules", ".git", ".env"} for part in parts):
+            if any(part in {"node_modules", ".git"} or part.startswith(".") for part in parts):
                 raise PermanentFailure(f"forbidden frontend path: {relative}")
             if lowered.endswith((".map", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".xlsx", ".env", ".pem", ".key")):
                 raise PermanentFailure(f"forbidden frontend file: {relative}")

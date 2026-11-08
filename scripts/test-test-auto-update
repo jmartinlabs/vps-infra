@@ -264,6 +264,15 @@ class UpdaterTests(unittest.TestCase):
             self.updater.run_once()
         self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
 
+    def test_marker_environment_mismatch_blocks(self):
+        write_json(
+            self.data / "test-instance.json",
+            {"schema_version": 27, "environment": "prod", "public_origin": "https://test.myfinanzas.pp.ua"},
+        )
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
     def test_schema_change_blocks_before_unit_change(self):
         # Build a minimal schema-28 fixture with consistent hashes.
         frontend = b"<html>fixture</html>\n"

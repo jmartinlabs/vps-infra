@@ -735,6 +735,16 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "SEED_SCHEMA_MISMATCH")
 
+    def test_seed_data_contract_mismatch(self) -> None:
+        seed = json.loads(self.fx.seed.read_text(encoding="utf-8"))
+        seed["source"]["data_contract"] = "e4.8-v24"
+        write_json(self.fx.seed, seed)
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = sha256_file(self.fx.seed)
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_DATA_CONTRACT_MISMATCH")
+
     def test_seed_schema_missing(self) -> None:
         seed = json.loads(self.fx.seed.read_text(encoding="utf-8"))
         seed["source"].pop("schema")

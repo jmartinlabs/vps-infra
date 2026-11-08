@@ -105,7 +105,7 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 60 casos cubren solicitudes válidas TEST/PROD, preflight sin seed y `verify-seed`, y
+Los 61 casos cubren solicitudes válidas TEST/PROD, preflight sin seed y `verify-seed`, y
 rechazos de tag, entorno, versión, SHA, `release_ref`, paquete, seed, `SHA256SUMS`,
 manifiesto, estructura e integridad OCI, frontend, seed, incompatibilidad o no verificación
 del esquema seed/release, aprobación, evidencia simulada, rutas inseguras, symlinks, entradas

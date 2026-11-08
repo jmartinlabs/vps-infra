@@ -146,7 +146,7 @@ class UpdaterTests(unittest.TestCase):
         for path in (self.data / "state", self.web / "releases", self.unit_dir):
             path.mkdir(parents=True, exist_ok=True)
         (self.web / "releases").chmod(0o2750)
-        write_json(self.data / "test-instance.json", {"schema_version": 27})
+        write_json(self.data / "test-instance.json", {"schema_version": 27, "environment": "test", "public_origin": "https://test.myfinanzas.pp.ua"})
         write_json(self.data / "seed-manifest.json", {"source": {"schema": 27, "data_contract": "e4.11-v27"}})
         (self.data / "state" / "database.sqlite").write_text("fixture")
         (self.data / "state" / "auth.key").write_text("fixture")
@@ -219,6 +219,18 @@ class UpdaterTests(unittest.TestCase):
         self.runner.attempts = 0
         self.runner.release_digest = "sha256:" + "1" * 64
         self.assertEqual(self.updater.run_once(), 0)
+        self.assertFalse((self.root / "failed-release.json").exists())
+
+    def test_transient_failure_is_not_recorded(self):
+        class NetworkUpdater(Updater):
+            def pull_app(self, manifest):
+                raise UpdateError("temporary network failure")
+
+        updater = NetworkUpdater(
+            self.config, runner=self.runner, sleep=lambda _: None, clock=self.clock
+        )
+        with self.assertRaises(UpdateError):
+            updater.run_once()
         self.assertFalse((self.root / "failed-release.json").exists())
 
     def test_state_write_failure_rolls_back(self):

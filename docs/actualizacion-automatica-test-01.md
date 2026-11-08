@@ -36,8 +36,8 @@ La primera activación no se automatiza. Requiere autorización específica y ej
    sudo chmod 2750 /var/www/myfinanzas-test
    sudo install -d -m 2750 -o mftest -g caddy /var/www/myfinanzas-test/releases
    ```
-   Los releases y ficheros publicados por el updater quedan `0750`/`0640` con grupo
-   `caddy`; nunca se sirve desde `/srv/myfinanzas-test` `0700`.
+   El directorio de release y la raíz quedan `2750`; los subdirectorios `0750` y los
+   ficheros `0640`, con grupo `caddy`; nunca se sirve desde `/srv/myfinanzas-test` `0700`.
 3. Instalar el updater y las unidades de usuario:
    ```bash
    sudo install -d -m 0700 -o mftest -g mftest \
@@ -70,7 +70,8 @@ No se ejecuta ninguna de estas operaciones en esta fase.
 - El estado persistente vive en `/srv/myfinanzas-test/data`; no se modifica al actualizar.
 - El estado de la última release está en `/srv/myfinanzas-test/current-release.json`.
 - Una release que falla smoke/rollback se registra en `failed-release.json` y no se reintenta
-  en cada ciclo; un digest nuevo vuelve a intentarlo.
+  en cada ciclo; un digest nuevo vuelve a intentarlo. Si se corrige la causa del mismo
+  digest, retirar `failed-release.json` manualmente tras revisión; no se limpia solo.
 - El updater compara `schema` y `data_contract` instalados con el manifiesto; si cambian,
   bloquea y exige migración manual.
 

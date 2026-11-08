@@ -199,8 +199,8 @@ ss -ltn | grep -E '18082|3001'
 
 Esperado: health `200` `{"ok":true}`, ruta protegida `401`, frontend/FT-1 visible con MFA,
 `3001` no publicado, `18082` solo loopback y apex intacto. Antes de la recarga, `namei -l`
-debe mostrar todos los componentes públicos `0755` y la prueba como `caddy` debe leer
-`current/index.html`.
+debe mostrar la raíz `2750`, los directorios de release `2750`/`0750`, los ficheros `0640`
+y la prueba como `caddy` debe leer `current/index.html`.
 
 ## 9. Recuperación básica
 

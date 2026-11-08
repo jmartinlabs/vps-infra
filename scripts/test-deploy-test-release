@@ -246,6 +246,10 @@ class DeployTests(unittest.TestCase):
                          dirs=("frontend/", "frontend/assets/"))
         self.assertEqual(self.deploy(payload), 0)
 
+    def test_missing_bundle_path_is_a_clean_error(self):
+        code = module["main"](["--bundle", str(self.root / "missing.tar")])
+        self.assertEqual(code, 2)
+
     def test_actor_comes_from_ssh_command(self):
         self.assertEqual(actor_from_environment("deploy:octocat"), "octocat")
         self.assertEqual(actor_from_environment("rm -rf /"), "unknown")

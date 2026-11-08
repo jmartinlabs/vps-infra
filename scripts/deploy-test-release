@@ -597,7 +597,11 @@ def main(argv=None) -> int:
         stream = sys.stdin.buffer
         context = None
     else:
-        context = open(args.bundle, "rb")
+        try:
+            context = open(args.bundle, "rb")
+        except OSError as exc:
+            print(f"myfinanzas-test-deploy: cannot read bundle: {exc}", file=sys.stderr)
+            return 2
         stream = context
     try:
         with context if context else _nullcontext():

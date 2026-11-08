@@ -40,7 +40,7 @@ class FakeRunner:
         self.attempts = 0
         self.pulls: list[str] = []
 
-    def run(self, args, check=True):
+    def run(self, args, check=True, timeout=None):
         command = " ".join(args)
         code = 0
         out = ""
@@ -170,6 +170,7 @@ class UpdaterTests(unittest.TestCase):
         def clock():
             self.ticks += 1
             return self.ticks
+        self.clock = clock
         self.updater = Updater(self.config, runner=self.runner, sleep=lambda _: None, clock=clock)
 
     def test_state_absent_is_noop(self):
@@ -210,6 +211,16 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(self.updater.run_once(), 1)
         self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
 
+    def test_new_digest_retries_after_failure(self):
+        self.runner.fail_first = True
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.runner.fail_first = False
+        self.runner.attempts = 0
+        self.runner.release_digest = "sha256:" + "1" * 64
+        self.assertEqual(self.updater.run_once(), 0)
+        self.assertFalse((self.root / "failed-release.json").exists())
+
     def test_state_write_failure_rolls_back(self):
         old = self.web / "releases" / "old"
         old.mkdir()
@@ -222,7 +233,7 @@ class UpdaterTests(unittest.TestCase):
                 raise UpdateError("state persistence failed")
 
         updater = FailingStateUpdater(
-            self.config, runner=self.runner, sleep=lambda _: None, clock=lambda: 2
+            self.config, runner=self.runner, sleep=lambda _: None, clock=self.clock
         )
         with self.assertRaises(UpdateError):
             updater.run_once()

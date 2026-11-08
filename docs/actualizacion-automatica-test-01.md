@@ -32,7 +32,7 @@ La primera activación no se automatiza. Requiere autorización específica y ej
 1. `production-init`, seed `FT-1`, `setup` y unidad inicial según el procedimiento aprobado.
 2. Dar acceso de lectura a Caddy sin exponer datos privados:
    ```bash
-   sudo chgrp caddy /var/www/myfinanzas-test
+   sudo chown mftest:caddy /var/www/myfinanzas-test
    sudo chmod 2750 /var/www/myfinanzas-test
    sudo install -d -m 2750 -o mftest -g caddy /var/www/myfinanzas-test/releases
    ```
@@ -48,8 +48,10 @@ La primera activación no se automatiza. Requiere autorización específica y ej
      infra/systemd/user/myfinanzas-test-update.service \
      infra/systemd/user/myfinanzas-test-update.timer \
      /home/mftest/.config/systemd/user/
-   sudo -u mftest systemctl --user daemon-reload
-   sudo -u mftest systemctl --user enable --now myfinanzas-test-update.timer
+   sudo -u mftest env XDG_RUNTIME_DIR="/run/user/$(id -u mftest)" \
+     systemctl --user daemon-reload
+   sudo -u mftest env XDG_RUNTIME_DIR="/run/user/$(id -u mftest)" \
+     systemctl --user enable --now myfinanzas-test-update.timer
    ```
 4. Ejecutar una vez `myfinanzas-test-update --once` y revisar journal/estado.
 5. Confirmar que `myfinanzas-test-release:test` y los paquetes GHCR son públicos, o el

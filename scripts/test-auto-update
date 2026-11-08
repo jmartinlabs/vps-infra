@@ -20,7 +20,7 @@ import tarfile
 import tempfile
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -56,8 +56,11 @@ def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
 
 
 class CommandRunner:
-    def run(self, args: list[str], check: bool = True) -> subprocess.CompletedProcess:
-        result = subprocess.run(args, text=True, capture_output=True)
+    def run(self, args: list[str], check: bool = True, timeout: int | None = 300) -> subprocess.CompletedProcess:
+        try:
+            result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise UpdateError(f"command timed out: {' '.join(args)}") from exc
         if check and result.returncode != 0:
             raise UpdateError(
                 f"command failed ({result.returncode}): {' '.join(args)}\n"
@@ -134,14 +137,14 @@ class Updater:
     def log(self, message: str) -> None:
         print(f"myfinanzas-test-update: {message}", flush=True)
 
-    def podman(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        return self.runner.run(["podman", *args], check=check)
+    def podman(self, *args: str, check: bool = True, timeout: int | None = 300) -> subprocess.CompletedProcess:
+        return self.runner.run(["podman", *args], check=check, timeout=timeout)
 
-    def systemctl(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        return self.runner.run(["systemctl", "--user", *args], check=check)
+    def systemctl(self, *args: str, check: bool = True, timeout: int | None = 60) -> subprocess.CompletedProcess:
+        return self.runner.run(["systemctl", "--user", *args], check=check, timeout=timeout)
 
-    def curl(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        return self.runner.run(["curl", *args], check=check)
+    def curl(self, *args: str, check: bool = True, timeout: int | None = 10) -> subprocess.CompletedProcess:
+        return self.runner.run(["curl", *args], check=check, timeout=timeout)
 
     def lock(self):
         class Lock:
@@ -230,8 +233,10 @@ class Updater:
     def extract_release(self, digest: str, target: Path) -> None:
         name = f"mf-update-{os.getpid()}"
         archive = target.parent / "release-image.tar"
+        base = self.config.release_image.rsplit(":", 1)[0]
+        reference = f"{base}@{digest}"
         try:
-            self.podman("create", "--name", name, "--pull=never", self.config.release_image)
+            self.podman("create", "--name", name, "--pull=never", reference)
             self.podman("export", "--output", str(archive), name)
         finally:
             self.podman("rm", "-f", name, check=False)
@@ -338,9 +343,20 @@ class Updater:
         frontend = manifest.get("frontend_files")
         if not isinstance(frontend, dict) or "index.html" not in frontend:
             raise UpdateError("manifest has no frontend index.html")
-        for relative, value in frontend.items():
-            if actual_files.get("frontend/" + relative) != value:
-                raise UpdateError(f"frontend mismatch: {relative}")
+        actual_frontend = {
+            relative.removeprefix("frontend/"): digest
+            for relative, digest in actual_files.items()
+            if relative.startswith("frontend/")
+        }
+        if actual_frontend != frontend:
+            raise UpdateError("frontend file set does not exactly match manifest")
+        for relative in frontend:
+            parts = PurePosixPath(relative).parts
+            lowered = relative.lower()
+            if any(part in {"node_modules", ".git", ".env"} for part in parts):
+                raise UpdateError(f"forbidden frontend path: {relative}")
+            if lowered.endswith((".map", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".xlsx", ".env", ".pem", ".key")):
+                raise UpdateError(f"forbidden frontend file: {relative}")
         return manifest
 
     def pull_app(self, manifest: dict) -> tuple[str, str]:
@@ -361,6 +377,15 @@ class Updater:
             raise UpdateError("app image revision does not match manifest source")
         return image_id, reference
 
+    def frontend_hashes(self, root: Path) -> dict[str, str]:
+        if not root.is_dir():
+            return {}
+        return {
+            path.relative_to(root).as_posix(): sha256_file(path)
+            for path in root.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+
     def current_frontend_target(self) -> str | None:
         current = self.config.web_root / "current"
         return os.readlink(current) if current.is_symlink() else None
@@ -372,18 +397,25 @@ class Updater:
         if not releases.stat().st_mode & 0o2000:
             raise UpdateError("releases directory must be setgid (2750) for caddy access")
         target = releases / manifest["inputs"]["source"]
-        if target.exists():
-            raise UpdateError(f"frontend release already exists: {target}")
+        if not os.access(self.config.web_root, os.W_OK):
+            raise UpdateError(f"web root is not writable by mftest: {self.config.web_root}")
         if not os.access(releases, os.W_OK):
             raise UpdateError(f"releases directory is not writable by mftest: {releases}")
-        temporary = releases / f".tmp-{os.getpid()}"
-        if temporary.exists():
-            raise UpdateError(f"temporary frontend path already exists: {temporary}")
-        shutil.copytree(release_root / "frontend", temporary)
-        for path in temporary.rglob("*"):
-            path.chmod(0o750 if path.is_dir() else 0o640)
-        temporary.chmod(0o750)
-        temporary.rename(target)
+        source_frontend = release_root / "frontend"
+        if target.exists():
+            if not target.is_dir():
+                raise UpdateError(f"frontend release path is not a directory: {target}")
+            if self.frontend_hashes(target) != self.frontend_hashes(source_frontend):
+                raise UpdateError(f"frontend release already exists with different content: {target}")
+        else:
+            temporary = releases / f".tmp-{os.getpid()}"
+            if temporary.exists():
+                raise UpdateError(f"temporary frontend path already exists: {temporary}")
+            shutil.copytree(source_frontend, temporary)
+            for path in temporary.rglob("*"):
+                path.chmod(0o750 if path.is_dir() else 0o640)
+            temporary.chmod(0o2750)
+            temporary.rename(target)
         current = self.config.web_root / "current"
         link = self.config.web_root / f".current-{os.getpid()}"
         try:
@@ -432,9 +464,13 @@ class Updater:
         last = ""
         while self.clock() < deadline:
             try:
-                health = self.curl("-fsS", self.config.health_url)
+                health = self.curl("-fsS", "--max-time", "5", "--connect-timeout", "2", self.config.health_url)
                 protected = self.curl(
                     "-s",
+                    "--max-time",
+                    "5",
+                    "--connect-timeout",
+                    "2",
                     "-o",
                     "/dev/null",
                     "-w",
@@ -499,7 +535,9 @@ class Updater:
                     previous_state = json.loads(
                         self.config.state_file.read_text(encoding="utf-8")
                     )
-                except json.JSONDecodeError:
+                    if not isinstance(previous_state, dict):
+                        previous_state = None
+                except (OSError, json.JSONDecodeError):
                     previous_state = None
             release_digest = self.pull_release()
             failed = self.failed_release()

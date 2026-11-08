@@ -201,6 +201,7 @@ class Fixture:
                 "source": {
                     "commit": self.release_sha,
                     "schema": 25,
+                    "data_contract": "e4.9-v25",
                     "seed_image": self.seed_image,
                 },
                 "environment": {"name": "test"},

@@ -89,8 +89,9 @@ verificados.
 - `inputs.contracts` presente; el gate no fija una versión de esquema.
 - Seed bloque `manifest.seed` con `image`, `source`, `contracts`, lock, hashes y digest;
   coincide con `seed_image` y con `inputs`.
-- `seed-manifest.json` con `source.commit`, `source.schema`, `source.seed_image` y dataset
-  `FT-1`; hash y esquema coincidentes. Se valida en `verify-seed`, después de `seed apply`.
+- `seed-manifest.json` con `source.commit`, `source.schema`, `source.data_contract`,
+  `source.seed_image` y dataset `FT-1`; hash y contratos coincidentes. Se valida en
+  `verify-seed`, después de `seed apply`.
   Si el manifiesto de release no está disponible o no es válido, la compatibilidad de
   esquema queda bloqueada, no marcada como PASS.
 - Rutas relativas seguras y rechazo de symlinks en el paquete.
@@ -104,7 +105,7 @@ verificados.
 ./scripts/test-release-gate
 ```
 
-Los 60 casos cubren solicitudes válidas TEST/PROD, preflight sin seed y `verify-seed`, y
+Los 61 casos cubren solicitudes válidas TEST/PROD, preflight sin seed y `verify-seed`, y
 rechazos de tag, entorno, versión, SHA, `release_ref`, paquete, seed, `SHA256SUMS`,
 manifiesto, estructura e integridad OCI, frontend, seed, incompatibilidad o no verificación
 del esquema seed/release, aprobación, evidencia simulada, rutas inseguras, symlinks, entradas

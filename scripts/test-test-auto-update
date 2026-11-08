@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Local simulation for scripts/test-auto-update: update, rollback and guards."""
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import os
+import runpy
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+module = runpy.run_path(str(ROOT / "scripts" / "test-auto-update"))
+Config = module["Config"]
+UpdateError = module["UpdateError"]
+Updater = module["Updater"]
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def write_json(path: Path, value: dict, mode=0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(mode)
+
+
+class FakeRunner:
+    def __init__(self, source: str, release_digest: str, app_id: str):
+        self.source = source
+        self.release_digest = release_digest
+        self.app_id = app_id
+        self.smoke_fail = False
+        self.attempts = 0
+        self.pulls: list[str] = []
+
+    def run(self, args, check=True, timeout=None):
+        command = " ".join(args)
+        code = 0
+        out = ""
+        err = ""
+        if command.startswith("podman pull "):
+            self.pulls.append(args[-1])
+        elif command.startswith("podman image inspect --format {{.Digest}}"):
+            out = self.release_digest + "\n"
+        elif command.startswith("podman image inspect --format {{.Id}}"):
+            out = self.app_id + "\n"
+        elif "org.opencontainers.image.revision" in command:
+            out = self.source + "\n"
+        elif command.startswith("podman create "):
+            pass
+        elif command.startswith("podman export "):
+            output = Path(args[args.index("--output") + 1])
+            output.write_bytes(self.release_tar())
+        elif command.startswith("podman rm "):
+            pass
+        elif command == "systemctl --user daemon-reload":
+            pass
+        elif command.startswith("systemctl --user restart "):
+            self.attempts += 1
+            self.smoke_fail = self.attempts == 1 and getattr(self, "fail_first", False)
+        elif command.startswith("systemctl --user stop "):
+            pass
+        elif command.startswith("curl "):
+            if "127.0.0.1:18082/api/health" in command:
+                if self.smoke_fail:
+                    code, err = 1, "health failed"
+                else:
+                    out = '{"ok":true}\n'
+            elif "127.0.0.1:18082/api/saldos" in command:
+                out = "401"
+            else:
+                code, err = 1, "unexpected curl"
+        else:
+            code, err = 1, f"unexpected command: {command}"
+        result = subprocess.CompletedProcess(args, code, out, err)
+        if check and code:
+            raise UpdateError(f"command failed ({code}): {command}\n{err}")
+        return result
+
+    def release_tar(self) -> bytes:
+        frontend = b"<html>fixture</html>\n"
+        frontend_sha = sha256(frontend)
+        manifest = {
+            "format": 1,
+            "inputs": {
+                "source": self.source,
+                "contracts": {
+                    "schema": 27,
+                    "data": "e4.11-v27",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+            },
+            "image": self.app_id,
+            "oci_manifest_digest": "sha256:" + "a" * 64,
+            "seed": {
+                "image": "sha256:" + "b" * 64,
+                "source": self.source,
+                "contracts": {
+                    "schema": 27,
+                    "data": "e4.11-v27",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+                "oci_manifest_digest": "sha256:" + "c" * 64,
+            },
+            "frontend_files": {"index.html": frontend_sha},
+        }
+        manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+        manifest_sha = sha256(manifest_bytes)
+        sums = (
+            f"{sha256(manifest_bytes)}  ./manifest.json\n"
+            f"{sha256((manifest_sha + chr(10)).encode())}  ./manifest.sha256\n"
+            f"{frontend_sha}  ./frontend/index.html\n"
+        ).encode()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            for name, data in (
+                ("manifest.json", manifest_bytes),
+                ("manifest.sha256", (manifest_sha + "\n").encode()),
+                ("SHA256SUMS", sums),
+                ("frontend/index.html", frontend),
+            ):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o644
+                archive.addfile(info, io.BytesIO(data))
+        return buffer.getvalue()
+
+
+class UpdaterTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.data = self.root / "data"
+        self.web = self.root / "web"
+        self.unit_dir = self.root / "units"
+        self.state_file = self.root / "current-release.json"
+        self.lock_file = self.root / "update.lock"
+        for path in (self.data / "state", self.web / "releases", self.unit_dir):
+            path.mkdir(parents=True, exist_ok=True)
+        (self.web / "releases").chmod(0o2750)
+        write_json(self.data / "test-instance.json", {"schema_version": 27, "environment": "test", "public_origin": "https://test.myfinanzas.pp.ua"})
+        write_json(self.data / "seed-manifest.json", {"source": {"schema": 27, "data_contract": "e4.11-v27"}})
+        (self.data / "state" / "database.sqlite").write_text("fixture")
+        (self.data / "state" / "auth.key").write_text("fixture")
+        self.config = Config(
+            release_image="ghcr.io/example/release:test",
+            app_image_repo="ghcr.io/example/app",
+            data_root=self.data,
+            web_root=self.web,
+            unit_dir=self.unit_dir,
+            state_file=self.state_file,
+            failed_file=self.root / "failed-release.json",
+            lock_file=self.lock_file,
+            health_url="http://127.0.0.1:18082/api/health",
+            protected_url="http://127.0.0.1:18082/api/saldos",
+            timeout_seconds=5,
+        )
+        self.ticks = 0
+        self.now = lambda: self.ticks
+        self.source = "d" * 40
+        self.runner = FakeRunner(self.source, "sha256:" + "e" * 64, "sha256:" + "f" * 64)
+        def clock():
+            self.ticks += 1
+            return self.ticks
+        self.clock = clock
+        self.updater = Updater(self.config, runner=self.runner, sleep=lambda _: None, clock=clock)
+
+    def test_state_absent_is_noop(self):
+        (self.data / "test-instance.json").unlink()
+        self.assertEqual(self.updater.run_once(), 0)
+        self.assertEqual(self.runner.pulls, [])
+
+    def test_update_writes_unit_frontend_and_state(self):
+        self.assertEqual(self.updater.run_once(), 0)
+        unit = (self.unit_dir / "myfinanzas-test-api.container").read_text()
+        self.assertIn("Image=" + self.runner.app_id, unit)
+        self.assertTrue((self.web / "current" / "index.html").is_file())
+        state = json.loads(self.state_file.read_text())
+        self.assertEqual(state["source"], self.source)
+        self.assertEqual(state["release_digest"], self.runner.release_digest)
+        self.assertIn("ghcr.io/example/release:test", self.runner.pulls)
+
+    def test_failed_smoke_rolls_back(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+        self.runner.fail_first = True
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n"
+        )
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+
+    def test_failed_release_is_not_retried(self):
+        self.runner.fail_first = True
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.assertTrue((self.root / "failed-release.json").is_file())
+        self.assertEqual(self.updater.run_once(), 1)
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_new_digest_retries_after_failure(self):
+        self.runner.fail_first = True
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.runner.fail_first = False
+        self.runner.attempts = 0
+        self.runner.release_digest = "sha256:" + "1" * 64
+        self.assertEqual(self.updater.run_once(), 0)
+        self.assertFalse((self.root / "failed-release.json").exists())
+
+    def test_transient_failure_is_not_recorded(self):
+        class NetworkUpdater(Updater):
+            def pull_app(self, manifest):
+                raise UpdateError("temporary network failure")
+
+        updater = NetworkUpdater(
+            self.config, runner=self.runner, sleep=lambda _: None, clock=self.clock
+        )
+        with self.assertRaises(UpdateError):
+            updater.run_once()
+        self.assertFalse((self.root / "failed-release.json").exists())
+
+    def test_state_write_failure_rolls_back(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+
+        class FailingStateUpdater(Updater):
+            def write_state(self, *args, **kwargs):
+                raise UpdateError("state persistence failed")
+
+        updater = FailingStateUpdater(
+            self.config, runner=self.runner, sleep=lambda _: None, clock=self.clock
+        )
+        with self.assertRaises(UpdateError):
+            updater.run_once()
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n"
+        )
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+
+    def test_data_contract_mismatch_blocks(self):
+        write_json(
+            self.data / "seed-manifest.json",
+            {"source": {"schema": 27, "data_contract": "e4.10-v26"}},
+        )
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_marker_environment_mismatch_blocks(self):
+        write_json(
+            self.data / "test-instance.json",
+            {"schema_version": 27, "environment": "prod", "public_origin": "https://test.myfinanzas.pp.ua"},
+        )
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_schema_change_blocks_before_unit_change(self):
+        # Build a minimal schema-28 fixture with consistent hashes.
+        frontend = b"<html>fixture</html>\n"
+        manifest = {
+            "format": 1,
+            "inputs": {"source": self.source, "contracts": {"schema": 28, "data": "e4.12-v28", "authentication": "argon2id-aesgcm-totp-session-v1"}},
+            "image": self.runner.app_id,
+            "oci_manifest_digest": "sha256:" + "a" * 64,
+            "seed": {
+                "image": "sha256:" + "b" * 64,
+                "source": self.source,
+                "contracts": {
+                    "schema": 28,
+                    "data": "e4.12-v28",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+                "oci_manifest_digest": "sha256:" + "c" * 64,
+            },
+            "frontend_files": {"index.html": sha256(frontend)},
+        }
+        mb = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+        ms = sha256(mb)
+        sums = f"{sha256(mb)}  ./manifest.json\n{sha256((ms + chr(10)).encode())}  ./manifest.sha256\n{sha256(frontend)}  ./frontend/index.html\n".encode()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            for name, data in (("manifest.json", mb), ("manifest.sha256", (ms + "\n").encode()), ("SHA256SUMS", sums), ("frontend/index.html", frontend)):
+                info = tarfile.TarInfo(name); info.size = len(data); archive.addfile(info, io.BytesIO(data))
+        self.runner.release_tar = lambda: buffer.getvalue()
+        with self.assertRaises(UpdateError):
+            self.updater.run_once()
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

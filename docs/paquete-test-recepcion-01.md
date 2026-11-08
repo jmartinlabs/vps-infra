@@ -123,6 +123,7 @@ Precondiciones: unidad TEST parada/ausente, `18082` sin responder y
 5. Instalar la unidad Quadlet candidata con el ID inmutable de la app.
 6. Publicar el frontend verificado en `/var/www/myfinanzas-test/releases/<sha>/` y crear
    `current` dentro de `/var/www/myfinanzas-test`; nunca apuntar a `/srv` privado.
+   La primera activación deja esa raíz `mftest:caddy` `2750` y los ficheros `0640`.
 7. Comprobar que Caddy puede leer el frontend sin atravesar `0700`:
    `namei -l /var/www/myfinanzas-test/current` y prueba de lectura como `caddy`.
 8. Recargar Caddy solo al final, con autorización separada.
@@ -198,8 +199,8 @@ ss -ltn | grep -E '18082|3001'
 
 Esperado: health `200` `{"ok":true}`, ruta protegida `401`, frontend/FT-1 visible con MFA,
 `3001` no publicado, `18082` solo loopback y apex intacto. Antes de la recarga, `namei -l`
-debe mostrar todos los componentes públicos `0755` y la prueba como `caddy` debe leer
-`current/index.html`.
+debe mostrar la raíz `2750`, los directorios de release `2750`/`0750`, los ficheros `0640`
+y la prueba como `caddy` debe leer `current/index.html`.
 
 ## 9. Recuperación básica
 

@@ -919,6 +919,17 @@ def check_seed(request: dict, seed_path, manifest) -> None:
             "SEED_SCHEMA_MISMATCH",
             f"seed schema {seed_schema} does not match release schema {release_schema}",
         )
+    seed_data = source.get("data_contract")
+    if not isinstance(seed_data, str) or not seed_data:
+        raise GateBlocked(
+            "SEED_DATA_CONTRACT_INVALID", "seed manifest source.data_contract is invalid"
+        )
+    release_data = manifest["inputs"]["contracts"].get("data")
+    if seed_data != release_data:
+        raise GateBlocked(
+            "SEED_DATA_CONTRACT_MISMATCH",
+            f"seed data contract {seed_data} does not match release data {release_data}",
+        )
 
 
 def check_state(request: dict, state_path, report: Report) -> None:

@@ -134,8 +134,9 @@ curl -D- https://myfinanzas.pp.ua
 
 Registrar: backup/hash, diff, salida de `validate`, cabeceras TEST, certificado y respuesta
 del sitio raíz antes/después. `current` debe apuntar a
-`/var/www/myfinanzas-test/releases/<sha>`, nunca a `/srv/myfinanzas-test` `0700`; todos los
-componentes públicos deben ser `0755` y legibles por `caddy`. La recarga que publica TEST se
+`/var/www/myfinanzas-test/releases/<sha>`, nunca a `/srv/myfinanzas-test` `0700`; tras la
+primera activación, los directorios públicos son `2750` y los ficheros `0640`, con grupo
+`caddy`, para que Caddy lea y `mftest` actualice sin root. La recarga que publica TEST se
 ejecuta al final de la fase 5, no en la fase 4.
 
 ## 3. Autorizaciones necesarias

@@ -95,7 +95,8 @@ Orden obligatorio:
    `127.0.0.1:18082:3001`, límites 1 GiB/1 CPU/128 pids, rootfs de solo lectura y tmpfs.
 9. Validar la unidad, arrancarla y comprobar health `200` y `401`.
 10. Publicar el frontend en `/var/www/myfinanzas-test/releases/<sha>` y `current` dentro de
-    esa raíz pública; verificar legibilidad por `caddy`; recargar Caddy solo al final.
+    esa raíz pública; primera activación `mftest:caddy` `2750`/`0640`; verificar lectura por
+    `caddy`; recargar Caddy solo al final.
 11. Smoke: loopback, HTTPS, `401`, `FT-1`, ausencia de `3001`, apex intacto.
 - **Bloqueos:** release/seed no disponibles, SHA/Rootless no confirmados, contrato v27
   pendiente. La ruta `data/state` está confirmada a nivel de contrato, pero el estado aún no

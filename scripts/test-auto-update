@@ -1,0 +1,639 @@
+#!/usr/bin/env python3
+"""Poll a public GHCR TEST release and update MyFinanzas TEST atomically.
+
+Runs as mftest from a systemd --user timer. It never creates state, never runs
+the seed and never touches PROD. It only replaces the app image, the unit and
+the public frontend when the release manifest keeps the installed schema.
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+class UpdateError(Exception):
+    pass
+
+
+class PermanentFailure(UpdateError):
+    """Release-specific failure that should not be retried until a new digest."""
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=".tmp-", dir=path.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+class CommandRunner:
+    def run(self, args: list[str], check: bool = True, timeout: int | None = 300) -> subprocess.CompletedProcess:
+        try:
+            result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise UpdateError(f"command timed out: {' '.join(args)}") from exc
+        if check and result.returncode != 0:
+            raise UpdateError(
+                f"command failed ({result.returncode}): {' '.join(args)}\n"
+                f"{result.stderr.strip()}"
+            )
+        return result
+
+
+UNIT_TEMPLATE = """[Unit]
+Description=MyFinanzas TEST rootless API
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Container]
+Image={image}
+Pull=never
+ContainerName=myfinanzas-test-api
+UserNS=keep-id:uid=10001,gid=10001
+User=10001
+Group=10001
+PublishPort=127.0.0.1:18082:3001
+Volume=/srv/myfinanzas-test/data:/var/lib/myfinanzas:rw
+Environment=NODE_ENV=production
+Environment=APP_ORIGIN=https://test.myfinanzas.pp.ua
+Environment=DATABASE_PATH=/var/lib/myfinanzas/state/database.sqlite
+Environment=AUTH_KEY_PATH=/var/lib/myfinanzas/state/auth.key
+Environment=API_BIND_HOST=0.0.0.0
+NoNewPrivileges=true
+ReadOnly=true
+DropCapability=all
+Tmpfs=/tmp:rw,noexec,nosuid,nodev,tmpcopyup,mode=0711,size=64m
+HealthCmd=/usr/local/bin/bun /app/healthcheck.mjs
+HealthInterval=30s
+HealthTimeout=3s
+HealthRetries=3
+HealthStartPeriod=30s
+PodmanArgs=--http-proxy=false --read-only-tmpfs=false --memory=1g --cpus=1 --pids-limit=128 --health-on-failure=kill
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
+"""
+
+
+@dataclass(frozen=True)
+class Config:
+    release_image: str = "ghcr.io/jmartinlabs/myfinanzas-test-release:test"
+    app_image_repo: str = "ghcr.io/jmartinlabs/myfinanzas-test-app"
+    data_root: Path = Path("/srv/myfinanzas-test/data")
+    web_root: Path = Path("/var/www/myfinanzas-test")
+    unit_dir: Path = Path("/home/mftest/.config/containers/systemd")
+    state_file: Path = Path("/srv/myfinanzas-test/current-release.json")
+    failed_file: Path = Path("/srv/myfinanzas-test/failed-release.json")
+    lock_file: Path = Path("/srv/myfinanzas-test/update.lock")
+    unit_name: str = "myfinanzas-test-api"
+    health_url: str = "http://127.0.0.1:18082/api/health"
+    protected_url: str = "http://127.0.0.1:18082/api/saldos"
+    timeout_seconds: int = 90
+
+
+class Updater:
+    def __init__(self, config: Config, runner=None, sleep=time.sleep, clock=time.time):
+        self.config = config
+        self.runner = runner or CommandRunner()
+        self.sleep = sleep
+        self.clock = clock
+
+    def log(self, message: str) -> None:
+        print(f"myfinanzas-test-update: {message}", flush=True)
+
+    def podman(self, *args: str, check: bool = True, timeout: int | None = 300) -> subprocess.CompletedProcess:
+        return self.runner.run(["podman", *args], check=check, timeout=timeout)
+
+    def systemctl(self, *args: str, check: bool = True, timeout: int | None = 60) -> subprocess.CompletedProcess:
+        return self.runner.run(["systemctl", "--user", *args], check=check, timeout=timeout)
+
+    def curl(self, *args: str, check: bool = True, timeout: int | None = 10) -> subprocess.CompletedProcess:
+        return self.runner.run(["curl", *args], check=check, timeout=timeout)
+
+    def lock(self):
+        class Lock:
+            def __enter__(self_inner):
+                self.config.lock_file.parent.mkdir(parents=True, exist_ok=True)
+                self_inner.handle = self.config.lock_file.open("a+")
+                try:
+                    fcntl.flock(self_inner.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    self_inner.handle.close()
+                    raise UpdateError("another update is already running") from exc
+                return self_inner.handle
+
+            def __exit__(self_inner, *_):
+                fcntl.flock(self_inner.handle, fcntl.LOCK_UN)
+                self_inner.handle.close()
+
+        return Lock()
+
+    def state_ready(self) -> bool:
+        data = self.config.data_root
+        return all(
+            path.is_file()
+            for path in (
+                data / "test-instance.json",
+                data / "seed-manifest.json",
+                data / "state" / "database.sqlite",
+                data / "state" / "auth.key",
+            )
+        )
+
+    def installed_contracts(self) -> dict:
+        marker = self.config.data_root / "test-instance.json"
+        seed = self.config.data_root / "seed-manifest.json"
+        try:
+            marker_value = json.loads(marker.read_text(encoding="utf-8"))
+            seed_value = json.loads(seed.read_text(encoding="utf-8"))
+            schema = marker_value.get("schema_version")
+            source = seed_value.get("source")
+        except (OSError, json.JSONDecodeError, AttributeError) as exc:
+            raise UpdateError(f"cannot read installed TEST contracts: {exc}") from exc
+        if type(schema) is not int or schema <= 0:
+            raise UpdateError("installed TEST marker has no valid schema_version")
+        if marker_value.get("environment") != "test":
+            raise UpdateError("installed marker is not TEST")
+        if marker_value.get("public_origin") != "https://test.myfinanzas.pp.ua":
+            raise UpdateError("installed marker has an unexpected public_origin")
+        if not isinstance(source, dict):
+            raise UpdateError("installed seed manifest has no source contract")
+        if source.get("schema") != schema:
+            raise UpdateError("installed marker/seed schema mismatch")
+        data = source.get("data_contract")
+        if not isinstance(data, str) or not data:
+            raise UpdateError("installed seed manifest has no data_contract")
+        return {"schema": schema, "data": data}
+
+    def failed_release(self) -> dict | None:
+        try:
+            value = json.loads(self.config.failed_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def record_failure(self, digest: str, source: str | None, reason: str) -> None:
+        payload = {
+            "format": 1,
+            "release_digest": digest,
+            "source": source,
+            "reason": reason,
+        }
+        atomic_write(
+            self.config.failed_file,
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            mode=0o600,
+        )
+
+    def clear_failure(self) -> None:
+        self.config.failed_file.unlink(missing_ok=True)
+
+    def pull_release(self) -> str:
+        self.podman("pull", "--quiet", "--policy=always", self.config.release_image)
+        result = self.podman(
+            "image", "inspect", "--format", "{{.Digest}}", self.config.release_image
+        )
+        digest = result.stdout.strip()
+        if not DIGEST.fullmatch(digest):
+            raise UpdateError(f"release image has no valid digest: {digest!r}")
+        return digest
+
+    def extract_release(self, digest: str, target: Path) -> None:
+        name = f"mf-update-{os.getpid()}"
+        archive = target.parent / "release-image.tar"
+        base = self.config.release_image.rsplit(":", 1)[0]
+        reference = f"{base}@{digest}"
+        try:
+            self.podman("create", "--name", name, "--pull=never", reference)
+            self.podman("export", "--output", str(archive), name)
+        finally:
+            self.podman("rm", "-f", name, check=False)
+        allowed = {"manifest.json", "manifest.sha256", "SHA256SUMS"}
+        try:
+            with tarfile.open(archive, "r:*") as bundle:
+                for member in bundle:
+                    raw = member.name.removeprefix("./")
+                    if raw in ("", "."):
+                        continue
+                    if member.isdir():
+                        continue
+                    if not member.isfile():
+                        raise UpdateError(f"release image contains a non-file: {raw}")
+                    if raw in allowed:
+                        pass
+                    elif raw.startswith("frontend/"):
+                        pass
+                    else:
+                        continue
+                    destination = target / raw
+                    resolved = destination.resolve()
+                    if not resolved.is_relative_to(target.resolve()):
+                        raise UpdateError(f"release image path escapes: {raw}")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    source = bundle.extractfile(member)
+                    if source is None:
+                        raise UpdateError(f"cannot read release image member: {raw}")
+                    with source, destination.open("wb") as handle:
+                        shutil.copyfileobj(source, handle)
+                    os.chmod(destination, 0o600)
+        except (OSError, tarfile.TarError) as exc:
+            raise UpdateError(f"cannot export release image: {exc}") from exc
+        finally:
+            archive.unlink(missing_ok=True)
+
+    def verify_release(self, root: Path) -> dict:
+        manifest_path = root / "manifest.json"
+        manifest_sha = root / "manifest.sha256"
+        sums_path = root / "SHA256SUMS"
+        for path in (manifest_path, manifest_sha, sums_path):
+            if path.is_symlink() or not path.is_file():
+                raise UpdateError(f"release image is missing {path.name}")
+        actual = sha256_file(manifest_path)
+        declared = manifest_sha.read_text(encoding="utf-8").strip()
+        if actual != declared:
+            raise UpdateError("manifest.sha256 does not match manifest.json")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise UpdateError(f"manifest.json is invalid: {exc}") from exc
+        source = manifest.get("inputs", {}).get("source")
+        if not isinstance(source, str) or not SHA40.fullmatch(source):
+            raise UpdateError("manifest has no valid inputs.source")
+        contracts = manifest.get("inputs", {}).get("contracts")
+        if not isinstance(contracts, dict) or type(contracts.get("schema")) is not int:
+            raise UpdateError("manifest has no valid schema contract")
+        if not isinstance(contracts.get("data"), str) or not contracts["data"]:
+            raise UpdateError("manifest has no valid data contract")
+        if not isinstance(contracts.get("authentication"), str) or not contracts["authentication"]:
+            raise UpdateError("manifest has no valid authentication contract")
+        if not isinstance(manifest.get("image"), str) or not DIGEST.fullmatch(
+            manifest["image"]
+        ):
+            raise UpdateError("manifest has no valid app image")
+        if not isinstance(manifest.get("oci_manifest_digest"), str) or not DIGEST.fullmatch(
+            manifest["oci_manifest_digest"]
+        ):
+            raise UpdateError("manifest has no valid app OCI digest")
+        seed = manifest.get("seed")
+        if not isinstance(seed, dict) or not DIGEST.fullmatch(
+            str(seed.get("oci_manifest_digest", ""))
+        ):
+            raise UpdateError("manifest has no valid seed digest")
+        if seed.get("source") != source:
+            raise UpdateError("seed source does not match app source")
+        if seed.get("contracts") != contracts:
+            raise UpdateError("seed contracts do not match app contracts")
+
+        declared_sums: dict[str, str] = {}
+        for line in sums_path.read_text(encoding="utf-8").splitlines():
+            if not line:
+                continue
+            match = re.fullmatch(r"([0-9a-f]{64}) [ *]\./(.+)", line)
+            if match is None:
+                raise UpdateError(f"invalid SHA256SUMS line: {line}")
+            digest_value, relative = match.groups()
+            if relative in declared_sums:
+                raise UpdateError(f"duplicate SHA256SUMS entry: {relative}")
+            declared_sums[relative] = digest_value
+        actual_files: dict[str, str] = {}
+        for path in root.rglob("*"):
+            if path == sums_path:
+                continue
+            if path.is_symlink():
+                raise UpdateError(f"release image contains a symlink: {path}")
+            if path.is_file():
+                actual_files[path.relative_to(root).as_posix()] = sha256_file(path)
+        if set(declared_sums) != set(actual_files):
+            raise UpdateError("SHA256SUMS entries do not match release files")
+        for relative, value in actual_files.items():
+            if declared_sums[relative] != value:
+                raise UpdateError(f"SHA256SUMS mismatch: {relative}")
+        frontend = manifest.get("frontend_files")
+        if not isinstance(frontend, dict) or "index.html" not in frontend:
+            raise UpdateError("manifest has no frontend index.html")
+        actual_frontend = {
+            relative.removeprefix("frontend/"): digest
+            for relative, digest in actual_files.items()
+            if relative.startswith("frontend/")
+        }
+        if actual_frontend != frontend:
+            raise UpdateError("frontend file set does not exactly match manifest")
+        for relative in frontend:
+            parts = PurePosixPath(relative).parts
+            lowered = relative.lower()
+            if any(part in {"node_modules", ".git"} or part.startswith(".") for part in parts):
+                raise PermanentFailure(f"forbidden frontend path: {relative}")
+            if lowered.endswith((".map", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".xlsx", ".env", ".pem", ".key")):
+                raise PermanentFailure(f"forbidden frontend file: {relative}")
+        return manifest
+
+    def pull_app(self, manifest: dict) -> tuple[str, str]:
+        digest = manifest["oci_manifest_digest"]
+        reference = f"{self.config.app_image_repo}@{digest}"
+        self.podman("pull", "--quiet", "--policy=always", reference)
+        image_id = self.podman("image", "inspect", "--format", "{{.Id}}", reference).stdout.strip()
+        if not DIGEST.fullmatch(image_id):
+            raise UpdateError(f"app image has no local ID: {image_id!r}")
+        revision = self.podman(
+            "image",
+            "inspect",
+            "--format",
+            '{{index .Config.Labels "org.opencontainers.image.revision"}}',
+            reference,
+        ).stdout.strip()
+        if revision != manifest["inputs"]["source"]:
+            raise PermanentFailure("app image revision does not match manifest source")
+        if image_id != manifest["image"]:
+            raise PermanentFailure("app image ID does not match manifest image")
+        return image_id, reference
+
+    def frontend_hashes(self, root: Path) -> dict[str, str]:
+        if not root.is_dir():
+            return {}
+        return {
+            path.relative_to(root).as_posix(): sha256_file(path)
+            for path in root.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+
+    def current_frontend_target(self) -> str | None:
+        current = self.config.web_root / "current"
+        return os.readlink(current) if current.is_symlink() else None
+
+    def stage_frontend(self, manifest: dict, release_root: Path) -> Path:
+        releases = self.config.web_root / "releases"
+        if not self.config.web_root.is_dir() or not releases.is_dir():
+            raise UpdateError("web root/releases missing; first activation required")
+        if not releases.stat().st_mode & 0o2000:
+            raise UpdateError("releases directory must be setgid (2750) for caddy access")
+        target = releases / manifest["inputs"]["source"]
+        if not os.access(self.config.web_root, os.W_OK):
+            raise UpdateError(f"web root is not writable by mftest: {self.config.web_root}")
+        if not os.access(releases, os.W_OK):
+            raise UpdateError(f"releases directory is not writable by mftest: {releases}")
+        source_frontend = release_root / "frontend"
+        if target.exists():
+            if not target.is_dir():
+                raise UpdateError(f"frontend release path is not a directory: {target}")
+            if self.frontend_hashes(target) != self.frontend_hashes(source_frontend):
+                raise PermanentFailure(f"frontend release already exists with different content: {target}")
+        else:
+            temporary = releases / f".tmp-{os.getpid()}"
+            if temporary.exists():
+                raise UpdateError(f"temporary frontend path already exists: {temporary}")
+            shutil.copytree(source_frontend, temporary)
+            for path in temporary.rglob("*"):
+                path.chmod(0o750 if path.is_dir() else 0o640)
+            temporary.chmod(0o2750)
+            temporary.rename(target)
+        current = self.config.web_root / "current"
+        link = self.config.web_root / f".current-{os.getpid()}"
+        try:
+            link.symlink_to(Path("releases") / target.name)
+            os.replace(link, current)
+        except BaseException:
+            try:
+                link.unlink()
+            except OSError:
+                pass
+            raise
+        return target
+
+    def restore_frontend(self, previous: str | None) -> None:
+        current = self.config.web_root / "current"
+        if previous is None:
+            current.unlink(missing_ok=True)
+            return
+        link = self.config.web_root / f".current-{os.getpid()}"
+        try:
+            link.symlink_to(previous)
+            os.replace(link, current)
+        except BaseException:
+            try:
+                link.unlink()
+            except OSError:
+                pass
+            raise
+
+    def write_unit(self, image_id: str) -> str | None:
+        unit = self.config.unit_dir / f"{self.config.unit_name}.container"
+        previous = unit.read_text(encoding="utf-8") if unit.is_file() else None
+        self.config.unit_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write(unit, UNIT_TEMPLATE.format(image=image_id), mode=0o600)
+        return previous
+
+    def restore_unit(self, previous: str | None) -> None:
+        unit = self.config.unit_dir / f"{self.config.unit_name}.container"
+        if previous is None:
+            unit.unlink(missing_ok=True)
+        else:
+            atomic_write(unit, previous, mode=0o600)
+
+    def smoke(self) -> None:
+        deadline = self.clock() + self.config.timeout_seconds
+        last = ""
+        while self.clock() < deadline:
+            try:
+                health = self.curl("-fsS", "--max-time", "5", "--connect-timeout", "2", self.config.health_url)
+                protected = self.curl(
+                    "-s",
+                    "--max-time",
+                    "5",
+                    "--connect-timeout",
+                    "2",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    self.config.protected_url,
+                )
+                frontend = self.config.web_root / "current" / "index.html"
+                if (
+                    health.stdout.strip() == '{"ok":true}'
+                    and protected.stdout.strip() == "401"
+                    and frontend.is_file()
+                ):
+                    return
+                last = f"health={health.stdout.strip()} protected={protected.stdout.strip()}"
+            except UpdateError as exc:
+                last = str(exc)
+            self.sleep(2)
+        raise PermanentFailure(f"smoke did not pass: {last or 'timeout'}")
+
+    def restart_and_smoke(self) -> None:
+        self.systemctl("daemon-reload")
+        self.systemctl("restart", f"{self.config.unit_name}.service")
+        self.smoke()
+
+    def rollback(self, previous_unit: str | None, previous_frontend: str | None) -> None:
+        self.log("smoke failed; restoring previous release")
+        self.restore_unit(previous_unit)
+        self.restore_frontend(previous_frontend)
+        try:
+            self.restart_and_smoke()
+            self.log("rollback smoke passed; previous release active")
+        except UpdateError as exc:
+            self.log(f"rollback failed; stopping unit: {exc}")
+            self.systemctl("stop", f"{self.config.unit_name}.service", check=False)
+            raise
+
+    def write_state(self, release_digest: str, manifest: dict, app_id: str) -> None:
+        payload = {
+            "format": 1,
+            "source": manifest["inputs"]["source"],
+            "release_image": self.config.release_image,
+            "release_digest": release_digest,
+            "app_image": app_id,
+            "schema": manifest["inputs"]["contracts"]["schema"],
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        atomic_write(
+            self.config.state_file,
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            mode=0o600,
+        )
+
+    def run_once(self) -> int:
+        with self.lock():
+            if not self.state_ready():
+                self.log("TEST state is not initialized; first activation required")
+                return 0
+            installed = self.installed_contracts()
+            previous_state = None
+            if self.config.state_file.is_file():
+                try:
+                    previous_state = json.loads(
+                        self.config.state_file.read_text(encoding="utf-8")
+                    )
+                    if not isinstance(previous_state, dict):
+                        previous_state = None
+                except (OSError, json.JSONDecodeError):
+                    previous_state = None
+            release_digest = self.pull_release()
+            failed = self.failed_release()
+            if failed and failed.get("release_digest") == release_digest:
+                self.log("release previously failed; waiting for a new release")
+                return 1
+            if previous_state and previous_state.get("release_digest") == release_digest:
+                self.log("no new release")
+                return 0
+            source = None
+            try:
+                with tempfile.TemporaryDirectory(prefix="mf-update-") as temporary:
+                    release_root = Path(temporary)
+                    self.extract_release(release_digest, release_root)
+                    try:
+                        manifest = self.verify_release(release_root)
+                    except (UpdateError, OSError) as exc:
+                        raise PermanentFailure(str(exc)) from exc
+                    source = manifest["inputs"]["source"]
+                    contracts = manifest["inputs"]["contracts"]
+                    if contracts["schema"] != installed["schema"] or contracts["data"] != installed["data"]:
+                        raise PermanentFailure(
+                            f"contract changed ({installed} -> {contracts}); manual migration required"
+                        )
+                    app_id, _ = self.pull_app(manifest)
+                    previous_frontend = self.current_frontend_target()
+                    previous_unit = self.write_unit(app_id)
+                    try:
+                        self.stage_frontend(manifest, release_root)
+                        self.restart_and_smoke()
+                        self.write_state(release_digest, manifest, app_id)
+                    except BaseException as exc:
+                        self.rollback(previous_unit, previous_frontend)
+                        if isinstance(exc, UpdateError):
+                            raise
+                        raise UpdateError(str(exc)) from exc
+                self.clear_failure()
+                self.log(f"updated to {source} ({release_digest})")
+                return 0
+            except PermanentFailure as exc:
+                try:
+                    self.record_failure(release_digest, source, str(exc))
+                except OSError:
+                    self.log("warning: could not record failed release")
+                raise
+
+
+def build_config(args) -> Config:
+    return Config(
+        release_image=args.release_image,
+        app_image_repo=args.app_image_repo,
+        data_root=Path(args.data_root),
+        web_root=Path(args.web_root),
+        unit_dir=Path(args.unit_dir),
+        state_file=Path(args.state_file),
+        failed_file=Path(args.failed_file),
+        lock_file=Path(args.lock_file),
+        unit_name=args.unit_name,
+        health_url=args.health_url,
+        protected_url=args.protected_url,
+        timeout_seconds=args.timeout,
+    )
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--once", action="store_true", help="run one poll (default)")
+    parser.add_argument("--release-image", default=Config.release_image)
+    parser.add_argument("--app-image-repo", default=Config.app_image_repo)
+    parser.add_argument("--data-root", default=str(Config.data_root))
+    parser.add_argument("--web-root", default=str(Config.web_root))
+    parser.add_argument("--unit-dir", default=str(Config.unit_dir))
+    parser.add_argument("--state-file", default=str(Config.state_file))
+    parser.add_argument("--failed-file", default=str(Config.failed_file))
+    parser.add_argument("--lock-file", default=str(Config.lock_file))
+    parser.add_argument("--unit-name", default=Config.unit_name)
+    parser.add_argument("--health-url", default=Config.health_url)
+    parser.add_argument("--protected-url", default=Config.protected_url)
+    parser.add_argument("--timeout", type=int, default=Config.timeout_seconds)
+    args = parser.parse_args(argv)
+    try:
+        return Updater(build_config(args)).run_once()
+    except UpdateError as exc:
+        print(f"myfinanzas-test-update: {exc}", file=sys.stderr, flush=True)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

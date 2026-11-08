@@ -125,14 +125,18 @@ documental.
 
 ```bash
 caddy validate --config <CADDYFILE>
+namei -l /var/www/myfinanzas-test/current
+runuser -u caddy -- test -r /var/www/myfinanzas-test/current/index.html
 curl -I http://test.myfinanzas.pp.ua
 curl -D- https://test.myfinanzas.pp.ua/api/health
 curl -D- https://myfinanzas.pp.ua
 ```
 
 Registrar: backup/hash, diff, salida de `validate`, cabeceras TEST, certificado y respuesta
-del sitio raíz antes/después. La recarga que publica TEST se ejecuta al final de la fase 5,
-no en la fase 4.
+del sitio raíz antes/después. `current` debe apuntar a
+`/var/www/myfinanzas-test/releases/<sha>`, nunca a `/srv/myfinanzas-test` `0700`; todos los
+componentes públicos deben ser `0755` y legibles por `caddy`. La recarga que publica TEST se
+ejecuta al final de la fase 5, no en la fase 4.
 
 ## 3. Autorizaciones necesarias
 

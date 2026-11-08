@@ -4,6 +4,11 @@
 > implementado, no habilitado y no ejecutado.** No autoriza acceso al VPS, cambios de usuarios, rutas,
 > servicios, Caddy, DNS, UFW, Podman/Quadlet, copias, credenciales ni despliegues.
 > Cualquier fase de este contrato exige autorización propia e identificable.
+>
+> **Actualización 2026-11-08:** TEST usa `myfinanzas-app/test`; PROD futuro, `main`. La
+> entrega se simplifica a un paquete único sin cifrar generado por GitHub Actions, con
+> imágenes de aplicación y seed. La recepción y el gate actualizado se documentan en
+> [paquete TEST](paquete-test-recepcion-01.md).
 
 Este documento define la parte de `vps-infra` del mecanismo de despliegue mediante tags de
 GitHub. La aplicación posee la convención de tags, la construcción y verificación de la
@@ -22,11 +27,12 @@ materia y este contrato solo añade la interfaz de activación.
 
 - `[CONFIRMADO]` El VPS no tiene MyFinanzas desplegada. El contenido del sitio raíz figura
   como página estática informada, no verificada por completo; no se ha accedido al VPS para
-  este documento. No hay rama `test` en `myfinanzas-app` y el flujo vigente es
-  `feature/* → main`.
-- `[CONFIRMADO]` La release de la aplicación es un paquete privado con `image.oci.tar`,
-  `frontend/`, `manifest.json` y `manifest.sha256`; se selecciona por ID/digest inmutable,
-  nunca por etiqueta móvil. La aplicación no publica ese paquete como artifact de CI.
+  este documento. El flujo actual es `feature/* → test → main`: `test` es el origen de TEST y
+  `main` el de PROD futuro.
+- `[CONFIRMADO]` La entrega de TEST es un paquete único sin cifrar generado por GitHub
+  Actions como ZIP con `image.oci.tar`, `image.seed.oci.tar`, `frontend/`, `manifest.json`,
+  `manifest.sha256` y `SHA256SUMS`; se selecciona por ID/digest inmutable, nunca por etiqueta móvil. El
+  paquete no contiene secretos ni datos reales.
 - `[CONFIRMADO]` El host TEST y sus puertos están en
   [`specs/02-infra-test-01-host-specification.md`](../specs/02-infra-test-01-host-specification.md),
   integrada por el PR #9 (`901204c`). La spec conserva estado DRAFT/pendiente de aprobación;
@@ -63,11 +69,14 @@ real.
 | `version` | SemVer completo, idéntico al tag y al contrato de despliegue. `[PENDIENTE]` El manifiesto actual de `release.py` no declara versión de aplicación; D2/D3 fijan el campo o su derivación |
 | `tag` | `deploy-test-v<semver>` o `deploy-prod-v<semver>`; tag inmutable |
 | `release_sha` | SHA de 40 caracteres del commit construido; ancestro del origen autorizado |
-| `release_manifest_sha256` | SHA-256 del manifiesto de release verificado |
+| `release_ref` | `myfinanzas-app/test` para TEST; `myfinanzas-app/main` para PROD |
+| `manifest_sha256` | SHA-256 del manifiesto de release verificado |
+| `package_format` / `package_sha256` | Formato del paquete único y hash del fichero recibido |
 | `image_id` / digest OCI | ID inmutable; nunca una etiqueta mutable |
+| `seed_image` | ID inmutable de la imagen seed TEST |
 | `frontend_sha256` / `frontend_files` | `[PENDIENTE]` El manifiesto actual publica un mapa `frontend_files` ruta→SHA-256, no un único checksum; D2/D3 o una decisión específica del manifiesto fijan el checksum determinista del conjunto o el campo equivalente |
 | `schema_version` / `schema_contract` | Contrato declarado por el código de ese SHA |
-| `seed_manifest_sha256` | Solo TEST; manifiesto del dataset ficticio. `[PENDIENTE]` D11 debe reconciliar el seed con el SHA y el esquema |
+| `seed_manifest_sha256` | Solo TEST; hash del `seed-manifest.json` generado tras `seed apply` |
 | `qa_reference` | Referencia a la QA independiente del SHA, sin secretos |
 | `ci_run_id` / `rootless_run_id` | Ejecuciones asociadas al SHA exacto y su resultado |
 | `approval_reference` | Solo PROD; Environment `production`, ejecución, revisor, SHA y versión que autoriza la activación |
@@ -103,8 +112,8 @@ Antes de modificar el VPS, el host comprueba y registra:
 1. **Entorno y tag.** El tag y el entorno coinciden; no hay otro despliegue activo en ese
    entorno. Un tag de TEST no puede activar PROD.
 2. **Origen.** El SHA es de 40 caracteres, el commit es ancestro del origen autorizado
-   (`main` hoy; la política futura se define en §8) y el tag no apunta a una rama corta,
-   un merge ref ni un commit ajeno.
+   (`test` para TEST, `main` para PROD) y el tag no apunta a una rama corta, un merge ref ni
+   un commit ajeno.
 3. **Evidencia de la aplicación.** CI requerida y gate Rootless constan `SUCCESS` para el
    SHA exacto. La referencia de QA está presente y es revisable; el host no la sustituye.
 4. **Artefacto.** El paquete existe, su manifiesto y checksums verifican, el commit esperado
@@ -211,14 +220,10 @@ Excel sin una autorización específica y la validación financiera correspondie
 
 ## 8. Estrategia de ramas y origen de tags
 
-`[CONFIRMADO]` Se mantiene `feature/* → main`. Los tags apuntan a commits concretos de
-`main`; no se crea una rama `test` en esta entrega.
-
-`[PROPUESTA]` Si en el futuro se adopta `feature/* → test → main`, solo cambiará la política
-de origen de los tags: TEST podrá consumir commits del origen de integración y PROD deberá
-consumir commits promovidos a `main`. La convención, la inmutabilidad y los controles de
-artefacto no cambian. Cualquier adopción exige actualizar este documento y la política de
-tags; no se infiere de una propuesta abierta.
+`[CONFIRMADO]` El flujo es `feature/* → test → main`. Los tags `deploy-test-v*` apuntan a
+commits concretos de `test`; los `deploy-prod-v*`, a commits promovidos a `main`. La
+convención, la inmutabilidad y los controles de artefacto no cambian. El tag no sustituye la
+aprobación de merge ni la autorización de despliegue.
 
 ## 9. Decisiones pendientes antes de implementar
 
@@ -228,15 +233,15 @@ Se usa la nomenclatura **DEP1–DEP10** (*deployment*) para no colisionar con la
 | ID | Decisión | Recomendación | Bloquea |
 | --- | --- | --- | --- |
 | DEP1 | ¿Usuarios/UID separados por entorno o una identidad con unidades aisladas? | Separar identidad si la auditoría y la operación lo permiten; no asumirlo | Fase 2 |
-| DEP2 | Transporte y almacenamiento privado de la release | Almacén privado direccionado por digest, con manifiesto y retención acordada; sin reconstruir en PROD | Fase 1 |
+| DEP2 | Transporte y recepción del paquete único | Paquete sin cifrar de GitHub Actions, con SHA-256 y manifiesto; recepción documentada; sin reconstruir en PROD | Fase 1 |
 | DEP3 | Mecanismo de activación (unidad nueva, drop-in o enlace atómico) | Elegir tras auditar Quadlet y demostrar reversibilidad | Fase 2 |
 | DEP4 | Principal y vía de ejecución (runner dedicado, SSH restringido u otro) | Mínimos privilegios, sin root, sin comandos arbitrarios; revisar el modelo de amenaza | Fase 2 |
 | DEP5 | ¿TEST automático o manual al habilitar? | Automático solo tras los gates, con interruptor explícito y estado inicial desactivado | Fase 4 |
 | DEP6 | Revisores de PROD y separación de funciones | Required reviewers; el autor del tag no aprueba su propia ejecución | Fase 5 |
 | DEP7 | Destino externo, retención, RPO/RTO y custodia | Política única aprobada; simulacro de restauración antes de PROD | Fases 4–5 |
-| DEP8 | Cambios de Caddy/DNS para TEST | Aplicar el contrato de la spec 02 del host TEST (en `main`) solo con autorización; no tocar el sitio raíz | Fase 4 |
+| DEP8 | Cambios de Caddy/DNS para TEST | Aplicar el contrato de la spec 02 del host TEST solo con autorización; no tocar el sitio raíz | Fase 4 |
 | DEP9 | Rollback automático o manual | Manual y con evidencia; sin restauración automática silenciosa | Fases 4–5 |
-| DEP10 | Adopción futura de `test` como rama de integración | Solo si se decide; actualizar únicamente la política de origen de tags | Futuro |
+| DEP10 | Origen de tags TEST | `myfinanzas-app/test`; PROD futuro desde `main` | Fase 1 |
 
 ## 10. Fases propuestas
 
@@ -248,7 +253,7 @@ Se usa la nomenclatura **DEP1–DEP10** (*deployment*) para no colisionar con la
 | 3 | Dry-run del contrato con artefactos de ensayo y sin datos reales | Checks negativos y positivos; VPS intacto | Separada |
 | 4 | Habilitar TEST y ejecutar el primer tag de TEST | Smoke, copia y evidencia; PROD intacto | Separada |
 | 5 | Habilitar PROD tras backup/restore, aceptación y revisores | Primer despliegue aprobado y verificado | Separada |
-| 6 | Revisar la política de ramas si se adopta `test` | Solo cambia el origen de tags | Separada |
+| 6 | Revisar tags TEST con origen `test` | Solo cambia el origen de tags | Separada |
 
 Ninguna fase se deduce de otra. Un merge documental no habilita la siguiente.
 

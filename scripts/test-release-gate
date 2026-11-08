@@ -114,6 +114,55 @@ class Fixture:
                 archive, f"blobs/sha256/{oci_manifest_digest}", oci_manifest_bytes
             )
 
+        self.seed_layer = b"fixture-seed-layer"
+        self.seed_layer_digest = sha256(self.seed_layer)
+        seed_oci_manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": f"sha256:{self.oci_config_digest}",
+                "size": len(self.oci_config),
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                    "digest": f"sha256:{self.seed_layer_digest}",
+                    "size": len(self.seed_layer),
+                }
+            ],
+        }
+        seed_manifest_bytes = json.dumps(seed_oci_manifest, sort_keys=True).encode()
+        seed_manifest_digest = sha256(seed_manifest_bytes)
+        seed_index = json.dumps(
+            {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [
+                    {
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "digest": f"sha256:{seed_manifest_digest}",
+                        "size": len(seed_manifest_bytes),
+                    }
+                ],
+            },
+            sort_keys=True,
+        ).encode()
+        seed_oci_path = self.release / "image.seed.oci.tar"
+        with tarfile.open(seed_oci_path, "w") as archive:
+            add_bytes(archive, "oci-layout", b'{"imageLayoutVersion":"1.0.0"}')
+            add_bytes(archive, "index.json", seed_index)
+            add_bytes(
+                archive, f"blobs/sha256/{self.oci_config_digest}", self.oci_config
+            )
+            add_bytes(
+                archive, f"blobs/sha256/{self.seed_layer_digest}", self.seed_layer
+            )
+            add_bytes(
+                archive, f"blobs/sha256/{seed_manifest_digest}", seed_manifest_bytes
+            )
+
+        self.seed_image = "sha256:" + "9" * 64
         self.manifest = {
             "format": 1,
             "inputs": {
@@ -123,31 +172,55 @@ class Fixture:
                     "data": "e4.9-v25",
                     "authentication": "argon2id-aesgcm-totp-session-v1",
                 },
+                "lock_sha256": "a" * 64,
             },
             "oci_manifest_digest": f"sha256:{oci_manifest_digest}",
             "oci_archive_sha256": sha256_file(oci_path),
             "frontend_files": frontend,
+            "seed": {
+                "image": self.seed_image,
+                "source": self.release_sha,
+                "contracts": {
+                    "schema": 25,
+                    "data": "e4.9-v25",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+                "lock_sha256": "a" * 64,
+                "oci_manifest_digest": f"sha256:{seed_manifest_digest}",
+                "oci_archive_sha256": sha256_file(seed_oci_path),
+                "rootfs_payload_sha256": "4" * 64,
+                "recipe_sha256": "5" * 64,
+            },
         }
         self.write_manifest()
         write_json(
             self.seed,
             {
                 "format": 1,
-                "dataset": "FT-1",
-                "commit": self.release_sha,
-                "schema": 25,
-                "origin": "test",
+                "dataset": {"id": "FT-1", "version": 1},
+                "source": {
+                    "commit": self.release_sha,
+                    "schema": 25,
+                    "seed_image": self.seed_image,
+                },
+                "environment": {"name": "test"},
             },
         )
 
+        self.package_path = self.work / "myfinanzas-test-artifact.zip"
+        self.package_path.write_bytes(b"fixture zip artifact\n")
         self.request = {
             "request_version": 1,
             "environment": "test",
             "version": self.version,
             "tag": f"deploy-test-v{self.version}",
+            "release_ref": "myfinanzas-app/test",
             "release_sha": self.release_sha,
+            "package_format": "myfinanzas-test-artifact-zip.v1",
+            "package_sha256": sha256_file(self.package_path),
             "manifest_sha256": self.manifest_sha,
             "artifact_ref": self.manifest["oci_manifest_digest"],
+            "seed_image": self.seed_image,
             "actor": "release-bot",
             "seed_manifest_sha256": sha256_file(self.seed),
             "evidence": {
@@ -165,7 +238,11 @@ class Fixture:
             "ci": {"status": "success", "sha": self.release_sha},
             "rootless": {"status": "success", "sha": self.release_sha},
             "qa": {"status": "success", "sha": self.release_sha},
-            "ancestry": {"origin": "main", "ancestor": True, "sha": self.release_sha},
+            "ancestry": {
+                "origin": "myfinanzas-app/test",
+                "ancestor": True,
+                "sha": self.release_sha,
+            },
         }
         self.write_request()
         self.write_state()
@@ -235,6 +312,17 @@ class Fixture:
         (self.release / "manifest.sha256").write_text(
             self.manifest_sha + "\n", encoding="utf-8"
         )
+        self.write_sums()
+
+    def write_sums(self) -> None:
+        lines = []
+        for path in sorted(self.release.rglob("*")):
+            if path.is_file() and path.name != "SHA256SUMS":
+                relative = path.relative_to(self.release).as_posix()
+                lines.append(f"{sha256_file(path)}  ./{relative}")
+        (self.release / "SHA256SUMS").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
 
     def write_request(self, request=None) -> None:
         write_json(self.request_path, self.request if request is None else request)
@@ -283,6 +371,34 @@ class Fixture:
             command.extend(["--evidence", str(self.evidence_path)])
         if seed and request.get("seed_manifest_sha256"):
             command.extend(["--seed-manifest", str(self.seed)])
+        if self.package_path.is_file():
+            command.extend(["--package", str(self.package_path)])
+        if output:
+            command.extend(["--output", str(self.output_path)])
+        completed = subprocess.run(
+            command, capture_output=True, text=True, check=False
+        )
+        payload = None
+        if output and self.output_path.is_file():
+            payload = json.loads(self.output_path.read_text(encoding="utf-8"))
+        elif completed.stdout.strip():
+            payload = json.loads(completed.stdout)
+        return completed, payload
+
+    def run_verify_seed(self, request=None, output=True):
+        request = copy.deepcopy(self.request if request is None else request)
+        self.write_request(request)
+        command = [
+            sys.executable,
+            str(GATE),
+            "verify-seed",
+            "--request",
+            str(self.request_path),
+            "--release-dir",
+            str(self.release),
+            "--seed-manifest",
+            str(self.seed),
+        ]
         if output:
             command.extend(["--output", str(self.output_path)])
         completed = subprocess.run(
@@ -301,6 +417,8 @@ class Fixture:
             {
                 "environment": "prod",
                 "tag": f"deploy-prod-v{self.version}",
+                "release_ref": "myfinanzas-app/main",
+                "seed_image": None,
                 "seed_manifest_sha256": None,
                 "approval": {
                     "environment": "production",
@@ -315,6 +433,7 @@ class Fixture:
 
     def prod_evidence(self, request: dict) -> dict:
         evidence = copy.deepcopy(self.evidence)
+        evidence["ancestry"]["origin"] = "myfinanzas-app/main"
         evidence["approval"] = {
             "verified": True,
             "sha": request["release_sha"],
@@ -343,11 +462,37 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIsNone(payload["activated_release"])
         self.assertIn("manifest.sha256", payload["verification"]["local"])
         self.assertIn("oci.archive", payload["verification"]["local"])
+        self.assertIn("seed.oci", payload["verification"]["local"])
+        self.assertIn("release.sha256sums", payload["verification"]["local"])
         self.assertIn("frontend.files", payload["verification"]["local"])
         self.assertIn("seed.manifest", payload["verification"]["local"])
+        self.assertIn("package.sha256", payload["verification"]["local"])
         self.assertIn("evidence.ci", payload["verification"]["simulated"])
         self.assertIn("evidence.ancestry", payload["verification"]["simulated"])
         self.assertIn("github_ci", payload["verification"]["real_world_not_verified"])
+
+    def test_preflight_without_seed_manifest(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = None
+        completed, payload = self.fx.run(request=request, seed=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(payload["result"], "success")
+        self.assertNotIn("seed.manifest", payload["verification"]["local"])
+        self.assertIn("seed.manifest", payload["verification"]["skipped"])
+
+    def test_verify_seed_after_apply(self) -> None:
+        completed, payload = self.fx.run_verify_seed()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["mode"], "verify_seed")
+        self.assertIn("seed.manifest", payload["verification"]["local"])
+
+    def test_verify_seed_requires_hash(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["seed_manifest_sha256"] = None
+        completed, payload = self.fx.run_verify_seed(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_HASH_REQUIRED")
 
     def test_valid_prod_dry_run(self) -> None:
         request = self.fx.prod_request()
@@ -388,6 +533,54 @@ class ReleaseGateTests(unittest.TestCase):
         completed, payload = self.fx.run(request=request)
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "RELEASE_SHA_FORMAT")
+
+    def test_release_ref_mismatch(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["release_ref"] = "myfinanzas-app/main"
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "RELEASE_REF_MISMATCH")
+
+    def test_package_format_invalid(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["package_format"] = "other-package"
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "PACKAGE_FORMAT_INVALID")
+
+    def test_package_hash_mismatch(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["package_sha256"] = "0" * 64
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "PACKAGE_HASH_MISMATCH")
+
+    def test_seed_image_required(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["seed_image"] = None
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_IMAGE_REQUIRED")
+
+    def test_seed_image_mismatch(self) -> None:
+        request = copy.deepcopy(self.fx.request)
+        request["seed_image"] = "sha256:" + "8" * 64
+        completed, payload = self.fx.run(request=request)
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SEED_IMAGE_MISMATCH")
+
+    def test_seed_archive_tampered(self) -> None:
+        with (self.fx.release / "image.seed.oci.tar").open("ab") as handle:
+            handle.write(b"tamper")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "OCI_ARCHIVE_HASH_MISMATCH")
+
+    def test_seed_archive_missing(self) -> None:
+        (self.fx.release / "image.seed.oci.tar").unlink()
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "OCI_ARCHIVE_NOT_FOUND")
 
     def test_manifest_hash_mismatch(self) -> None:
         request = copy.deepcopy(self.fx.request)
@@ -479,6 +672,24 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertBlocked(payload, "SEED_SCHEMA_UNVERIFIED")
         self.assertNotIn("seed.manifest", payload["verification"]["local"])
 
+    def test_sha256sums_missing(self) -> None:
+        (self.fx.release / "SHA256SUMS").unlink()
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SHA256SUMS_MISSING")
+
+    def test_sha256sums_mismatch(self) -> None:
+        sums = self.fx.release / "SHA256SUMS"
+        lines = [
+            line
+            for line in sums.read_text(encoding="utf-8").splitlines()
+            if "frontend/assets/app.js" not in line
+        ]
+        sums.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        completed, payload = self.fx.run()
+        self.assertEqual(completed.returncode, 2)
+        self.assertBlocked(payload, "SHA256SUMS_MISMATCH")
+
     def test_release_extra_symlink(self) -> None:
         try:
             (self.fx.release / "extra-link").symlink_to("manifest.json")
@@ -501,12 +712,10 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertBlocked(payload, "OCI_ARCHIVE_HASH_MISMATCH")
 
-    def test_seed_required(self) -> None:
-        request = copy.deepcopy(self.fx.request)
-        request["seed_manifest_sha256"] = None
-        completed, payload = self.fx.run(request=request, seed=False)
+    def test_seed_file_required_when_hash_declared(self) -> None:
+        completed, payload = self.fx.run(seed=False)
         self.assertEqual(completed.returncode, 2)
-        self.assertBlocked(payload, "SEED_REQUIRED")
+        self.assertBlocked(payload, "SEED_FILE_REQUIRED")
 
     def test_seed_hash_mismatch(self) -> None:
         request = copy.deepcopy(self.fx.request)
@@ -517,7 +726,7 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_seed_schema_mismatch(self) -> None:
         seed = json.loads(self.fx.seed.read_text(encoding="utf-8"))
-        seed["schema"] = 26
+        seed["source"]["schema"] = 26
         write_json(self.fx.seed, seed)
         request = copy.deepcopy(self.fx.request)
         request["seed_manifest_sha256"] = sha256_file(self.fx.seed)
@@ -527,7 +736,7 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_seed_schema_missing(self) -> None:
         seed = json.loads(self.fx.seed.read_text(encoding="utf-8"))
-        seed.pop("schema")
+        seed["source"].pop("schema")
         write_json(self.fx.seed, seed)
         request = copy.deepcopy(self.fx.request)
         request["seed_manifest_sha256"] = sha256_file(self.fx.seed)
@@ -727,6 +936,8 @@ class ReleaseGateTests(unittest.TestCase):
                 str(self.fx.request_path),
                 "--release-dir",
                 str(self.fx.release),
+                "--package",
+                str(self.fx.package_path),
                 "--state",
                 str(self.fx.state_path),
                 "--evidence",

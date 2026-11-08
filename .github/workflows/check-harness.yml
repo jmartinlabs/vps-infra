@@ -28,6 +28,8 @@ jobs:
       - run: ./scripts/test-release-gate
       - run: python3 -m py_compile scripts/test-auto-update
       - run: ./scripts/test-test-auto-update
+      - run: python3 -m py_compile scripts/deploy-test-release
+      - run: ./scripts/test-deploy-test-release
       - run: ./scripts/test-datasette-admin
       - run: bash -n scripts/phase2a-host-test.sh
       - run: bash -n scripts/phase2a-postcheck-test.sh

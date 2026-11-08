@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Local simulation for scripts/deploy-test-release (no network, no host)."""
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import os
+import runpy
+import subprocess
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+module = runpy.run_path(str(ROOT / "scripts" / "deploy-test-release"))
+Config = module["Config"]
+DeployError = module["DeployError"]
+Deployer = module["Deployer"]
+actor_from_environment = module["actor_from_environment"]
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    path.chmod(0o600)
+
+
+def tar_bytes(members) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, data in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def bundle(source: str, app_id: str, frontend: dict, schema: int = 27,
+           data_contract: str = "e4.11-v27", tamper=None) -> bytes:
+    contracts = {
+        "schema": schema,
+        "data": data_contract,
+        "authentication": "argon2id-aesgcm-totp-session-v1",
+    }
+    digest = "sha256:" + "a" * 64
+    oci = tar_bytes([
+        ("index.json", json.dumps({"schemaVersion": 2, "manifests": [
+            {"digest": digest, "mediaType": "application/vnd.oci.image.manifest.v1+json"}]}).encode()),
+        ("oci-layout", b'{"imageLayoutVersion":"1.0.0"}'),
+    ])
+    manifest = {
+        "format": 1,
+        "inputs": {"source": source, "contracts": contracts},
+        "image": app_id,
+        "oci_manifest_digest": digest,
+        "oci_archive_sha256": sha256(oci),
+        "seed": {
+            "image": "sha256:" + "b" * 64,
+            "source": source,
+            "contracts": contracts,
+            "oci_manifest_digest": "sha256:" + "c" * 64,
+        },
+        "frontend_files": {name: sha256(body) for name, body in frontend.items()},
+    }
+    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+    manifest_sha = sha256(manifest_bytes)
+    files = [
+        ("manifest.json", manifest_bytes),
+        ("manifest.sha256", (manifest_sha + "\n").encode()),
+        ("image.oci.tar", oci),
+    ] + [("frontend/" + name, body) for name, body in sorted(frontend.items())]
+    sums = "".join(f"{sha256(body)}  ./{name}\n" for name, body in files).encode()
+    if tamper:
+        files = [(name, tamper.get(name, body)) for name, body in files]
+    files.append(("SHA256SUMS", sums))
+    return tar_bytes(files)
+
+
+INDEX = b'<script src="/theme-boot.js"></script><link rel="stylesheet" href="/themes.css">\n'
+THEMES = {
+    "index.html": INDEX,
+    "theme-boot.js": b"document.documentElement.dataset.theme='dark-s';\n",
+    "themes.css": b":root{--bg:#141414}\n",
+}
+
+
+class FakeRunner:
+    def __init__(self, source: str, app_id: str):
+        self.source = source
+        self.app_id = app_id
+        self.attempts = 0
+        self.fail_first = False
+
+    def run(self, args, check=True, timeout=None):
+        command = " ".join(args)
+        code, out, err = 0, "", ""
+        if command.startswith("podman load "):
+            pass
+        elif command.startswith("podman image inspect --format {{.Id}}"):
+            out = self.app_id + "\n"
+        elif "org.opencontainers.image.revision" in command:
+            out = self.source + "\n"
+        elif command == "systemctl --user daemon-reload":
+            pass
+        elif command.startswith("systemctl --user restart "):
+            self.attempts += 1
+            if self.fail_first and self.attempts == 1:
+                code, err = 1, "restart failed"
+        elif command.startswith("systemctl --user stop "):
+            pass
+        elif command.startswith("curl "):
+            if self.attempts == 1 and self.fail_first:
+                code, err = 1, "health failed"
+            elif "127.0.0.1:18082/api/health" in command:
+                out = '{"ok":true}\n'
+            elif "127.0.0.1:18082/api/saldos" in command:
+                out = "401"
+            else:
+                code, err = 1, "unexpected curl"
+        else:
+            code, err = 1, f"unexpected command: {command}"
+        result = subprocess.CompletedProcess(args, code, out, err)
+        if check and code:
+            raise DeployError(f"command failed ({code}): {command}\n{err}")
+        return result
+
+
+class DeployTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.data = self.root / "data"
+        self.web = self.root / "web"
+        self.unit_dir = self.root / "units"
+        self.state_file = self.root / "current-release.json"
+        self.last_deploy = self.root / "last-deploy.json"
+        self.lock_file = self.root / "update.lock"
+        for path in (self.data / "state", self.web / "releases", self.unit_dir):
+            path.mkdir(parents=True, exist_ok=True)
+        (self.web / "releases").chmod(0o2750)
+        write_json(self.data / "test-instance.json", {
+            "schema_version": 27, "environment": "test",
+            "public_origin": "https://test.myfinanzas.pp.ua"})
+        write_json(self.data / "seed-manifest.json",
+                   {"source": {"schema": 27, "data_contract": "e4.11-v27"}})
+        (self.data / "state" / "database.sqlite").write_text("fixture")
+        (self.data / "state" / "auth.key").write_text("fixture")
+        self.config = Config(
+            data_root=self.data, web_root=self.web, unit_dir=self.unit_dir,
+            state_file=self.state_file, last_deploy_file=self.last_deploy,
+            lock_file=self.lock_file,
+            health_url="http://127.0.0.1:18082/api/health",
+            protected_url="http://127.0.0.1:18082/api/saldos",
+            timeout_seconds=5,
+        )
+        self.source = "d" * 40
+        self.app_id = "sha256:" + "f" * 64
+        self.runner = FakeRunner(self.source, self.app_id)
+        ticks = iter(range(1000))
+        self.deployer = Deployer(self.config, runner=self.runner,
+                                 sleep=lambda _: None, clock=lambda: next(ticks))
+
+    def deploy(self, payload: bytes, actor="octocat"):
+        return self.deployer.deploy(io.BytesIO(payload), actor)
+
+    def test_deploy_writes_unit_frontend_and_state(self):
+        self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
+        unit = (self.unit_dir / "myfinanzas-test-api.container").read_text()
+        self.assertIn("Image=" + self.app_id, unit)
+        current = self.web / "current"
+        self.assertTrue((current / "themes.css").is_file())
+        self.assertTrue((current / "theme-boot.js").is_file())
+        state = json.loads(self.state_file.read_text())
+        self.assertEqual(state["source"], self.source)
+        self.assertEqual(state["actor"], "octocat")
+        self.assertEqual(json.loads(self.last_deploy.read_text())["result"], "ok")
+
+    def test_missing_index_asset_is_rejected_before_changes(self):
+        bad = {"index.html": INDEX, "assets/app.js": b"console.log(1)\n"}
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(bundle(self.source, self.app_id, bad))
+        self.assertIn("themes.css", str(caught.exception))
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+        self.assertFalse((self.web / "current").exists())
+        self.assertEqual(json.loads(self.last_deploy.read_text())["result"], "rejected")
+
+    def test_contract_change_is_rejected(self):
+        with self.assertRaises(DeployError):
+            self.deploy(bundle(self.source, self.app_id, THEMES, schema=28,
+                               data_contract="e4.12-v28"))
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_failed_smoke_rolls_back(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+        self.runner.fail_first = True
+        with self.assertRaises(DeployError):
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+
+    def test_same_source_is_a_noop(self):
+        payload = bundle(self.source, self.app_id, THEMES)
+        self.assertEqual(self.deploy(payload), 0)
+        self.assertEqual(self.deploy(payload), 0)
+        self.assertEqual(json.loads(self.last_deploy.read_text())["result"], "noop")
+
+    def test_bundle_path_escape_is_rejected(self):
+        payload = tar_bytes([
+            ("manifest.json", b"{}"),
+            ("../escape", b"x"),
+        ])
+        with self.assertRaises(DeployError):
+            self.deploy(payload)
+        self.assertFalse((self.root / "escape").exists())
+
+    def test_checksum_mismatch_is_rejected(self):
+        # Same manifest and SHA256SUMS, different bytes on the wire.
+        payload = bundle(self.source, self.app_id, THEMES,
+                         tamper={"frontend/themes.css": b":root{--bg:#000}\n"})
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(payload)
+        self.assertIn("SHA256SUMS", str(caught.exception))
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_actor_comes_from_ssh_command(self):
+        self.assertEqual(actor_from_environment("deploy:octocat"), "octocat")
+        self.assertEqual(actor_from_environment("rm -rf /"), "unknown")
+        self.assertEqual(actor_from_environment(None), "unknown")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -26,7 +26,7 @@ Evidencia Fase 2B: [02B — rutas y permisos](../docs/evidencia-infra-test-02b.m
 Paquete de despliegue: [MyFinanzas TEST](../docs/paquete-despliegue-myfinanzas-test-01.md).
 Preparación DNS/Caddy: [fase 3/4 documental](../docs/preparacion-dns-caddy-test-01.md).
 Recepción y despliegue: [paquete TEST](../docs/paquete-test-recepcion-01.md).
-Automatización: [actualización automática TEST](../docs/actualizacion-automatica-test-01.md).
+Automatización: [despliegue directo TEST desde CI](../docs/despliegue-directo-test-01.md).
 
 
 Las marcas `[CONFIRMADO]`, `[INFORMADO]`, `[PROPUESTA]` y `[PENDIENTE]` distinguen hechos

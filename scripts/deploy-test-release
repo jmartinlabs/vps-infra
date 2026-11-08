@@ -1,0 +1,620 @@
+#!/usr/bin/env python3
+"""Deploy a MyFinanzas TEST release received over stdin.
+
+Runs as mftest from a forced SSH command started by GitHub Actions. It never
+creates state, never runs the seed, never pulls images and never touches PROD.
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+SUMS = re.compile(r"^([0-9a-f]{64}) [ *]\./(.+)$")
+REFERENCE = re.compile(r"""(?:src|href)\s*=\s*["'](/[^"']+)["']""", re.I)
+ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
+MAX_BUNDLE = 2 * 1024 * 1024 * 1024
+ALLOWED = {"manifest.json", "manifest.sha256", "SHA256SUMS", "image.oci.tar"}
+FORBIDDEN_FRONTEND = (".map", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".xlsx",
+                      ".env", ".pem", ".key", ".p12", ".pfx")
+
+
+class DeployError(Exception):
+    """Any failure safe to report without touching data."""
+
+
+class Rejected(DeployError):
+    """Bundle or contract rejected; nothing was applied."""
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=".tmp-", dir=path.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def missing_frontend_assets(html: str, files: dict) -> list:
+    referenced = set()
+    for match in REFERENCE.finditer(html):
+        path = match.group(1).split("?", 1)[0].split("#", 1)[0]
+        if path.startswith("//"):
+            continue
+        relative = path.lstrip("/")
+        if relative:
+            referenced.add(relative)
+    return sorted(referenced - set(files))
+
+
+class CommandRunner:
+    def run(self, args, check=True, timeout=300):
+        try:
+            result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise DeployError(f"command timed out: {' '.join(args)}") from exc
+        if check and result.returncode != 0:
+            raise DeployError(
+                f"command failed ({result.returncode}): {' '.join(args)}\n"
+                f"{result.stderr.strip()}"
+            )
+        return result
+
+
+UNIT_TEMPLATE = """[Unit]
+Description=MyFinanzas TEST rootless API
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Container]
+Image={image}
+Pull=never
+ContainerName=myfinanzas-test-api
+UserNS=keep-id:uid=10001,gid=10001
+User=10001
+Group=10001
+PublishPort=127.0.0.1:18082:3001
+Volume=/srv/myfinanzas-test/data:/var/lib/myfinanzas:rw
+Environment=NODE_ENV=production
+Environment=APP_ORIGIN=https://test.myfinanzas.pp.ua
+Environment=DATABASE_PATH=/var/lib/myfinanzas/state/database.sqlite
+Environment=AUTH_KEY_PATH=/var/lib/myfinanzas/state/auth.key
+Environment=API_BIND_HOST=0.0.0.0
+NoNewPrivileges=true
+ReadOnly=true
+DropCapability=all
+Tmpfs=/tmp:rw,noexec,nosuid,nodev,tmpcopyup,mode=0711,size=64m
+HealthCmd=/usr/local/bin/bun /app/healthcheck.mjs
+HealthInterval=30s
+HealthTimeout=3s
+HealthRetries=3
+HealthStartPeriod=30s
+PodmanArgs=--http-proxy=false --read-only-tmpfs=false --memory=1g --cpus=1 --pids-limit=128 --health-on-failure=kill
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
+"""
+
+
+@dataclass(frozen=True)
+class Config:
+    data_root: Path = Path("/srv/myfinanzas-test/data")
+    web_root: Path = Path("/var/www/myfinanzas-test")
+    unit_dir: Path = Path("/home/mftest/.config/containers/systemd")
+    state_file: Path = Path("/srv/myfinanzas-test/current-release.json")
+    last_deploy_file: Path = Path("/srv/myfinanzas-test/last-deploy.json")
+    lock_file: Path = Path("/srv/myfinanzas-test/update.lock")
+    unit_name: str = "myfinanzas-test-api"
+    health_url: str = "http://127.0.0.1:18082/api/health"
+    protected_url: str = "http://127.0.0.1:18082/api/saldos"
+    timeout_seconds: int = 90
+
+
+class Deployer:
+    def __init__(self, config: Config, runner=None, sleep=time.sleep, clock=time.time):
+        self.config = config
+        self.runner = runner or CommandRunner()
+        self.sleep = sleep
+        self.clock = clock
+
+    def log(self, message: str) -> None:
+        print(f"myfinanzas-test-deploy: {message}", flush=True)
+
+    def podman(self, *args, check=True, timeout=600):
+        return self.runner.run(["podman", *args], check=check, timeout=timeout)
+
+    def systemctl(self, *args, check=True, timeout=60):
+        return self.runner.run(["systemctl", "--user", *args], check=check, timeout=timeout)
+
+    def curl(self, *args, check=True, timeout=10):
+        return self.runner.run(["curl", *args], check=check, timeout=timeout)
+
+    def lock(self):
+        class Lock:
+            def __enter__(inner):
+                self.config.lock_file.parent.mkdir(parents=True, exist_ok=True)
+                inner.handle = self.config.lock_file.open("a+")
+                try:
+                    fcntl.flock(inner.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    inner.handle.close()
+                    raise DeployError("another deployment is already running") from exc
+                return inner.handle
+
+            def __exit__(inner, *_):
+                fcntl.flock(inner.handle, fcntl.LOCK_UN)
+                inner.handle.close()
+
+        return Lock()
+
+    def state_ready(self) -> bool:
+        data = self.config.data_root
+        return all(path.is_file() for path in (
+            data / "test-instance.json",
+            data / "seed-manifest.json",
+            data / "state" / "database.sqlite",
+            data / "state" / "auth.key",
+        ))
+
+    def installed_contracts(self) -> dict:
+        marker = self.config.data_root / "test-instance.json"
+        seed = self.config.data_root / "seed-manifest.json"
+        try:
+            marker_value = json.loads(marker.read_text(encoding="utf-8"))
+            seed_value = json.loads(seed.read_text(encoding="utf-8"))
+            schema = marker_value.get("schema_version")
+            source = seed_value.get("source")
+        except (OSError, json.JSONDecodeError, AttributeError) as exc:
+            raise DeployError(f"cannot read installed TEST contracts: {exc}") from exc
+        if type(schema) is not int or schema <= 0:
+            raise DeployError("installed TEST marker has no valid schema_version")
+        if marker_value.get("environment") != "test":
+            raise DeployError("installed marker is not TEST")
+        if marker_value.get("public_origin") != "https://test.myfinanzas.pp.ua":
+            raise DeployError("installed marker has an unexpected public_origin")
+        if not isinstance(source, dict) or source.get("schema") != schema:
+            raise DeployError("installed marker/seed schema mismatch")
+        data = source.get("data_contract")
+        if not isinstance(data, str) or not data:
+            raise DeployError("installed seed manifest has no data_contract")
+        return {"schema": schema, "data": data}
+
+    def record(self, result: str, source: str | None, manifest_sha: str | None,
+               reason: str | None, actor: str) -> None:
+        payload = {
+            "format": 1,
+            "result": result,
+            "source": source,
+            "manifest_sha256": manifest_sha,
+            "reason": reason,
+            "actor": actor,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        atomic_write(self.config.last_deploy_file,
+                     json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+    def read_bundle(self, stream, target: Path) -> None:
+        archive = target / "bundle.tar"
+        size = 0
+        with archive.open("wb") as handle:
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_BUNDLE:
+                    raise Rejected("bundle exceeds the size limit")
+                handle.write(chunk)
+        if size == 0:
+            raise Rejected("empty bundle")
+        try:
+            with tarfile.open(archive) as bundle:
+                for member in bundle:
+                    name = member.name.removeprefix("./")
+                    if not name or name == ".":
+                        continue
+                    pure = PurePosixPath(name)
+                    if name.startswith("/") or ".." in pure.parts:
+                        raise Rejected(f"unsafe bundle path: {name}")
+                    if not member.isfile():
+                        raise Rejected(f"bundle member is not a file: {name}")
+                    if name not in ALLOWED and not name.startswith("frontend/"):
+                        raise Rejected(f"bundle member is not allowed: {name}")
+                    destination = (target / name).resolve()
+                    if not destination.is_relative_to(target.resolve()):
+                        raise Rejected(f"bundle path escapes: {name}")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with bundle.extractfile(member) as source, destination.open("wb") as handle:
+                        shutil.copyfileobj(source, handle)
+                    os.chmod(destination, 0o600)
+        except tarfile.TarError as exc:
+            raise Rejected(f"invalid bundle: {exc}") from exc
+        finally:
+            archive.unlink(missing_ok=True)
+
+    def verify(self, root: Path) -> dict:
+        for name in ALLOWED:
+            if not (root / name).is_file():
+                raise Rejected(f"bundle is missing {name}")
+        manifest_path = root / "manifest.json"
+        actual = sha256_file(manifest_path)
+        declared = (root / "manifest.sha256").read_text(encoding="utf-8").strip()
+        if actual != declared or not SHA256.fullmatch(declared):
+            raise Rejected("manifest.sha256 does not match manifest.json")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise Rejected(f"manifest.json is invalid: {exc}") from exc
+        source = manifest.get("inputs", {}).get("source")
+        if not isinstance(source, str) or not SHA40.fullmatch(source):
+            raise Rejected("manifest has no valid inputs.source")
+        contracts = manifest.get("inputs", {}).get("contracts")
+        if not isinstance(contracts, dict) or type(contracts.get("schema")) is not int:
+            raise Rejected("manifest has no valid schema contract")
+        if not isinstance(contracts.get("data"), str) or not contracts["data"]:
+            raise Rejected("manifest has no valid data contract")
+        if not isinstance(contracts.get("authentication"), str) or not contracts["authentication"]:
+            raise Rejected("manifest has no valid authentication contract")
+        seed = manifest.get("seed")
+        if not isinstance(seed, dict) or seed.get("source") != source or seed.get("contracts") != contracts:
+            raise Rejected("seed metadata does not match the application")
+        if not isinstance(manifest.get("image"), str) or not DIGEST.fullmatch(manifest["image"]):
+            raise Rejected("manifest has no valid app image")
+        if not isinstance(manifest.get("oci_manifest_digest"), str) or not DIGEST.fullmatch(
+            manifest["oci_manifest_digest"]
+        ):
+            raise Rejected("manifest has no valid app OCI digest")
+        if sha256_file(root / "image.oci.tar") != manifest.get("oci_archive_sha256"):
+            raise Rejected("image.oci.tar does not match the manifest")
+        try:
+            with tarfile.open(root / "image.oci.tar") as oci:
+                members = {m.name.removeprefix("./"): m for m in oci if m.isfile()}
+                index = json.loads(oci.extractfile(members["index.json"]).read())
+            if index["manifests"][0]["digest"] != manifest["oci_manifest_digest"]:
+                raise Rejected("OCI index digest does not match the manifest")
+        except (tarfile.TarError, KeyError, IndexError, json.JSONDecodeError) as exc:
+            raise Rejected(f"image.oci.tar is not a valid OCI archive: {exc}") from exc
+
+        declared_sums: dict[str, str] = {}
+        for line in (root / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+            if not line:
+                continue
+            match = SUMS.fullmatch(line)
+            if match is None:
+                raise Rejected(f"invalid SHA256SUMS line: {line}")
+            if match.group(2) in declared_sums:
+                raise Rejected(f"duplicate SHA256SUMS entry: {match.group(2)}")
+            declared_sums[match.group(2)] = match.group(1)
+        actual_files = {
+            path.relative_to(root).as_posix(): sha256_file(path)
+            for path in root.rglob("*")
+            if path.is_file() and path.name != "SHA256SUMS" and not path.is_symlink()
+        }
+        if declared_sums != actual_files:
+            raise Rejected("SHA256SUMS does not match the bundle files")
+
+        frontend = manifest.get("frontend_files")
+        if not isinstance(frontend, dict) or "index.html" not in frontend:
+            raise Rejected("manifest has no frontend index.html")
+        frontend_root = root / "frontend"
+        for path in frontend_root.rglob("*"):
+            if path.is_symlink():
+                raise Rejected(f"frontend contains a symlink: {path}")
+            if not path.is_file():
+                continue
+            relative = path.relative_to(frontend_root).as_posix()
+            lowered = relative.lower()
+            if any(part.startswith(".") or part in {"node_modules", ".git"}
+                   for part in PurePosixPath(lowered).parts):
+                raise Rejected(f"forbidden frontend path: {relative}")
+            if lowered.endswith(FORBIDDEN_FRONTEND):
+                raise Rejected(f"forbidden frontend file: {relative}")
+        actual_frontend = {
+            path.relative_to(frontend_root).as_posix(): sha256_file(path)
+            for path in frontend_root.rglob("*")
+            if path.is_file()
+        }
+        if actual_frontend != frontend:
+            raise Rejected("frontend file set does not match manifest")
+        index_html = (frontend_root / "index.html").read_text(encoding="utf-8", errors="replace")
+        missing = missing_frontend_assets(index_html, frontend)
+        if missing:
+            raise Rejected("frontend index.html references missing assets: " + ", ".join(missing))
+        return manifest
+
+    def load_app(self, manifest: dict) -> str:
+        self.podman("load", "--input", str(self._bundle_root / "image.oci.tar"))
+        image_id = self.podman("image", "inspect", "--format", "{{.Id}}", manifest["image"]).stdout.strip()
+        if image_id != manifest["image"]:
+            raise Rejected("loaded image ID does not match the manifest")
+        revision = self.podman(
+            "image", "inspect", "--format",
+            '{{index .Config.Labels "org.opencontainers.image.revision"}}',
+            manifest["image"],
+        ).stdout.strip()
+        if revision != manifest["inputs"]["source"]:
+            raise Rejected("image revision does not match the manifest source")
+        return image_id
+
+    def frontend_hashes(self, root: Path) -> dict:
+        if not root.is_dir():
+            return {}
+        return {
+            path.relative_to(root).as_posix(): sha256_file(path)
+            for path in root.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+
+    def current_frontend_target(self) -> str | None:
+        current = self.config.web_root / "current"
+        return os.readlink(current) if current.is_symlink() else None
+
+    def stage_frontend(self, manifest: dict, release_root: Path) -> Path:
+        releases = self.config.web_root / "releases"
+        if not self.config.web_root.is_dir() or not releases.is_dir():
+            raise DeployError("web root/releases missing; first activation required")
+        if not releases.stat().st_mode & 0o2000:
+            raise DeployError("releases directory must be setgid (2750) for caddy access")
+        target = releases / manifest["inputs"]["source"]
+        source_frontend = release_root / "frontend"
+        if target.exists():
+            if not target.is_dir():
+                raise DeployError(f"frontend release path is not a directory: {target}")
+            if self.frontend_hashes(target) != self.frontend_hashes(source_frontend):
+                raise Rejected(f"frontend release already exists with different content: {target}")
+        else:
+            temporary = releases / f".tmp-{os.getpid()}"
+            if temporary.exists():
+                raise DeployError(f"temporary frontend path already exists: {temporary}")
+            shutil.copytree(source_frontend, temporary)
+            for path in temporary.rglob("*"):
+                path.chmod(0o750 if path.is_dir() else 0o640)
+            temporary.chmod(0o2750)
+            temporary.rename(target)
+        current = self.config.web_root / "current"
+        link = self.config.web_root / f".current-{os.getpid()}"
+        try:
+            link.symlink_to(Path("releases") / target.name)
+            os.replace(link, current)
+        except BaseException:
+            link.unlink(missing_ok=True)
+            raise
+        return target
+
+    def restore_frontend(self, previous: str | None) -> None:
+        current = self.config.web_root / "current"
+        if previous is None:
+            current.unlink(missing_ok=True)
+            return
+        link = self.config.web_root / f".current-{os.getpid()}"
+        try:
+            link.symlink_to(previous)
+            os.replace(link, current)
+        except BaseException:
+            link.unlink(missing_ok=True)
+            raise
+
+    def write_unit(self, image_id: str) -> str | None:
+        unit = self.config.unit_dir / f"{self.config.unit_name}.container"
+        previous = unit.read_text(encoding="utf-8") if unit.is_file() else None
+        self.config.unit_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write(unit, UNIT_TEMPLATE.format(image=image_id))
+        return previous
+
+    def restore_unit(self, previous: str | None) -> None:
+        unit = self.config.unit_dir / f"{self.config.unit_name}.container"
+        if previous is None:
+            unit.unlink(missing_ok=True)
+        else:
+            atomic_write(unit, previous)
+
+    def smoke(self) -> None:
+        deadline = self.clock() + self.config.timeout_seconds
+        last = ""
+        while self.clock() < deadline:
+            try:
+                health = self.curl("-fsS", "--max-time", "5", "--connect-timeout", "2",
+                                   self.config.health_url)
+                protected = self.curl("-s", "--max-time", "5", "--connect-timeout", "2",
+                                      "-o", "/dev/null", "-w", "%{http_code}",
+                                      self.config.protected_url)
+                frontend = self.config.web_root / "current" / "index.html"
+                if health.stdout.strip() == '{"ok":true}' and protected.stdout.strip() == "401" \
+                        and frontend.is_file():
+                    return
+                last = f"health={health.stdout.strip()} protected={protected.stdout.strip()}"
+            except DeployError as exc:
+                last = str(exc)
+            self.sleep(2)
+        raise DeployError(f"smoke did not pass: {last or 'timeout'}")
+
+    def restart_and_smoke(self) -> None:
+        self.systemctl("daemon-reload")
+        self.systemctl("restart", f"{self.config.unit_name}.service")
+        self.smoke()
+
+    def rollback(self, previous_unit: str | None, previous_frontend: str | None) -> None:
+        self.log("smoke failed; restoring previous release")
+        self.restore_unit(previous_unit)
+        self.restore_frontend(previous_frontend)
+        try:
+            self.restart_and_smoke()
+            self.log("rollback smoke passed; previous release active")
+        except DeployError as exc:
+            self.log(f"rollback failed; stopping unit: {exc}")
+            self.systemctl("stop", f"{self.config.unit_name}.service", check=False)
+            raise
+
+    def write_state(self, manifest: dict, app_id: str, actor: str) -> None:
+        payload = {
+            "format": 1,
+            "source": manifest["inputs"]["source"],
+            "manifest_sha256": sha256_file(self._bundle_root / "manifest.json"),
+            "app_image": app_id,
+            "schema": manifest["inputs"]["contracts"]["schema"],
+            "actor": actor,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        atomic_write(self.config.state_file,
+                     json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+    def deploy(self, stream, actor: str) -> int:
+        with self.lock():
+            if not self.state_ready():
+                raise Rejected("TEST state is not initialized; first activation required")
+            installed = self.installed_contracts()
+            source = None
+            manifest_sha = None
+            try:
+                with tempfile.TemporaryDirectory(prefix="mf-deploy-") as temporary:
+                    root = Path(temporary)
+                    self._bundle_root = root
+                    self.read_bundle(stream, root)
+                    manifest = self.verify(root)
+                    source = manifest["inputs"]["source"]
+                    manifest_sha = sha256_file(root / "manifest.json")
+                    contracts = manifest["inputs"]["contracts"]
+                    if contracts["schema"] != installed["schema"] or contracts["data"] != installed["data"]:
+                        raise Rejected(
+                            f"contract changed ({installed} -> {contracts}); manual migration required"
+                        )
+                    current = None
+                    if self.config.state_file.is_file():
+                        try:
+                            current = json.loads(self.config.state_file.read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError):
+                            current = None
+                    if isinstance(current, dict) and current.get("source") == source:
+                        self.record("noop", source, manifest_sha, None, actor)
+                        self.log(f"release {source} is already active")
+                        return 0
+                    app_id = self.load_app(manifest)
+                    previous_frontend = self.current_frontend_target()
+                    previous_unit = self.write_unit(app_id)
+                    try:
+                        self.stage_frontend(manifest, root)
+                        self.restart_and_smoke()
+                        self.write_state(manifest, app_id, actor)
+                    except BaseException:
+                        self.rollback(previous_unit, previous_frontend)
+                        raise
+                self.record("ok", source, manifest_sha, None, actor)
+                self.log(f"deployed {source} ({manifest_sha})")
+                return 0
+            except DeployError as exc:
+                try:
+                    self.record("rejected" if isinstance(exc, Rejected) else "failed",
+                                source, manifest_sha, str(exc), actor)
+                except OSError:
+                    self.log("warning: could not record the result")
+                raise
+
+
+def build_config(args) -> Config:
+    return Config(
+        data_root=Path(args.data_root),
+        web_root=Path(args.web_root),
+        unit_dir=Path(args.unit_dir),
+        state_file=Path(args.state_file),
+        last_deploy_file=Path(args.last_deploy_file),
+        lock_file=Path(args.lock_file),
+        unit_name=args.unit_name,
+        health_url=args.health_url,
+        protected_url=args.protected_url,
+        timeout_seconds=args.timeout,
+    )
+
+
+def actor_from_environment(value: str | None) -> str:
+    command = value or os.environ.get("SSH_ORIGINAL_COMMAND", "")
+    match = re.fullmatch(r"deploy:([A-Za-z0-9][A-Za-z0-9-]{0,38})", command.strip())
+    return match.group(1) if match else "unknown"
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stdin", action="store_true", help="read the bundle from stdin")
+    parser.add_argument("--bundle", help="read the bundle from a local file")
+    parser.add_argument("--actor", help="deployment actor recorded in the state")
+    parser.add_argument("--data-root", default=str(Config.data_root))
+    parser.add_argument("--web-root", default=str(Config.web_root))
+    parser.add_argument("--unit-dir", default=str(Config.unit_dir))
+    parser.add_argument("--state-file", default=str(Config.state_file))
+    parser.add_argument("--last-deploy-file", default=str(Config.last_deploy_file))
+    parser.add_argument("--lock-file", default=str(Config.lock_file))
+    parser.add_argument("--unit-name", default=Config.unit_name)
+    parser.add_argument("--health-url", default=Config.health_url)
+    parser.add_argument("--protected-url", default=Config.protected_url)
+    parser.add_argument("--timeout", type=int, default=Config.timeout_seconds)
+    args = parser.parse_args(argv)
+    actor = args.actor or actor_from_environment(None)
+    if not ACTOR.fullmatch(actor):
+        print("myfinanzas-test-deploy: invalid actor", file=sys.stderr)
+        return 2
+    if bool(args.stdin) == bool(args.bundle):
+        print("myfinanzas-test-deploy: use exactly one of --stdin or --bundle", file=sys.stderr)
+        return 2
+    if args.stdin:
+        stream = sys.stdin.buffer
+        context = None
+    else:
+        context = open(args.bundle, "rb")
+        stream = context
+    try:
+        with context if context else _nullcontext():
+            return Deployer(build_config(args)).deploy(stream, actor)
+    except DeployError as exc:
+        print(f"myfinanzas-test-deploy: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if context:
+            context.close()
+
+
+class _nullcontext:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *_):
+        return False
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

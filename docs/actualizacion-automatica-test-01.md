@@ -40,6 +40,8 @@ La primera activación no se automatiza. Requiere autorización específica y ej
    `caddy`; nunca se sirve desde `/srv/myfinanzas-test` `0700`.
 3. Instalar el updater y las unidades de usuario:
    ```bash
+   sudo install -d -m 0700 -o mftest -g mftest \
+     /home/mftest/bin /home/mftest/.config/systemd/user
    sudo install -m 0755 -o mftest -g mftest scripts/test-auto-update \
      /home/mftest/bin/myfinanzas-test-update
    sudo install -m 0644 -o mftest -g mftest \

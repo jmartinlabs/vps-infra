@@ -5,10 +5,12 @@
 > servicios, Caddy, DNS, UFW, Podman/Quadlet, copias, credenciales ni despliegues.
 > Cualquier fase de este contrato exige autorización propia e identificable.
 >
-> **Actualización 2026-11-08:** TEST usa `myfinanzas-app/test`; PROD futuro, `main`. La
-> entrega se simplifica a un paquete único sin cifrar generado por GitHub Actions, con
-> imágenes de aplicación y seed. La recepción y el gate actualizado se documentan en
-> [paquete TEST](paquete-test-recepcion-01.md).
+> **Actualización 2026-11-08 (decisión definitiva):** TEST usa `myfinanzas-app/test`; PROD
+> futuro, `main`. La creación de un tag `deploy-test-v*` o `deploy-prod-v*` **es la orden de
+> despliegue**: no hay GitHub Environments ni segunda aprobación. Los merges a `test` o
+> `main` no despliegan. Se mantienen protección e inmutabilidad de tags, actores
+> autorizados, validación estricta, CI/QA/Rootless, compatibilidad de contratos, copias y
+> smoke/rollback. TEST se implementa en `#31`; PROD queda diseñado y deshabilitado.
 
 Este documento define la parte de `vps-infra` del mecanismo de despliegue mediante tags de
 GitHub. La aplicación posee la convención de tags, la construcción y verificación de la
@@ -79,7 +81,6 @@ real.
 | `seed_manifest_sha256` | Solo TEST; hash del `seed-manifest.json` generado tras `seed apply` |
 | `qa_reference` | Referencia a la QA independiente del SHA, sin secretos |
 | `ci_run_id` / `rootless_run_id` | Ejecuciones asociadas al SHA exacto y su resultado |
-| `approval_reference` | Solo PROD; Environment `production`, ejecución, revisor, SHA y versión que autoriza la activación |
 | `backup_plan` / `rollback_pair` | Copia previa exigida y par exacto de vuelta atrás |
 | `smoke_profile` | Conjunto fijo de comprobaciones y valores esperados no secretos |
 
@@ -121,9 +122,11 @@ Antes de modificar el VPS, el host comprueba y registra:
 5. **Promoción PROD.** Para `prod`, la versión, el SHA y el digest coinciden exactamente con
    los que superaron TEST y su smoke; si falta la evidencia o el artefacto es distinto, se
    detiene. TEST no requiere este paso.
-6. **Aprobación PROD.** Para `prod`, existe una aprobación verificable del Environment
-   `production` (run, revisor, SHA y versión) antes de liberar credenciales o activar. TEST
-   no requiere esta aprobación; su habilitación es el interruptor de DEP5 (§9).
+6. **Autorización por tag.** El tag fue creado por un actor de la lista autorizada, es
+   anotado, inmutable y apunta al commit validado. La creación del tag es la orden de
+   despliegue; no se solicita aprobación adicional en GitHub. Para PROD, además, el SHA y el
+   digest deben coincidir con los que superaron TEST y el commit debe estar promovido a
+   `main`.
 7. **Esquema y datos.** El contrato de esquema del manifiesto es compatible con el estado o
    con la migración expresamente autorizada. TEST exige su marcador y seed verificados; PROD
    exige la autorización de datos reales y la copia previa.
@@ -211,9 +214,12 @@ Excel sin una autorización específica y la validación financiera correspondie
   antes de confiar en ellos. El host no reconstruye ni sustituye un artefacto aprobado.
 - **Concurrencia.** Un solo despliegue activo por entorno; el segundo se rechaza. El bloqueo
   se libera al terminar, con éxito o fallo.
-- **Copia y recuperación.** No hay despliegue sin copia válida y plan de recuperación. PROD
+- **Copia y recuperación.** En TEST, la release solo cambia imagen y frontend con el mismo
+  contrato: el estado no se toca y el par de rollback es unidad + `current`. En PROD, no hay
+  despliegue sin copia cifrada válida y restauración ensayada; el receptor de PROD bloquea
+  antes de mutar si faltan. PROD
   con datos reales sigue sujeto a DT6/T-BKP de MyFinanzas y a la autorización de operación.
-- **Auditoría.** Se registran tag, actor, SHA, digest, aprobación, ejecución, copia, smoke y
+- **Auditoría.** Se registran tag, actor, SHA, digest, ejecución, copia, smoke y
   resultado. Los logs no contienen secretos ni datos financieros.
 - **Fallo cerrado.** Permisos, esquema, artefacto, copia o smoke desconocidos bloquean; no se
   convierten en un éxito por ausencia de error.
@@ -237,7 +243,7 @@ Se usa la nomenclatura **DEP1–DEP10** (*deployment*) para no colisionar con la
 | DEP3 | Mecanismo de activación (unidad nueva, drop-in o enlace atómico) | Elegir tras auditar Quadlet y demostrar reversibilidad | Fase 2 |
 | DEP4 | Principal y vía de ejecución (runner dedicado, SSH restringido u otro) | Mínimos privilegios, sin root, sin comandos arbitrarios; revisar el modelo de amenaza | Fase 2 |
 | DEP5 | ¿TEST automático o manual al habilitar? | Automático solo tras los gates, con interruptor explícito y estado inicial desactivado | Fase 4 |
-| DEP6 | Revisores de PROD y separación de funciones | Required reviewers; el autor del tag no aprueba su propia ejecución | Fase 5 |
+| DEP6 | Actores autorizados a crear tags y separación de funciones | Ruleset de tags + allowlist en el workflow (`MYFINANZAS_DEPLOY_ACTORS`); sin Required reviewers | Fase 2 |
 | DEP7 | Destino externo, retención, RPO/RTO y custodia | Política única aprobada; simulacro de restauración antes de PROD | Fases 4–5 |
 | DEP8 | Cambios de Caddy/DNS para TEST | Aplicar el contrato de la spec 02 del host TEST solo con autorización; no tocar el sitio raíz | Fase 4 |
 | DEP9 | Rollback automático o manual | Manual y con evidencia; sin restauración automática silenciosa | Fases 4–5 |
@@ -252,7 +258,7 @@ Se usa la nomenclatura **DEP1–DEP10** (*deployment*) para no colisionar con la
 | 2 | Preparar host e identidades, rutas, unidades y copias de ensayo | Evidencia de preflight; sin release real | Separada |
 | 3 | Dry-run del contrato con artefactos de ensayo y sin datos reales | Checks negativos y positivos; VPS intacto | Separada |
 | 4 | Habilitar TEST y ejecutar el primer tag de TEST | Smoke, copia y evidencia; PROD intacto | Separada |
-| 5 | Habilitar PROD tras backup/restore, aceptación y revisores | Primer despliegue aprobado y verificado | Separada |
+| 5 | Habilitar PROD tras backup/restore, aceptación y allowlist de actores | Primer tag `deploy-prod-vX` validado y verificado | Separada |
 | 6 | Revisar tags TEST con origen `test` | Solo cambia el origen de tags | Separada |
 
 Ninguna fase se deduce de otra. Un merge documental no habilita la siguiente.

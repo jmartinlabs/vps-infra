@@ -1,4 +1,8 @@
-# Actualización automática de MyFinanzas TEST
+# Actualización automática de MyFinanzas TEST (SUSTITUIDA)
+
+> **No instalar el timer.** Esta arquitectura GHCR + polling queda sustituida por
+> [despliegue directo desde CI](despliegue-directo-test-01.md). Se conserva solo como
+> referencia histórica hasta la limpieza autorizada.
 
 Fecha: 2026-11-08
 Estado: **DRAFT — preparado, no desplegado.**

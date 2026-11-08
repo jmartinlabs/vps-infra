@@ -19,6 +19,7 @@
 - Comprueba que todos los recursos raíz de `index.html` existen en el frontend.
 - Devuelve `2` si hay cualquier bloqueo; en ese caso no se despliega.
 
-La auditoría es local y sin red. No depende de GHCR ni de la visibilidad de paquetes.
-El receptor del despliegue vuelve a verificar integridad, frontend y contratos antes de
-mutar; la auditoría añade una revisión independiente de secretos y estado.
+La auditoría es **manual y opcional**: no se integra en el workflow de despliegue, no crea
+un segundo workflow ni añade dependencias al pipeline. Se ejecuta sobre el bundle antes de
+enviarlo, cuando se quiera una revisión independiente de secretos y estado. El receptor del
+despliegue vuelve a verificar integridad, frontend y contratos antes de mutar.

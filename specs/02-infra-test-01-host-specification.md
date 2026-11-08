@@ -26,6 +26,7 @@ Evidencia Fase 2B: [02B — rutas y permisos](../docs/evidencia-infra-test-02b.m
 Paquete de despliegue: [MyFinanzas TEST](../docs/paquete-despliegue-myfinanzas-test-01.md).
 Preparación DNS/Caddy: [fase 3/4 documental](../docs/preparacion-dns-caddy-test-01.md).
 Recepción y despliegue: [paquete TEST](../docs/paquete-test-recepcion-01.md).
+Automatización: [actualización automática TEST](../docs/actualizacion-automatica-test-01.md).
 
 
 Las marcas `[CONFIRMADO]`, `[INFORMADO]`, `[PROPUESTA]` y `[PENDIENTE]` distinguen hechos
@@ -274,9 +275,9 @@ TEST; no se asume que Caddy y el contenedor compartan red o permisos.
 | `.../data/reset/state-<UTC>` | `mftest:mftest` `0700` | Estado archivado por reset | Evidencia; no se borra automáticamente. |
 | `/srv/myfinanzas-test/releases` | `mftest:mftest` `0700` | Paquetes OCI y manifiestos | Solo releases verificadas; conservar la anterior. |
 | `/srv/myfinanzas-test/backups` | `mftest:mftest` `0700` | Copias cifradas | Sin identidad `age` permanente. |
-| `/var/www/myfinanzas-test` | `root:root` `0755` | Raíz estática pública | Caddy debe leerla; sin secretos ni estado. |
-| `/var/www/myfinanzas-test/releases/<sha>` | `root:root` `0755` | Frontend de una release | Solo archivos estáticos; sin estado ni secretos. |
-| `/var/www/myfinanzas-test/current` | `root:root`, symlink | Release estática activa | Apunta a `releases/<sha>` dentro de la raíz pública; nunca a `/srv` privado. |
+| `/var/www/myfinanzas-test` | `mftest:caddy` `2750` tras primera activación | Raíz estática pública | Caddy lee por grupo; `mftest` puede publicar sin root; sin secretos ni estado. |
+| `/var/www/myfinanzas-test/releases/<sha>` | `mftest:caddy` `2750`, ficheros `0640` | Frontend de una release | Solo archivos estáticos; grupo `caddy` con lectura. |
+| `/var/www/myfinanzas-test/current` | `mftest:caddy`, symlink | Release estática activa | Apunta a `releases/<sha>` dentro de la raíz pública; nunca a `/srv` privado. |
 | `~mftest/.config/containers/systemd` | `mftest:mftest` `0700` | Unidad Quadlet | Sin secretos en la unidad. |
 
 `[CONFIRMADO]` La raíz privada, `data`, `releases`, `backups`, la raíz estática y los
@@ -509,7 +510,8 @@ Condiciones de revisión:
 - Publicación atómica: `/var/www/myfinanzas-test/releases/<sha>/` y symlink `current`
   dentro de `/var/www/myfinanzas-test`; el destino no sale de la raíz pública y Caddy no
   atraviesa `/srv/myfinanzas-test` `0700`.
-- Directorios `0755`, archivos `0644`, propietario `root:root`; sin escritura para `mftest`.
+- Tras la primera activación: directorios `2750`, archivos `0640`, propietario
+  `mftest:caddy`; Caddy lee por grupo y `mftest` puede actualizar sin root.
 - No se copian `node_modules`, fuentes, tests, `.env`, claves, bases, mapas de fuente ni
   archivos de estado. Si aparecen, se bloquea la publicación y se corrige el artefacto.
 - La release anterior se conserva hasta verificar la nueva.

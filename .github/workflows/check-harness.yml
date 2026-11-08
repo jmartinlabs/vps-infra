@@ -26,6 +26,8 @@ jobs:
       - run: ./scripts/validate-template
       - run: ./scripts/test-validator
       - run: ./scripts/test-release-gate
+      - run: python3 -m py_compile scripts/test-auto-update
+      - run: ./scripts/test-test-auto-update
       - run: ./scripts/test-datasette-admin
       - run: bash -n scripts/phase2a-host-test.sh
       - run: bash -n scripts/phase2a-postcheck-test.sh

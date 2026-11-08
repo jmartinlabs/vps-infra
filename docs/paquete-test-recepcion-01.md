@@ -123,6 +123,7 @@ Precondiciones: unidad TEST parada/ausente, `18082` sin responder y
 5. Instalar la unidad Quadlet candidata con el ID inmutable de la app.
 6. Publicar el frontend verificado en `/var/www/myfinanzas-test/releases/<sha>/` y crear
    `current` dentro de `/var/www/myfinanzas-test`; nunca apuntar a `/srv` privado.
+   La primera activación deja esa raíz `mftest:caddy` `2750` y los ficheros `0640`.
 7. Comprobar que Caddy puede leer el frontend sin atravesar `0700`:
    `namei -l /var/www/myfinanzas-test/current` y prueba de lectura como `caddy`.
 8. Recargar Caddy solo al final, con autorización separada.

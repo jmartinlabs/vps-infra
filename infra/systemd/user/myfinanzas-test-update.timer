@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll MyFinanzas TEST release every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=myfinanzas-test-update.service
+
+[Install]
+WantedBy=timers.target

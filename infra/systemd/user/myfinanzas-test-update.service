@@ -1,0 +1,9 @@
+[Unit]
+Description=Update MyFinanzas TEST from GHCR
+Documentation=file:///%h/bin/myfinanzas-test-update
+
+[Service]
+Type=oneshot
+ExecStart=%h/bin/myfinanzas-test-update --once
+Nice=10
+IOSchedulingClass=best-effort

@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Fixtures for scripts/audit-test-release (local, no network)."""
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+AUDIT = ROOT / "scripts" / "audit-test-release"
+SOURCE = "a" * 40
+CANARY = b"MF32_SYNTHETIC_SECRET_CANARY_NOT_FOR_RUNTIME"
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def layer(entries) -> bytes:
+    """entries: list of (name, kind, payload); kind is file, symlink or dir."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, kind, payload in entries:
+            info = tarfile.TarInfo(name)
+            if kind == "dir":
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                archive.addfile(info)
+            elif kind == "symlink":
+                info.type = tarfile.SYMTYPE
+                info.linkname = payload
+                archive.addfile(info)
+            else:
+                info.size = len(payload)
+                info.mode = 0o644
+                archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+def oci_archive(path: Path, layer_bytes: bytes) -> None:
+    config = b'{"architecture":"amd64","os":"linux"}'
+    config_digest = sha256(config)
+    layer_digest = sha256(layer_bytes)
+    image = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": "sha256:" + config_digest,
+            "size": len(config),
+        },
+        "layers": [
+            {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                "digest": "sha256:" + layer_digest,
+                "size": len(layer_bytes),
+            }
+        ],
+    }
+    image_bytes = json.dumps(image, sort_keys=True).encode()
+    image_digest = sha256(image_bytes)
+    index = json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:" + image_digest,
+                    "size": len(image_bytes),
+                }
+            ],
+        },
+        sort_keys=True,
+    ).encode()
+    with tarfile.open(path, "w") as archive:
+        for name, data in (
+            ("oci-layout", b'{"imageLayoutVersion":"1.0.0"}'),
+            ("index.json", index),
+            ("blobs/sha256/" + config_digest, config),
+            ("blobs/sha256/" + layer_digest, layer_bytes),
+            ("blobs/sha256/" + image_digest, image_bytes),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(data))
+
+
+SAFE_LAYER = layer(
+    [
+        ("app/package.json", "file", b'{"name":"app"}\n'),
+        ("app/apps/api/src/main.ts", "file", b"export const ok = true;\n"),
+        ("var/lib/myfinanzas", "dir", None),
+        ("tmp/private", "dir", None),
+    ]
+)
+SEED_LAYER = layer(
+    [
+        ("app/tools/test-seed/dataset/ft1.json", "file", b'{"dataset":"synthetic"}\n'),
+    ]
+)
+
+
+class Fixture:
+    def __init__(self, base: Path) -> None:
+        self.base = base
+        self.release = base / "release"
+        self.frontend = self.release / "frontend"
+        self.build()
+
+    def build(self, frontend=None, app_layer=SAFE_LAYER, seed_layer=SEED_LAYER) -> None:
+        self.frontend.mkdir(parents=True, exist_ok=True)
+        (self.frontend / "assets").mkdir(exist_ok=True)
+        files = frontend or {
+            "index.html": (
+                b'<script src="/theme-boot.js"></script>'
+                b'<link rel="stylesheet" href="/themes.css">'
+                b'<script type="module" src="/assets/app.js"></script>\n'
+            ),
+            "theme-boot.js": b"document.documentElement.dataset.theme='dark-s';\n",
+            "themes.css": b":root{--bg:#141414;--text:#f7f5f1}\n",
+            "assets/app.js": b"console.log(1)\n",
+        }
+        for name, body in files.items():
+            path = self.frontend / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+        self.manifest = {
+            "format": 1,
+            "inputs": {
+                "source": SOURCE,
+                "contracts": {
+                    "schema": 27,
+                    "data": "e4.11-v27",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+            },
+            "image": "sha256:" + "b" * 64,
+            "oci_manifest_digest": "sha256:" + "c" * 64,
+            "seed": {
+                "image": "sha256:" + "d" * 64,
+                "source": SOURCE,
+                "contracts": {
+                    "schema": 27,
+                    "data": "e4.11-v27",
+                    "authentication": "argon2id-aesgcm-totp-session-v1",
+                },
+                "oci_manifest_digest": "sha256:" + "e" * 64,
+            },
+            "frontend_files": {
+                name: sha256(body) for name, body in files.items()
+            },
+        }
+        manifest_bytes = (json.dumps(self.manifest, indent=2, sort_keys=True) + "\n").encode()
+        (self.release / "manifest.json").write_bytes(manifest_bytes)
+        self.manifest_sha = sha256(manifest_bytes)
+        (self.release / "manifest.sha256").write_text(self.manifest_sha + "\n")
+        oci_archive(self.release / "image.oci.tar", app_layer)
+        oci_archive(self.release / "image.seed.oci.tar", seed_layer)
+        self.write_sums()
+
+    def write_sums(self) -> None:
+        lines = []
+        for path in sorted(self.release.rglob("*")):
+            if path.is_file() and path.name != "SHA256SUMS":
+                relative = path.relative_to(self.release).as_posix()
+                lines.append(f"{sha256(path.read_bytes())}  ./{relative}")
+        (self.release / "SHA256SUMS").write_text("\n".join(lines) + "\n")
+
+    def run(self, *args):
+        return subprocess.run(
+            [sys.executable, str(AUDIT), str(self.release), *args],
+            capture_output=True,
+            text=True,
+        )
+
+
+class AuditTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.base = Path(temp.name)
+        self.fixture = Fixture(self.base)
+
+    def assert_blocked(self, result, needle: str) -> None:
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(needle, result.stdout)
+
+    def test_safe_release_passes(self):
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("themes.css", result.stdout)
+
+    def test_missing_index_asset_blocks(self):
+        files = {
+            "index.html": b'<link rel="stylesheet" href="/themes.css">\n',
+            "assets/app.js": b"console.log(1)\n",
+        }
+        self.fixture.build(frontend=files)
+        self.assert_blocked(self.fixture.run(), "references missing /themes.css")
+
+    def test_state_credentials_and_canary_block(self):
+        unsafe = layer(
+            [
+                ("app/.env", "file", b"TOKEN=secret\n"),
+                ("app/private.pem", "file", b"-----BEGIN RSA PRIVATE KEY-----\n"),
+                ("var/lib/myfinanzas/state/database.sqlite", "file", b"SQLite format 3\x00"),
+                ("app/canary.txt", "file", CANARY),
+            ]
+        )
+        self.fixture.build(app_layer=unsafe)
+        result = self.fixture.run()
+        self.assert_blocked(result, "forbidden file app/.env")
+        self.assert_blocked(result, "private-key")
+        self.assert_blocked(result, "sqlite-state")
+        self.assert_blocked(result, "state-canary")
+
+    def test_seed_private_state_blocks(self):
+        unsafe = layer(
+            [("app/seed-manifest.json", "file", b'{"source":{}}\n')]
+        )
+        self.fixture.build(seed_layer=unsafe)
+        self.assert_blocked(self.fixture.run(), "forbidden file app/seed-manifest.json")
+
+    def test_escape_path_blocks_and_base_symlinks_are_allowed(self):
+        # Debian/bun layers legitimately carry absolute symlinks (/bin -> usr/bin).
+        unsafe = layer(
+            [
+                ("bin/busybox", "symlink", "/usr/bin/busybox"),
+                ("../escape", "file", b"x"),
+            ]
+        )
+        self.fixture.build(app_layer=unsafe)
+        result = self.fixture.run()
+        self.assert_blocked(result, "unsafe path ../escape")
+        self.assertNotIn("bin/busybox", result.stdout)
+
+    def test_checksum_mismatch_blocks(self):
+        (self.fixture.release / "frontend" / "themes.css").write_text("tampered\n")
+        self.assert_blocked(self.fixture.run(), "SHA256SUMS does not match")
+
+    def test_source_must_match(self):
+        self.assert_blocked(
+            self.fixture.run("--expect-source", "f" * 40), "is not " + "f" * 40
+        )
+
+    def test_zip_bundle_is_audited(self):
+        bundle = self.base / "bundle.zip"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            for path in sorted(self.fixture.release.rglob("*")):
+                if path.is_file():
+                    archive.write(path, path.relative_to(self.fixture.release).as_posix())
+        result = subprocess.run(
+            [sys.executable, str(AUDIT), str(bundle)], capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

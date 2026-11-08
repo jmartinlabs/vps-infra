@@ -253,6 +253,8 @@ class Deployer:
                     pure = PurePosixPath(name)
                     if name.startswith("/") or ".." in pure.parts:
                         raise Rejected(f"unsafe bundle path: {name}")
+                    if member.isdir():
+                        continue
                     if not member.isfile():
                         raise Rejected(f"bundle member is not a file: {name}")
                     if name not in ALLOWED and not name.startswith("frontend/"):

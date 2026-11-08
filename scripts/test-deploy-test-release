@@ -31,9 +31,14 @@ def write_json(path: Path, value: dict) -> None:
     path.chmod(0o600)
 
 
-def tar_bytes(members) -> bytes:
+def tar_bytes(members, dirs=()) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name in dirs:
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o755
+            archive.addfile(info)
         for name, data in members:
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -43,7 +48,7 @@ def tar_bytes(members) -> bytes:
 
 
 def bundle(source: str, app_id: str, frontend: dict, schema: int = 27,
-           data_contract: str = "e4.11-v27", tamper=None) -> bytes:
+           data_contract: str = "e4.11-v27", tamper=None, dirs=()) -> bytes:
     contracts = {
         "schema": schema,
         "data": data_contract,
@@ -80,7 +85,7 @@ def bundle(source: str, app_id: str, frontend: dict, schema: int = 27,
     if tamper:
         files = [(name, tamper.get(name, body)) for name, body in files]
     files.append(("SHA256SUMS", sums))
-    return tar_bytes(files)
+    return tar_bytes(files, dirs)
 
 
 INDEX = b'<script src="/theme-boot.js"></script><link rel="stylesheet" href="/themes.css">\n'
@@ -235,6 +240,11 @@ class DeployTests(unittest.TestCase):
             self.deploy(payload)
         self.assertIn("SHA256SUMS", str(caught.exception))
         self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_bundle_directory_entries_are_allowed(self):
+        payload = bundle(self.source, self.app_id, THEMES,
+                         dirs=("frontend/", "frontend/assets/"))
+        self.assertEqual(self.deploy(payload), 0)
 
     def test_actor_comes_from_ssh_command(self):
         self.assertEqual(actor_from_environment("deploy:octocat"), "octocat")

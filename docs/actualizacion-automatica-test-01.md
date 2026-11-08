@@ -63,6 +63,19 @@ La primera activación no se automatiza. Requiere autorización específica y ej
 
 No se ejecuta ninguna de estas operaciones en esta fase.
 
+## Auditoría antes de publicar
+
+La visibilidad de los paquetes GHCR solo se cambia después de auditar el bundle exacto:
+
+```bash
+./scripts/audit-test-release <artifact.zip|release-dir> --expect-source <sha40>
+```
+
+Rechaza estado privado (`database.sqlite`, `test-instance.json`, `seed-manifest.json`),
+credenciales (`.env`, claves privadas, tokens), rutas privadas, symlinks en el frontend y
+assets raíz de `index.html` ausentes. Si devuelve `2`, no se publica ni se cambia la
+visibilidad.
+
 ## Contrato del updater
 
 - Release pointer: `myfinanzas-test-release:test`.

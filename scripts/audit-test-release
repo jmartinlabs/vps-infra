@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""Audit a TEST release bundle before it becomes public in GHCR.
+
+Reads only local files: no network, no podman and no host access. It rejects
+private state, credentials and unreferenced frontend assets, so visibility is
+only changed after the exact bytes that will be published have been reviewed.
+
+Exit codes: 0 audited, 2 blocked, 3 failed to read the bundle.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+import tarfile
+import tempfile
+import zipfile
+from pathlib import Path, PurePosixPath
+
+EXIT_OK = 0
+EXIT_BLOCKED = 2
+EXIT_FAILED = 3
+
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
+HASH = re.compile(r"^[0-9a-f]{64}$")
+SUMS = re.compile(r"^([0-9a-f]{64}) [ *]\./(.+)$")
+REFERENCE = re.compile(r'(?:src|href)="(/[^"?#]+)"')
+MAX_SCAN_BYTES = 512 * 1024
+
+REQUIRED = (
+    "manifest.json",
+    "manifest.sha256",
+    "SHA256SUMS",
+    "image.oci.tar",
+    "image.seed.oci.tar",
+)
+FRONTEND_COMPONENTS = {"node_modules", ".git"}
+FRONTEND_SUFFIXES = (
+    ".map",
+    ".sqlite",
+    ".sqlite-wal",
+    ".sqlite-shm",
+    ".xlsx",
+    ".env",
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+)
+LAYER_SUFFIXES = (".sqlite", ".sqlite-wal", ".sqlite-shm", ".xlsx", ".pem", ".key", ".p12", ".pfx")
+STATE_NAMES = {
+    ".env",
+    ".netrc",
+    ".git-credentials",
+    "id_rsa",
+    "id_ed25519",
+    "auth.key",
+    "database.sqlite",
+    "test-instance.json",
+    "seed-manifest.json",
+    "current-release.json",
+    "failed-release.json",
+}
+PRIVATE_PATHS = ("var/lib/myfinanzas", "srv", "home/mftest")
+SECRET_PATTERNS = (
+    ("private-key", re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("github-token", re.compile(rb"gh[pousr]_[A-Za-z0-9]{36,}")),
+    ("github-pat", re.compile(rb"github_pat_[A-Za-z0-9_]{20,}")),
+    ("aws-key", re.compile(rb"AKIA[0-9A-Z]{16}")),
+    ("slack-token", re.compile(rb"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("state-canary", re.compile(rb"MF32_SYNTHETIC_SECRET_CANARY_NOT_FOR_RUNTIME")),
+    ("sqlite-state", re.compile(rb"^SQLite format 3\x00")),
+)
+
+
+class AuditFailed(Exception):
+    pass
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def safe_zip_extract(archive: Path, target: Path) -> None:
+    root = target.resolve()
+    with zipfile.ZipFile(archive) as bundle:
+        for info in bundle.infolist():
+            name = info.filename
+            if name.startswith("/") or "\\" in name or "\x00" in name:
+                raise AuditFailed(f"unsafe zip member: {name}")
+            pure = PurePosixPath(name)
+            if ".." in pure.parts:
+                raise AuditFailed(f"unsafe zip member: {name}")
+            destination = (target / name).resolve()
+            if not destination.is_relative_to(root):
+                raise AuditFailed(f"zip member escapes: {name}")
+            if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                raise AuditFailed(f"symlink in zip: {name}")
+            if info.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with bundle.open(info) as source, destination.open("wb") as handle:
+                    while chunk := source.read(1024 * 1024):
+                        handle.write(chunk)
+
+
+def scan_bytes(label: str, data: bytes, blockers: list) -> None:
+    for name, pattern in SECRET_PATTERNS:
+        if pattern.search(data):
+            blockers.append(f"{label}: {name}")
+
+
+def normalize(label: str, raw: str, blockers: list) -> PurePosixPath | None:
+    name = raw.removeprefix("./")
+    pure = PurePosixPath(name)
+    if not name or name == ".":
+        return None
+    if name.startswith("/") or ".." in pure.parts:
+        blockers.append(f"{label}: unsafe path {raw}")
+        return None
+    return pure
+
+
+def check_frontend_path(label: str, raw: str, blockers: list) -> PurePosixPath | None:
+    pure = normalize(label, raw, blockers)
+    if pure is None:
+        return None
+    lowered = [part.lower() for part in pure.parts]
+    if any(part in FRONTEND_COMPONENTS or part.startswith(".") for part in lowered):
+        blockers.append(f"{label}: forbidden directory in {raw}")
+    base = lowered[-1]
+    if base.startswith(".") or base.endswith(FRONTEND_SUFFIXES):
+        blockers.append(f"{label}: forbidden file {raw}")
+    return pure
+
+
+def check_layer_path(
+    label: str, raw: str, blockers: list, is_file: bool = True
+) -> PurePosixPath | None:
+    pure = normalize(label, raw, blockers)
+    if pure is None:
+        return None
+    lowered = [part.lower() for part in pure.parts]
+    relative = "/".join(lowered)
+    if is_file and any(
+        relative == root or relative.startswith(root + "/") for root in PRIVATE_PATHS
+    ):
+        blockers.append(f"{label}: private path {raw}")
+    base = lowered[-1]
+    if is_file and (base in STATE_NAMES or base.endswith(LAYER_SUFFIXES)):
+        blockers.append(f"{label}: forbidden file {raw}")
+    return pure
+
+
+def audit_layer(label: str, stream, blockers: list, largest: list) -> None:
+    try:
+        with tarfile.open(fileobj=stream, mode="r|*") as layer:
+            for member in layer:
+                pure = check_layer_path(
+                    label, member.name, blockers, is_file=member.isfile()
+                )
+                if pure is None:
+                    continue
+                if member.issym() or member.islnk():
+                    continue
+                if not member.isfile():
+                    if not member.isdir():
+                        blockers.append(f"{label}: non-file {member.name}")
+                    continue
+                largest.append((member.size, f"{label}:{pure.as_posix()}"))
+                if member.size > MAX_SCAN_BYTES:
+                    continue
+                data = layer.extractfile(member).read()
+                scan_bytes(f"{label}:{pure.as_posix()}", data, blockers)
+    except tarfile.TarError as exc:
+        raise AuditFailed(f"{label}: invalid layer: {exc}") from exc
+
+
+def audit_oci(path: Path, label: str, blockers: list, largest: list) -> None:
+    try:
+        with tarfile.open(path) as oci:
+            members = {
+                member.name.removeprefix("./"): member
+                for member in oci.getmembers()
+                if member.isfile()
+            }
+            for name, member in members.items():
+                pure = PurePosixPath(name)
+                if name.startswith("/") or ".." in pure.parts:
+                    blockers.append(f"{label}: unsafe OCI path {name}")
+                if name.startswith("blobs/sha256/"):
+                    data = oci.extractfile(member).read()
+                    if sha256(data) != name.split("/")[-1]:
+                        blockers.append(f"{label}: blob hash mismatch {name}")
+            for required in ("index.json", "oci-layout"):
+                if required not in members:
+                    raise AuditFailed(f"{label}: missing {required}")
+            index = json.loads(oci.extractfile(members["index.json"]).read())
+            descriptor = index["manifests"][0]["digest"]
+            key = "blobs/sha256/" + descriptor.split(":", 1)[1]
+            image = json.loads(oci.extractfile(members[key]).read())
+            layers = image.get("layers") or []
+            if not layers:
+                raise AuditFailed(f"{label}: no layers")
+            for position, layer in enumerate(layers):
+                blob = "blobs/sha256/" + layer["digest"].split(":", 1)[1]
+                if blob not in members:
+                    raise AuditFailed(f"{label}: layer {position} is missing")
+                stream = oci.extractfile(members[blob])
+                audit_layer(f"{label}[{position}]", stream, blockers, largest)
+    except (tarfile.TarError, KeyError, IndexError, json.JSONDecodeError) as exc:
+        raise AuditFailed(f"{label}: invalid OCI archive: {exc}") from exc
+
+
+def audit(release: Path, expect_source: str | None) -> dict:
+    blockers: list[str] = []
+    for name in REQUIRED:
+        if not (release / name).is_file():
+            blockers.append(f"bundle: missing {name}")
+    if blockers:
+        return {"blockers": blockers, "release": str(release)}
+
+    manifest_path = release / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    declared = (release / "manifest.sha256").read_text(encoding="utf-8").strip()
+    if sha256_file(manifest_path) != declared:
+        blockers.append("manifest.sha256 does not match manifest.json")
+    source = manifest.get("inputs", {}).get("source")
+    if not isinstance(source, str) or not SHA40.fullmatch(source):
+        blockers.append("manifest has no valid inputs.source")
+    elif expect_source and source != expect_source:
+        blockers.append(f"manifest source {source} is not {expect_source}")
+    contracts = manifest.get("inputs", {}).get("contracts", {})
+    if not isinstance(contracts.get("schema"), int) or not contracts.get("data"):
+        blockers.append("manifest has no valid contracts")
+
+    declared_sums: dict[str, str] = {}
+    for line in (release / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+        if not line:
+            continue
+        match = SUMS.fullmatch(line)
+        if match is None:
+            blockers.append(f"SHA256SUMS: invalid line {line}")
+            continue
+        declared_sums[match.group(2)] = match.group(1)
+    actual_sums = {
+        path.relative_to(release).as_posix(): sha256_file(path)
+        for path in release.rglob("*")
+        if path.is_file() and path.name != "SHA256SUMS" and not path.is_symlink()
+    }
+    if declared_sums != actual_sums:
+        blockers.append("SHA256SUMS does not match the bundle files")
+
+    frontend_root = release / "frontend"
+    frontend_files = manifest.get("frontend_files")
+    if not frontend_root.is_dir() or not isinstance(frontend_files, dict):
+        blockers.append("frontend/ or manifest frontend_files is missing")
+        frontend_files = {}
+    for path in frontend_root.rglob("*"):
+        if path.is_symlink():
+            blockers.append(f"frontend: symlink {path.relative_to(frontend_root).as_posix()}")
+    actual_frontend = {
+        path.relative_to(frontend_root).as_posix(): sha256_file(path)
+        for path in frontend_root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    if actual_frontend != frontend_files:
+        blockers.append("frontend/ does not match manifest frontend_files")
+    for relative in frontend_files:
+        pure = check_frontend_path("frontend", relative, blockers)
+        if pure is not None and pure.name.endswith(".html"):
+            html = (frontend_root / relative).read_text(encoding="utf-8", errors="replace")
+            for reference in REFERENCE.findall(html):
+                target = reference.lstrip("/")
+                if target not in frontend_files:
+                    blockers.append(f"frontend: {relative} references missing {reference}")
+
+    largest: list[tuple[int, str]] = []
+    audit_oci(release / "image.oci.tar", "app", blockers, largest)
+    audit_oci(release / "image.seed.oci.tar", "seed", blockers, largest)
+    return {
+        "release": str(release),
+        "source": source,
+        "contracts": contracts,
+        "frontend_files": sorted(frontend_files),
+        "blockers": sorted(set(blockers)),
+        "largest": [
+            {"bytes": size, "path": name} for size, name in sorted(largest, reverse=True)[:5]
+        ],
+    }
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("bundle", help="release directory or its ZIP")
+    parser.add_argument("--expect-source", help="require this SHA40 in the manifest")
+    parser.add_argument("--json", action="store_true", help="print the report as JSON")
+    args = parser.parse_args(argv)
+    try:
+        bundle = Path(args.bundle)
+        if not bundle.exists():
+            raise AuditFailed(f"bundle does not exist: {bundle}")
+        with tempfile.TemporaryDirectory(prefix="mf-audit-") as temporary:
+            if bundle.is_dir():
+                release = bundle
+            elif bundle.suffix == ".zip":
+                release = Path(temporary) / "release"
+                release.mkdir()
+                safe_zip_extract(bundle, release)
+            else:
+                raise AuditFailed("bundle must be a directory or a .zip")
+            report = audit(release, args.expect_source)
+    except (AuditFailed, OSError, ValueError) as exc:
+        print(f"audit-test-release: {exc}", file=sys.stderr)
+        return EXIT_FAILED
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"source: {report.get('source')}")
+        print(f"frontend files: {', '.join(report.get('frontend_files', [])) or 'none'}")
+        for entry in report.get("largest", []):
+            print(f"largest: {entry['bytes']} {entry['path']}")
+        if report["blockers"]:
+            for blocker in report["blockers"]:
+                print(f"BLOCKED: {blocker}")
+        else:
+            print("No private state, credentials or missing frontend assets found.")
+    return EXIT_BLOCKED if report["blockers"] else EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

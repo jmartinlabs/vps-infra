@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Audit a TEST release bundle before it becomes public in GHCR.
+"""Audit a TEST release bundle before the direct deployment from CI.
 
 Reads only local files: no network, no podman and no host access. It rejects
-private state, credentials and unreferenced frontend assets, so visibility is
-only changed after the exact bytes that will be published have been reviewed.
+private state, credentials and unreferenced frontend assets, so the exact bytes
+that will travel to the VPS are reviewed before the SSH transfer.
 
 Exit codes: 0 audited, 2 blocked, 3 failed to read the bundle.
 """

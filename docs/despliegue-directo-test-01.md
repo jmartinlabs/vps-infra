@@ -82,7 +82,7 @@ receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag ante
    `restrict,command="XDG_RUNTIME_DIR=/run/user/1002 /home/mftest/bin/myfinanzas-test-deploy --stdin" ssh-ed25519 ...`
 2. Instalar `scripts/deploy-test-release` en `/home/mftest/bin/` (0755, mftest) y
    comprobar su SHA-256:
-   `2ed1bf384788ca524c43fc13eaa9ccd76244548a106fadb18816209a1819df9f`
+   `d3eb0bc7d6362b39de3db681c26ff81cc7fd5e3b4d33fe783cce91cdc4e1cf85`
 3. Guardar la privada como secreto del Environment `test` en `TEST_DEPLOY_KEY` y la huella
    del host en `TEST_DEPLOY_KNOWN_HOSTS` (sin Required reviewers).
 4. Definir en el mismo Environment `TEST_DEPLOY_HOST`, `TEST_DEPLOY_USER=mftest` y la

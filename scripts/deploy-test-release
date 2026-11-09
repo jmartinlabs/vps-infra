@@ -530,7 +530,7 @@ class Deployer:
         try:
             self.systemctl("stop", f"{self.config.unit_name}.service", check=False,
                            timeout=SYSTEMCTL_STOP_TIMEOUT)
-        except DeployError as exc:
+        except (DeployError, OSError) as exc:
             self.log(f"stop did not complete: {exc}")
 
     def settle_unit(self) -> bool:
@@ -542,19 +542,19 @@ class Deployer:
         unit = f"{self.config.unit_name}.service"
         try:
             self.systemctl("stop", unit, check=False, timeout=SYSTEMCTL_STOP_TIMEOUT)
-        except DeployError as exc:
+        except (DeployError, OSError) as exc:
             self.log(f"settle: stop did not complete: {exc}")
         try:
             self.systemctl("reset-failed", unit, check=False,
                            timeout=SYSTEMCTL_QUERY_TIMEOUT)
-        except DeployError as exc:
+        except (DeployError, OSError) as exc:
             self.log(f"settle: reset-failed did not complete: {exc}")
         deadline = self.clock() + SETTLE_TIMEOUT
         while self.clock() < deadline:
             try:
                 result = self.systemctl("is-active", unit, check=False,
                                         timeout=SYSTEMCTL_QUERY_TIMEOUT)
-            except DeployError as exc:
+            except (DeployError, OSError) as exc:
                 self.log(f"settle: is-active did not complete: {exc}")
                 self.sleep(1)
                 continue
@@ -565,7 +565,7 @@ class Deployer:
                 try:
                     again = self.systemctl("is-active", unit, check=False,
                                            timeout=SYSTEMCTL_QUERY_TIMEOUT)
-                except DeployError:
+                except (DeployError, OSError):
                     continue
                 if again.stdout.strip() in ("inactive", "failed", "unknown"):
                     return True

@@ -66,6 +66,16 @@ def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
         raise
 
 
+def canonical_image_id(value: str) -> str:
+    """Return sha256:<64 hex>. Podman 4 prints the prefix and Podman 5 does not."""
+    text = value.strip()
+    if text.startswith("sha256:"):
+        text = text[len("sha256:"):]
+    if not SHA256.fullmatch(text):
+        raise Rejected(f"invalid image ID: {value!r}")
+    return "sha256:" + text
+
+
 def missing_frontend_assets(html: str, files: dict) -> list:
     referenced = set()
     for match in REFERENCE.finditer(html):
@@ -383,8 +393,13 @@ class Deployer:
 
     def load_app(self, manifest: dict) -> str:
         self.podman("load", "--input", str(self._bundle_root / "image.oci.tar"))
-        image_id = self.podman("image", "inspect", "--format", "{{.Id}}", manifest["image"]).stdout.strip()
-        if image_id != manifest["image"]:
+        # Podman 4 prints "sha256:<id>"; Podman 5 prints "<id>". Normalize both
+        # sides before comparing, then keep the canonical form for the unit.
+        expected = canonical_image_id(manifest["image"])
+        image_id = canonical_image_id(
+            self.podman("image", "inspect", "--format", "{{.Id}}", manifest["image"]).stdout
+        )
+        if image_id != expected:
             raise Rejected("loaded image ID does not match the manifest")
         revision = self.podman(
             "image", "inspect", "--format",

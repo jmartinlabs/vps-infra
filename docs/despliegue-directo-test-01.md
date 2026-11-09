@@ -59,6 +59,8 @@ receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag ante
   el proveedor la publica; sin reenvío de agentes ni túneles.
 - Verifica manifiesto, `SHA256SUMS`, frontend exacto, recursos de `index.html`,
   digest/ID de imagen y contratos instalados antes de tocar unidad o frontend.
+- Normaliza el ID de imagen a `sha256:<64 hex>` antes de comparar: Podman 4 imprime el
+  prefijo y Podman 5 no. Una diferencia real de hash sigue rechazándose.
 - `podman load` local; nunca descarga.
 - Smoke: health `{"ok":true}`, ruta protegida `401`, `current/index.html`.
 - Fallo: restaura unidad y `current` anteriores, repite smoke; si el rollback
@@ -70,13 +72,50 @@ receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag ante
 1. Crear clave `myfinanzas-test-deploy` (par ed25519) y añadir la pública en
    `~mftest/.ssh/authorized_keys` con:
    `restrict,command="XDG_RUNTIME_DIR=/run/user/1002 /home/mftest/bin/myfinanzas-test-deploy --stdin" ssh-ed25519 ...`
-2. Instalar `scripts/deploy-test-release` en `/home/mftest/bin/` (0755, mftest).
+2. Instalar `scripts/deploy-test-release` en `/home/mftest/bin/` (0755, mftest) y
+   comprobar su SHA-256:
+   `26184ae8d5b543fd7a35e222b71e1369263ee260a343b34494a5283692a6efc8`
 3. Guardar la privada como secreto del Environment `test` en `TEST_DEPLOY_KEY` y la huella
    del host en `TEST_DEPLOY_KNOWN_HOSTS` (sin Required reviewers).
 4. Definir en el mismo Environment `TEST_DEPLOY_HOST`, `TEST_DEPLOY_USER=mftest` y la
    allowlist `MYFINANZAS_DEPLOY_ACTORS`.
 5. Retirar, si existieran, el timer y el servicio `myfinanzas-test-update` y sus
    paquetes GHCR. No se borra nada sin inventario.
+
+## Actualización y rollback del receptor
+
+El receptor es un único fichero ejecutable sin estado propio: su estado son
+`current-release.json` y `last-deploy.json` en `/srv/myfinanzas-test`. Instalar o revertir la
+versión no reinicia la API ni toca datos.
+
+Actualización (con autorización operativa):
+
+```bash
+# 1. Verificar y conservar la versión anterior
+sudo -u mftest sha256sum /home/mftest/bin/myfinanzas-test-deploy
+sudo install -m 0755 -o mftest -g mftest \
+  /home/mftest/bin/myfinanzas-test-deploy \
+  /home/mftest/bin/myfinanzas-test-deploy.previous
+# 2. Instalar la nueva y verificar
+sudo install -m 0755 -o mftest -g mftest <nuevo> /home/mftest/bin/myfinanzas-test-deploy
+sudo -u mftest sha256sum /home/mftest/bin/myfinanzas-test-deploy   # debe coincidir con el PR
+# 3. Prueba de alcance: la clave forzada solo acepta "deploy:<actor>:<semver>"
+ssh -i <clave> mftest@<host> 'true'   # debe rechazar sin mutar
+```
+
+Rollback:
+
+```bash
+sudo install -m 0755 -o mftest -g mftest \
+  /home/mftest/bin/myfinanzas-test-deploy.previous /home/mftest/bin/myfinanzas-test-deploy
+sudo -u mftest sha256sum /home/mftest/bin/myfinanzas-test-deploy   # hash anterior conocido
+```
+
+- La versión anterior se conserva hasta que el primer despliegue con la nueva termine bien.
+- Un fallo del receptor siempre ocurre antes de escribir unidad o `current`; el rollback del
+  ejecutable no requiere tocar el servicio.
+- El tag consumido no se reutiliza si hubo mutación; si el fallo fue previo, puede
+  reintentarse el mismo tag y SHA.
 
 ## Limpieza de la arquitectura anterior
 

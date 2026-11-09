@@ -112,6 +112,7 @@ class FakeRunner:
     def __init__(self, source: str, app_id: str):
         self.source = source
         self.app_id = app_id
+        self.reported_id = app_id
         self.attempts = 0
         self.fail_first = False
         self.fail_all = False
@@ -123,7 +124,7 @@ class FakeRunner:
         if command.startswith("podman load "):
             pass
         elif command.startswith("podman image inspect --format {{.Id}}"):
-            out = self.app_id + "\n"
+            out = self.reported_id + "\n"
         elif "org.opencontainers.image.revision" in command:
             out = self.source + "\n"
         elif command == "systemctl --user daemon-reload":
@@ -286,6 +287,33 @@ class DeployTests(unittest.TestCase):
         with self.assertRaises(DeployError) as caught:
             self.deploy(payload)
         self.assertIn("SHA256SUMS", str(caught.exception))
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_image_id_with_sha256_prefix_is_accepted(self):
+        self.runner.reported_id = self.app_id
+        self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
+        unit = (self.unit_dir / "myfinanzas-test-api.container").read_text()
+        self.assertIn("Image=" + self.app_id, unit)
+
+    def test_image_id_without_sha256_prefix_is_accepted(self):
+        # Podman 5 prints the ID without the sha256: prefix.
+        self.runner.reported_id = self.app_id.removeprefix("sha256:")
+        self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
+        unit = (self.unit_dir / "myfinanzas-test-api.container").read_text()
+        self.assertIn("Image=" + self.app_id, unit)
+
+    def test_image_id_mismatch_is_rejected(self):
+        self.runner.reported_id = "sha256:" + "9" * 64
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertIn("does not match", str(caught.exception))
+        self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_invalid_image_id_is_rejected(self):
+        self.runner.reported_id = "not-an-image-id"
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertIn("invalid image ID", str(caught.exception))
         self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
 
     def test_bundle_directory_entries_are_allowed(self):

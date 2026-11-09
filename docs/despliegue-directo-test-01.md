@@ -91,15 +91,19 @@ versión no reinicia la API ni toca datos.
 Actualización (con autorización operativa):
 
 ```bash
-# 1. Verificar y conservar la versión anterior
+# 1. Verificar el binario NUEVO antes de instalar y conservar el anterior
+sha256sum <nuevo>   # debe coincidir con el SHA-256 aprobado del PR
 sudo -u mftest sha256sum /home/mftest/bin/myfinanzas-test-deploy
 sudo install -m 0755 -o mftest -g mftest \
   /home/mftest/bin/myfinanzas-test-deploy \
   /home/mftest/bin/myfinanzas-test-deploy.previous
-# 2. Instalar la nueva y verificar
+# 2. Confirmar que no hay un despliegue en curso. El lock persiste siempre,
+#    así que se comprueba tomándolo, no mirando si el fichero existe:
+sudo -u mftest flock -n /srv/myfinanzas-test/update.lock true   # debe salir 0
+# 3. Instalar la nueva y verificar
 sudo install -m 0755 -o mftest -g mftest <nuevo> /home/mftest/bin/myfinanzas-test-deploy
 sudo -u mftest sha256sum /home/mftest/bin/myfinanzas-test-deploy   # debe coincidir con el PR
-# 3. Prueba de alcance: la clave forzada solo acepta "deploy:<actor>:<semver>".
+# 4. Prueba de alcance: la clave forzada solo acepta "deploy:<actor>:<semver>".
 #    Un comando distinto debe rechazarse sin mutar. Esto demuestra el forzado,
 #    no la integridad del binario: esa la fija el SHA-256 del paso 2.
 ssh -i <clave> mftest@<host> 'true'   # exit 2, sin cambios

@@ -62,9 +62,16 @@ receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag ante
 - Normaliza el ID de imagen a `sha256:<64 hex>` antes de comparar: Podman 4 imprime el
   prefijo y Podman 5 no. Una diferencia real de hash sigue rechazándose.
 - `podman load` local; nunca descarga.
+- Presupuesto de arranque: la unidad declara `TimeoutStartSec=120s` y
+  `TimeoutStopSec=30s`. El cliente `systemctl` espera 150 s al arranque (30 s de
+  margen sobre systemd) y 45 s a la parada, de modo que observa el resultado final
+  del job en lugar de abandonarlo pendiente.
 - Smoke: health `{"ok":true}`, ruta protegida `401`, `current/index.html`.
-- Fallo: restaura unidad y `current` anteriores, repite smoke; si el rollback
-  falla, detiene la unidad y deja evidencia. Registra `last-deploy.json`.
+- Fallo: antes de restaurar, asienta la unidad (`systemctl stop` + `reset-failed`,
+  espera acotada a 20 s) para que un arranque pendiente no compita con la
+  recuperación. Después restaura unidad y `current`, repite smoke; si el rollback
+  falla o la unidad no asienta, la deja detenida y registra evidencia en
+  `last-deploy.json`.
 - Lock para impedir despliegues concurrentes.
 
 ## Instalación (una vez, con autorización operativa)
@@ -74,7 +81,7 @@ receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag ante
    `restrict,command="XDG_RUNTIME_DIR=/run/user/1002 /home/mftest/bin/myfinanzas-test-deploy --stdin" ssh-ed25519 ...`
 2. Instalar `scripts/deploy-test-release` en `/home/mftest/bin/` (0755, mftest) y
    comprobar su SHA-256:
-   `26184ae8d5b543fd7a35e222b71e1369263ee260a343b34494a5283692a6efc8`
+   `3499f94ddf50a2dad024bf991d850a7e01874c4e954cd11d356e0f00723fc8d3`
 3. Guardar la privada como secreto del Environment `test` en `TEST_DEPLOY_KEY` y la huella
    del host en `TEST_DEPLOY_KNOWN_HOSTS` (sin Required reviewers).
 4. Definir en el mismo Environment `TEST_DEPLOY_HOST`, `TEST_DEPLOY_USER=mftest` y la
@@ -127,6 +134,30 @@ sudo -u mftest sha256sum /home/mftest/bin/myfinanzas-test-deploy   # hash anteri
   anterior junto al `.previous`.
 - El tag consumido no se reutiliza si hubo mutación; si el fallo fue previo, puede
   reintentarse el mismo tag y SHA.
+
+## Incidente 2026-11-09: timeout de arranque
+
+El segundo intento del tag `deploy-test-v0.1.0` falló porque el cliente
+`systemctl` del receptor esperaba 60 s mientras systemd permitía 90 s:
+
+- La parada del contenedor anterior duró 0,34 s: no fue la causa.
+- systemd inició el arranque a las 09:15:55 UTC.
+- Podman no creó el contenedor nuevo hasta las 09:17:03 UTC, 68 s después.
+- El receptor agotó sus 60 s a las 09:16:54 UTC e inició el rollback; el `restart`
+  del rollback canceló el job todavía pendiente y Podman terminó con código 1.
+- El rollback restauró la release anterior (`5d2bb47`) y su smoke pasó.
+
+No fue un fallo del bundle ni de la identidad de la imagen: la unidad anterior usa
+el mismo `Image=sha256:<id>` con `Pull=never` y arranca en unos 10 s. El retraso
+está en la fase previa a `container create` (preparación de la imagen nueva en su
+primer uso o espera de almacenamiento); la línea exacta de Podman queda pendiente
+de confirmar en el journal. Lo acreditado es el orden temporal y que el rollback
+interrumpió un arranque aún pendiente.
+
+La corrección coordina los timeouts y asienta la unidad antes de recuperar. Como
+hubo mutación de unidad y frontend (aunque revertida), este incidente consume el
+tag; la siguiente release será `deploy-test-v0.1.1`, solo tras validar la
+corrección y recibir autorización.
 
 ## Limpieza de la arquitectura anterior
 

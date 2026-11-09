@@ -20,6 +20,11 @@ DeployError = module["DeployError"]
 Deployer = module["Deployer"]
 identity_from_environment = module["identity_from_environment"]
 canonical_image_id = module["canonical_image_id"]
+SYSTEMD_START_TIMEOUT = module["SYSTEMD_START_TIMEOUT"]
+SYSTEMD_STOP_TIMEOUT = module["SYSTEMD_STOP_TIMEOUT"]
+SYSTEMCTL_START_TIMEOUT = module["SYSTEMCTL_START_TIMEOUT"]
+SYSTEMCTL_STOP_TIMEOUT = module["SYSTEMCTL_STOP_TIMEOUT"]
+SETTLE_TIMEOUT = module["SETTLE_TIMEOUT"]
 
 
 def sha256(data: bytes) -> str:
@@ -117,10 +122,16 @@ class FakeRunner:
         self.attempts = 0
         self.fail_first = False
         self.fail_all = False
+        self.timeout_first = False
+        self.stubborn_unit = False
         self.stopped = False
+        self.events = []
+        self.timeouts = {}
 
     def run(self, args, check=True, timeout=None):
         command = " ".join(args)
+        self.events.append(command)
+        self.timeouts[command] = timeout
         code, out, err = 0, "", ""
         if command.startswith("podman load "):
             pass
@@ -132,10 +143,20 @@ class FakeRunner:
             pass
         elif command.startswith("systemctl --user restart "):
             self.attempts += 1
+            self.stopped = False
+            if self.timeout_first and self.attempts == 1:
+                raise DeployError(f"command timed out: {command}")
             if self.fail_all or (self.fail_first and self.attempts == 1):
                 code, err = 1, "restart failed"
         elif command.startswith("systemctl --user stop "):
             self.stopped = True
+        elif command.startswith("systemctl --user reset-failed "):
+            pass
+        elif command.startswith("systemctl --user is-active "):
+            if self.stubborn_unit or not self.stopped:
+                out = "active\n"
+            else:
+                out = "inactive\n"
         elif command.startswith("curl "):
             if self.fail_all or (self.attempts == 1 and self.fail_first):
                 code, err = 1, "health failed"
@@ -234,6 +255,14 @@ class DeployTests(unittest.TestCase):
             (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
         self.assertEqual(os.readlink(self.web / "current"), "releases/old")
         self.assertFalse(self.state_file.exists())
+        events = self.runner.events
+        stop = events.index("systemctl --user stop myfinanzas-test-api.service")
+        reset = events.index("systemctl --user reset-failed myfinanzas-test-api.service")
+        restarts = [index for index, command in enumerate(events)
+                    if command.startswith("systemctl --user restart ")]
+        self.assertEqual(len(restarts), 2)
+        self.assertLess(stop, restarts[1])
+        self.assertLess(reset, restarts[1])
 
     def test_same_version_and_source_is_a_noop(self):
         payload = bundle(self.source, self.app_id, THEMES)
@@ -270,6 +299,8 @@ class DeployTests(unittest.TestCase):
         with self.assertRaises(DeployError):
             self.deploy(bundle(self.source, self.app_id, THEMES))
         self.assertTrue(self.runner.stopped)
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
         self.assertFalse(self.state_file.exists())
 
     def test_bundle_path_escape_is_rejected(self):
@@ -327,6 +358,69 @@ class DeployTests(unittest.TestCase):
                         hex_id.upper(), hex_id[:32] + " " + hex_id[32:]):
             with self.assertRaises(DeployError):
                 canonical_image_id(invalid)
+
+    def test_unit_declares_bounded_start_and_stop_timeouts(self):
+        self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
+        unit = (self.unit_dir / "myfinanzas-test-api.container").read_text()
+        self.assertIn(f"TimeoutStartSec={SYSTEMD_START_TIMEOUT}s", unit)
+        self.assertIn(f"TimeoutStopSec={SYSTEMD_STOP_TIMEOUT}s", unit)
+        self.assertGreater(SYSTEMD_START_TIMEOUT, 0)
+
+    def test_restart_client_outlives_systemd_start_timeout(self):
+        self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
+        restart = "systemctl --user restart myfinanzas-test-api.service"
+        self.assertEqual(self.runner.timeouts[restart], SYSTEMCTL_START_TIMEOUT)
+        self.assertGreater(SYSTEMCTL_START_TIMEOUT, SYSTEMD_START_TIMEOUT)
+        self.assertGreater(SYSTEMCTL_STOP_TIMEOUT, SYSTEMD_STOP_TIMEOUT)
+
+    def test_slow_start_within_budget_does_not_roll_back(self):
+        # A start that ends inside TimeoutStartSec is accepted; only the
+        # bounded client wait is asserted here because the fake runner does
+        # not spend real time.
+        self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
+        self.assertNotIn("systemctl --user stop myfinanzas-test-api.service",
+                         self.runner.events)
+
+    def test_start_timeout_settles_before_restoring(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+        self.runner.timeout_first = True
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertIn("timed out", str(caught.exception))
+        events = self.runner.events
+        stop = events.index("systemctl --user stop myfinanzas-test-api.service")
+        reset = events.index("systemctl --user reset-failed myfinanzas-test-api.service")
+        restarts = [index for index, command in enumerate(events)
+                    if command.startswith("systemctl --user restart ")]
+        self.assertEqual(len(restarts), 2)
+        self.assertLess(stop, restarts[1])
+        self.assertLess(reset, restarts[1])
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+
+    def test_unit_that_never_settles_does_not_start_recovery(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+        self.runner.fail_first = True
+        self.runner.stubborn_unit = True
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertIn("did not settle", str(caught.exception))
+        restarts = [command for command in self.runner.events
+                    if command.startswith("systemctl --user restart ")]
+        self.assertEqual(len(restarts), 1)
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
+        self.assertFalse(self.state_file.exists())
 
     def test_bundle_directory_entries_are_allowed(self):
         payload = bundle(self.source, self.app_id, THEMES,

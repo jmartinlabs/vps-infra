@@ -33,6 +33,17 @@ ALLOWED = {"manifest.json", "manifest.sha256", "SHA256SUMS", "deploy.json", "ima
 FORBIDDEN_FRONTEND = (".map", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".xlsx",
                       ".env", ".pem", ".key", ".p12", ".pfx")
 
+# Timeout budget shared with UNIT_TEMPLATE. The systemctl client must outlive
+# systemd's own start timeout so it observes the final result instead of
+# abandoning a job that is still pending. Every wait below is bounded.
+SYSTEMD_START_TIMEOUT = 120
+SYSTEMD_STOP_TIMEOUT = 30
+# restart = stop (<=30 s) + start (<=120 s); keep a real 30 s margin on top.
+SYSTEMCTL_START_TIMEOUT = SYSTEMD_START_TIMEOUT + SYSTEMD_STOP_TIMEOUT + 30
+SYSTEMCTL_STOP_TIMEOUT = SYSTEMD_STOP_TIMEOUT + 15
+SYSTEMCTL_QUERY_TIMEOUT = 15
+SETTLE_TIMEOUT = 20
+
 
 class DeployError(Exception):
     """Any failure safe to report without touching data."""
@@ -137,7 +148,8 @@ PodmanArgs=--http-proxy=false --read-only-tmpfs=false --memory=1g --cpus=1 --pid
 [Service]
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=30
+TimeoutStartSec={start_timeout}s
+TimeoutStopSec={stop_timeout}s
 
 [Install]
 WantedBy=default.target
@@ -472,7 +484,11 @@ class Deployer:
         unit = self.config.unit_dir / f"{self.config.unit_name}.container"
         previous = unit.read_text(encoding="utf-8") if unit.is_file() else None
         self.config.unit_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write(unit, UNIT_TEMPLATE.format(image=image_id))
+        atomic_write(unit, UNIT_TEMPLATE.format(
+            image=image_id,
+            start_timeout=SYSTEMD_START_TIMEOUT,
+            stop_timeout=SYSTEMD_STOP_TIMEOUT,
+        ))
         return previous
 
     def restore_unit(self, previous: str | None) -> None:
@@ -504,19 +520,80 @@ class Deployer:
 
     def restart_and_smoke(self) -> None:
         self.systemctl("daemon-reload")
-        self.systemctl("restart", f"{self.config.unit_name}.service")
+        # Outlive systemd's own TimeoutStartSec: if the job is still pending,
+        # wait for its final result instead of starting recovery underneath it.
+        self.systemctl("restart", f"{self.config.unit_name}.service",
+                       timeout=SYSTEMCTL_START_TIMEOUT)
         self.smoke()
+
+    def stop_quietly(self) -> None:
+        try:
+            self.systemctl("stop", f"{self.config.unit_name}.service", check=False,
+                           timeout=SYSTEMCTL_STOP_TIMEOUT)
+        except (DeployError, OSError) as exc:
+            self.log(f"stop did not complete: {exc}")
+
+    def settle_unit(self) -> bool:
+        """Cancel any pending start and wait, bounded, for a stable terminal state.
+
+        Every command is wrapped: check=False does not suppress a client timeout,
+        and a settle failure must never abort the rollback before restoring files.
+        """
+        unit = f"{self.config.unit_name}.service"
+        try:
+            self.systemctl("stop", unit, check=False, timeout=SYSTEMCTL_STOP_TIMEOUT)
+        except (DeployError, OSError) as exc:
+            self.log(f"settle: stop did not complete: {exc}")
+        try:
+            self.systemctl("reset-failed", unit, check=False,
+                           timeout=SYSTEMCTL_QUERY_TIMEOUT)
+        except (DeployError, OSError) as exc:
+            self.log(f"settle: reset-failed did not complete: {exc}")
+        deadline = self.clock() + SETTLE_TIMEOUT
+        while self.clock() < deadline:
+            try:
+                result = self.systemctl("is-active", unit, check=False,
+                                        timeout=SYSTEMCTL_QUERY_TIMEOUT)
+            except (DeployError, OSError) as exc:
+                self.log(f"settle: is-active did not complete: {exc}")
+                self.sleep(1)
+                continue
+            if result.stdout.strip() in ("inactive", "failed", "unknown"):
+                # Confirm stability: a failed unit with Restart=on-failure must
+                # not be entering a new start while we restore the old release.
+                self.sleep(1)
+                try:
+                    again = self.systemctl("is-active", unit, check=False,
+                                           timeout=SYSTEMCTL_QUERY_TIMEOUT)
+                except (DeployError, OSError):
+                    continue
+                if again.stdout.strip() in ("inactive", "failed", "unknown"):
+                    return True
+                continue
+            self.sleep(1)
+        self.log("unit did not settle; refusing to start recovery over a pending job")
+        return False
 
     def rollback(self, previous_unit: str | None, previous_frontend: str | None) -> None:
         self.log("smoke failed; restoring previous release")
-        self.restore_unit(previous_unit)
-        self.restore_frontend(previous_frontend)
+        settled = self.settle_unit()
+        try:
+            self.restore_unit(previous_unit)
+            self.restore_frontend(previous_frontend)
+        except BaseException:
+            self.stop_quietly()
+            raise
+        if not settled:
+            self.stop_quietly()
+            raise DeployError(
+                "unit did not settle before rollback; previous release restored but not started"
+            )
         try:
             self.restart_and_smoke()
             self.log("rollback smoke passed; previous release active")
         except DeployError as exc:
             self.log(f"rollback failed; stopping unit: {exc}")
-            self.systemctl("stop", f"{self.config.unit_name}.service", check=False)
+            self.stop_quietly()
             raise
 
     def write_state(self, manifest: dict, app_id: str, actor: str, version: str,

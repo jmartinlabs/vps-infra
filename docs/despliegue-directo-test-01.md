@@ -99,8 +99,10 @@ sudo install -m 0755 -o mftest -g mftest \
 # 2. Instalar la nueva y verificar
 sudo install -m 0755 -o mftest -g mftest <nuevo> /home/mftest/bin/myfinanzas-test-deploy
 sudo -u mftest sha256sum /home/mftest/bin/myfinanzas-test-deploy   # debe coincidir con el PR
-# 3. Prueba de alcance: la clave forzada solo acepta "deploy:<actor>:<semver>"
-ssh -i <clave> mftest@<host> 'true'   # debe rechazar sin mutar
+# 3. Prueba de alcance: la clave forzada solo acepta "deploy:<actor>:<semver>".
+#    Un comando distinto debe rechazarse sin mutar. Esto demuestra el forzado,
+#    no la integridad del binario: esa la fija el SHA-256 del paso 2.
+ssh -i <clave> mftest@<host> 'true'   # exit 2, sin cambios
 ```
 
 Rollback:
@@ -112,8 +114,13 @@ sudo -u mftest sha256sum /home/mftest/bin/myfinanzas-test-deploy   # hash anteri
 ```
 
 - La versión anterior se conserva hasta que el primer despliegue con la nueva termine bien.
-- Un fallo del receptor siempre ocurre antes de escribir unidad o `current`; el rollback del
-  ejecutable no requiere tocar el servicio.
+- Un fallo posterior a `write_unit`/`stage_frontend` (smoke o reinicio) restaura unidad y
+  `current` con el rollback del propio receptor; si ese rollback falla, detiene la unidad.
+  El rollback del ejecutable no requiere tocar el servicio, pero debe hacerse con el lock
+  libre y sin un despliegue en curso.
+- Guardas: abortar la actualización si el SHA-256 no coincide con el aprobado; no sustituir
+  el binario mientras exista `/srv/myfinanzas-test/update.lock` tomado; registrar el hash
+  anterior junto al `.previous`.
 - El tag consumido no se reutiliza si hubo mutación; si el fallo fue previo, puede
   reintentarse el mismo tag y SHA.
 

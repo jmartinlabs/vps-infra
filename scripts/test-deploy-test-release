@@ -19,6 +19,7 @@ Config = module["Config"]
 DeployError = module["DeployError"]
 Deployer = module["Deployer"]
 identity_from_environment = module["identity_from_environment"]
+canonical_image_id = module["canonical_image_id"]
 
 
 def sha256(data: bytes) -> str:
@@ -315,6 +316,17 @@ class DeployTests(unittest.TestCase):
             self.deploy(bundle(self.source, self.app_id, THEMES))
         self.assertIn("invalid image ID", str(caught.exception))
         self.assertFalse((self.unit_dir / "myfinanzas-test-api.container").exists())
+
+    def test_canonical_image_id_matrix(self):
+        hex_id = "a" * 64
+        self.assertEqual(canonical_image_id("sha256:" + hex_id), "sha256:" + hex_id)
+        self.assertEqual(canonical_image_id(hex_id), "sha256:" + hex_id)
+        self.assertEqual(canonical_image_id("  sha256:" + hex_id + "\n"), "sha256:" + hex_id)
+        for invalid in ("", "   ", "sha256:", hex_id[:-1], hex_id + "0",
+                        "sha256:sha256:" + hex_id, "SHA256:" + hex_id,
+                        hex_id.upper(), hex_id[:32] + " " + hex_id[32:]):
+            with self.assertRaises(DeployError):
+                canonical_image_id(invalid)
 
     def test_bundle_directory_entries_are_allowed(self):
         payload = bundle(self.source, self.app_id, THEMES,

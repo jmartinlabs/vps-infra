@@ -123,7 +123,10 @@ class FakeRunner:
         self.fail_first = False
         self.fail_all = False
         self.timeout_first = False
+        self.timeout_stop = False
+        self.timeout_is_active = False
         self.stubborn_unit = False
+        self.fail_smoke = False
         self.stopped = False
         self.events = []
         self.timeouts = {}
@@ -149,16 +152,21 @@ class FakeRunner:
             if self.fail_all or (self.fail_first and self.attempts == 1):
                 code, err = 1, "restart failed"
         elif command.startswith("systemctl --user stop "):
+            if self.timeout_stop:
+                raise DeployError(f"command timed out: {command}")
             self.stopped = True
         elif command.startswith("systemctl --user reset-failed "):
             pass
         elif command.startswith("systemctl --user is-active "):
+            if self.timeout_is_active:
+                raise DeployError(f"command timed out: {command}")
             if self.stubborn_unit or not self.stopped:
                 out = "active\n"
             else:
                 out = "inactive\n"
         elif command.startswith("curl "):
-            if self.fail_all or (self.attempts == 1 and self.fail_first):
+            if self.fail_all or (self.attempts == 1 and self.fail_first) \
+                    or (self.fail_smoke and self.attempts == 1):
                 code, err = 1, "health failed"
             elif "127.0.0.1:18082/api/health" in command:
                 out = '{"ok":true}\n'
@@ -370,13 +378,15 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
         restart = "systemctl --user restart myfinanzas-test-api.service"
         self.assertEqual(self.runner.timeouts[restart], SYSTEMCTL_START_TIMEOUT)
-        self.assertGreater(SYSTEMCTL_START_TIMEOUT, SYSTEMD_START_TIMEOUT)
+        self.assertGreater(SYSTEMCTL_START_TIMEOUT,
+                           SYSTEMD_START_TIMEOUT + SYSTEMD_STOP_TIMEOUT)
         self.assertGreater(SYSTEMCTL_STOP_TIMEOUT, SYSTEMD_STOP_TIMEOUT)
 
     def test_slow_start_within_budget_does_not_roll_back(self):
-        # A start that ends inside TimeoutStartSec is accepted; only the
-        # bounded client wait is asserted here because the fake runner does
-        # not spend real time.
+        # The 68 s pre-create delay of the incident fits inside the systemd
+        # budget; the fake runner does not spend real time, but a normal success
+        # must not trigger recovery.
+        self.assertGreater(SYSTEMD_START_TIMEOUT, 68)
         self.assertEqual(self.deploy(bundle(self.source, self.app_id, THEMES)), 0)
         self.assertNotIn("systemctl --user stop myfinanzas-test-api.service",
                          self.runner.events)
@@ -404,6 +414,88 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(os.readlink(self.web / "current"), "releases/old")
         self.assertFalse(self.state_file.exists())
 
+    def test_smoke_failure_rolls_back_without_leaving_the_new_unit(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+        self.runner.fail_smoke = True
+        with self.assertRaises(DeployError):
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+        events = self.runner.events
+        stop = events.index("systemctl --user stop myfinanzas-test-api.service")
+        restarts = [index for index, command in enumerate(events)
+                    if command.startswith("systemctl --user restart ")]
+        self.assertEqual(len(restarts), 2)
+        self.assertLess(stop, restarts[1])
+
+    def test_state_write_failure_rolls_back(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+
+        def fail_write(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        self.deployer.write_state = fail_write
+        with self.assertRaises(OSError):
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+        self.assertIn("systemctl --user stop myfinanzas-test-api.service",
+                      self.runner.events)
+
+    def test_settle_survives_stop_timeout_and_still_restores(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+        self.runner.fail_first = True
+        self.runner.timeout_stop = True
+        self.runner.stubborn_unit = True
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertIn("did not settle", str(caught.exception))
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+        stops = [command for command in self.runner.events
+                 if command.startswith("systemctl --user stop ")]
+        self.assertGreaterEqual(len(stops), 2)
+        restarts = [command for command in self.runner.events
+                    if command.startswith("systemctl --user restart ")]
+        self.assertEqual(len(restarts), 1)
+
+    def test_settle_survives_is_active_timeout_and_still_restores(self):
+        old = self.web / "releases" / "old"
+        old.mkdir()
+        (old / "index.html").write_text("old")
+        (self.web / "current").symlink_to(Path("releases") / "old")
+        (self.unit_dir / "myfinanzas-test-api.container").write_text("old unit\n")
+        self.runner.fail_first = True
+        self.runner.timeout_is_active = True
+        with self.assertRaises(DeployError) as caught:
+            self.deploy(bundle(self.source, self.app_id, THEMES))
+        self.assertIn("did not settle", str(caught.exception))
+        self.assertEqual(
+            (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
+        self.assertEqual(os.readlink(self.web / "current"), "releases/old")
+        self.assertFalse(self.state_file.exists())
+        stops = [command for command in self.runner.events
+                 if command.startswith("systemctl --user stop ")]
+        self.assertGreaterEqual(len(stops), 2)
+
     def test_unit_that_never_settles_does_not_start_recovery(self):
         old = self.web / "releases" / "old"
         old.mkdir()
@@ -418,6 +510,9 @@ class DeployTests(unittest.TestCase):
         restarts = [command for command in self.runner.events
                     if command.startswith("systemctl --user restart ")]
         self.assertEqual(len(restarts), 1)
+        stops = [command for command in self.runner.events
+                 if command.startswith("systemctl --user stop ")]
+        self.assertGreaterEqual(len(stops), 2)
         self.assertEqual(
             (self.unit_dir / "myfinanzas-test-api.container").read_text(), "old unit\n")
         self.assertFalse(self.state_file.exists())

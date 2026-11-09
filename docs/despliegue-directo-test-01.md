@@ -1,7 +1,8 @@
 # Despliegue directo de MyFinanzas TEST desde GitHub Actions
 
-Fecha: 2026-11-08
-Estado: **PROPUESTA — no ejecutada en el VPS.**
+Fecha: 2026-11-08 (actualizado: 2026-11-09)
+Estado: **PIPELINE EJECUTADO EN TEST; corrección de timeouts del receptor en revisión
+(PR #33), pendiente de instalar.**
 
 Sustituye la arquitectura GHCR + temporizador (`#27`, `#28`, `#293`) por un
 despliegue directo disparado por el tag `deploy-test-vX.Y.Z`, sin polling, registro
@@ -63,15 +64,15 @@ receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag ante
   prefijo y Podman 5 no. Una diferencia real de hash sigue rechazándose.
 - `podman load` local; nunca descarga.
 - Presupuesto de arranque: la unidad declara `TimeoutStartSec=120s` y
-  `TimeoutStopSec=30s`. El cliente `systemctl` espera 150 s al arranque (30 s de
-  margen sobre systemd) y 45 s a la parada, de modo que observa el resultado final
-  del job en lugar de abandonarlo pendiente.
+  `TimeoutStopSec=30s`. El `restart` puede consumir hasta 150 s (parada + arranque);
+  el cliente espera 180 s, con 30 s de margen real, y 45 s a una parada suelta.
+  Así observa el resultado final del job en lugar de abandonarlo pendiente.
 - Smoke: health `{"ok":true}`, ruta protegida `401`, `current/index.html`.
-- Fallo: antes de restaurar, asienta la unidad (`systemctl stop` + `reset-failed`,
-  espera acotada a 20 s) para que un arranque pendiente no compita con la
-  recuperación. Después restaura unidad y `current`, repite smoke; si el rollback
-  falla o la unidad no asienta, la deja detenida y registra evidencia en
-  `last-deploy.json`.
+- Fallo: antes de restaurar, asienta la unidad (`systemctl stop` + `reset-failed` y
+  dos lecturas consecutivas de estado terminal, hasta 20 s más la última consulta)
+  para que un arranque pendiente no compita con la recuperación. Después restaura
+  unidad y `current`, repite smoke; si el rollback falla o la unidad no asienta,
+  intenta detenerla y registra la evidencia en `last-deploy.json`.
 - Lock para impedir despliegues concurrentes.
 
 ## Instalación (una vez, con autorización operativa)
@@ -81,7 +82,7 @@ receptor comprueba que coinciden con el manifiesto, el comando SSH y el tag ante
    `restrict,command="XDG_RUNTIME_DIR=/run/user/1002 /home/mftest/bin/myfinanzas-test-deploy --stdin" ssh-ed25519 ...`
 2. Instalar `scripts/deploy-test-release` en `/home/mftest/bin/` (0755, mftest) y
    comprobar su SHA-256:
-   `3499f94ddf50a2dad024bf991d850a7e01874c4e954cd11d356e0f00723fc8d3`
+   `2ed1bf384788ca524c43fc13eaa9ccd76244548a106fadb18816209a1819df9f`
 3. Guardar la privada como secreto del Environment `test` en `TEST_DEPLOY_KEY` y la huella
    del host en `TEST_DEPLOY_KNOWN_HOSTS` (sin Required reviewers).
 4. Definir en el mismo Environment `TEST_DEPLOY_HOST`, `TEST_DEPLOY_USER=mftest` y la

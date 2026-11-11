@@ -22,7 +22,9 @@ CONTAINER = "vps-datasette-admin-{env}"
 IMAGE_DEFAULT = "localhost/vps-datasette-admin:latest"
 DB_NAME = "database.sqlite"
 ENVIRONMENTS = {
-    "test": {"user": "mftest", "state": "/srv/myfinanzas-test/data"},
+    # MyFinanzas mounts the full data root at /var/lib/myfinanzas and keeps the
+    # live SQLite state under data/state. PROD remains pending confirmation.
+    "test": {"user": "mftest", "state": "/srv/myfinanzas-test/data/state"},
     "prod": {"user": "mfprod", "state": "/srv/myfinanzas-prod/data"},
 }
 APP_UID = 10001

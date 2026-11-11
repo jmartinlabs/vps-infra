@@ -57,7 +57,7 @@ class WrapperTests(unittest.TestCase):
                     "start",
                     "test",
                     "--state",
-                    "/srv/myfinanzas-test/data",
+                    "/srv/myfinanzas-test/data/state",
                     "--app-service",
                     "other.service",
                 ]
@@ -224,6 +224,12 @@ class EnvironmentBindingTests(unittest.TestCase):
         self.other.mkdir(mode=0o700)
         self.user = pwd.getpwuid(os.getuid())
         self.expected = {"user": self.user.pw_name, "state": str(self.state)}
+
+    def test_test_environment_uses_state_directory(self):
+        self.assertEqual(
+            wrapper.ENVIRONMENTS["test"]["state"],
+            "/srv/myfinanzas-test/data/state",
+        )
 
     def test_authorized_binding(self):
         self.assertEqual(
